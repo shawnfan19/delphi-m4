@@ -3,16 +3,56 @@ import torch.nn.functional as F
 
 
 def sample_competing_exponentials(
-    logits: torch.Tensor,
+    logits: torch.Tensor, clamp_min: float = 0.0, clamp_max: float = 365.25 * 80.0
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    inverse CDF method
+    """
 
     t_next = torch.clamp(
         -torch.exp(-logits) * torch.rand(logits.shape, device=logits.device).log(),
-        min=0,
-        max=365.25 * 80.0,
+        min=clamp_min,
+        max=clamp_max,
     ).min(1)
     next_token = t_next[1][:, None]
     time_til_next = t_next[0][:, None]
+
+    return next_token, time_til_next
+
+
+def sample_zlpr_competing_exponentials(
+    logits: torch.Tensor,
+    thresh_logits: torch.Tensor,
+    clamp_min: float = 0.0,
+    clamp_max: float = 365.25 * 80.0,
+):
+    batch_size = logits.shape[0]
+    assert thresh_logits.shape == (batch_size,)
+    thresh_logits = thresh_logits.unsqueeze(-1)
+    device = logits.device
+
+    t_next = torch.clamp(
+        -torch.exp(-logits) * torch.rand(logits.shape, device=device).log(),
+        min=clamp_min,
+        max=clamp_max,
+    )
+    t_nod_next = torch.clamp(
+        -torch.exp(-thresh_logits)
+        * torch.rand(thresh_logits.shape, device=device).log(),
+        min=clamp_min,
+        max=clamp_max,
+    )
+    sample_mask = t_next <= t_nod_next
+    max_n = sample_mask.sum(dim=1).max().item()
+    subject_idx, token_idx = torch.nonzero(sample_mask, as_tuple=True)
+    pseudo_idx = sample_mask.cumsum(1) - 1
+    pseudo_idx = pseudo_idx[sample_mask]
+
+    next_token = torch.zeros((batch_size, int(max_n)), device=device).long()
+    next_token[subject_idx, pseudo_idx] = token_idx
+
+    time_til_next = t_nod_next.expand(-1, int(max_n))
+    time_til_next[next_token == 0] = -1e4
 
     return next_token, time_til_next
 
@@ -21,10 +61,17 @@ def exponential_nll(
     delta_t: torch.Tensor,
     log_lambda: torch.Tensor,
     t_min: float,
+    n: None | torch.Tensor = None,
 ):
+    """
+    when n > 1, return nll according to the erlang distribution
+    """
     ldt = -torch.log(delta_t + t_min)
     lse = -torch.log(torch.exp(-log_lambda) + t_min)
-    nll = -(lse - torch.exp(lse - ldt))
+    # when n == 1: nll = -(lse - torch.exp(lse - ldt))
+    if n is None:
+        n = torch.ones_like(delta_t)
+    nll = -(n * lse + (n - 1) * (-ldt) - torch.exp(lse - ldt) - torch.lgamma(n))
     return nll
 
 
@@ -42,54 +89,3 @@ def sample_zero_inflated_exponentials(
     )
 
     return next_token, time_til_next
-
-
-# def integrate_risk(
-#     logits: torch.Tensor,
-#     tokens: torch.Tensor,
-#     timesteps: torch.Tensor,
-#     time_intervals: torch.Tensor,
-# ):
-#     '''
-#     input(s):
-#         - hazard_rates: [# participants, # timesteps, # tokens]
-#         - timesteps: [# participants, # timesteps]
-#         - time_intervals: [# intervals]
-#         - last_time_by_event: [# participants, # tokens]
-#     output(s):
-#         - risk: [# participants, # tokens, # intervals]
-#     '''
-#     _, _, vocab_size = logits.shape
-#
-#     logits[logits == -torch.inf] = torch.nan
-#     hazard_rates = logits[:, :-1].exp()
-#
-#     last_time_by_event = (
-#         timesteps.max(dim=1, keepdim=True)[0].expand(-1, vocab_size).clone()
-#     )
-#     last_time_by_event = last_time_by_event.scatter_(
-#         index=tokens, src=timesteps, dim=1
-#     )
-#
-#     starts = time_intervals[:-1]
-#     ends = time_intervals[1:]
-#     _timestep = timesteps.unsqueeze(-1).unsqueeze(-1)
-#     _timestep = torch.clamp(_timestep, min=starts.view(1, 1, 1, -1))
-#     _timestep = torch.clamp(_timestep, max=last_time_by_event.unsqueeze(1).unsqueeze(-1))
-#     _timestep = torch.clamp(_timestep, max=ends.view(1, 1, 1, -1))
-#     # _timestep: [# participants, # timesteps, # tokens, # intervals]
-#     delta_t = torch.diff(_timestep, dim=1)
-#     not_enough_exposure = torch.nansum(delta_t, dim=1) < (ends - starts).view(1, 1, -1)
-#
-#     cumul_hazard = delta_t * hazard_rates.unsqueeze(-1)
-#     all_nan = torch.isnan(cumul_hazard).all(dim=1)
-#     cumul_hazard = torch.nansum(cumul_hazard, dim=1)
-#     # cumul_hazard: [# participants, # tokens, # intervals]
-#     # manually set sum of NaNs to Nan because torch.nansum over all NaNs returns 0
-#     cumul_hazard[all_nan] = torch.nan
-#
-#     cumul_hazard[not_enough_exposure] = torch.nan
-#
-#     risk = 1 - torch.exp(-cumul_hazard)
-#
-#     return risk

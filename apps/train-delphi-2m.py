@@ -6,8 +6,8 @@ from omegaconf import OmegaConf
 
 from delphi import distributed
 from delphi.data.ukb import UKBDataset
+from delphi.experiment import BaseTrainer, TrainBaseConfig
 from delphi.model import Delphi2M, Delphi2MConfig
-from delphi.train import BaseTrainer, TrainBaseConfig
 
 
 @dataclass
@@ -64,6 +64,7 @@ def experiment(cfg: TrainConfig):
     else:
         raise NotImplementedError
 
+    cfg.log.wandb_project = cfg.ckpt_dir
     trainer = BaseTrainer(
         cfg=cfg,
         backend=backend,

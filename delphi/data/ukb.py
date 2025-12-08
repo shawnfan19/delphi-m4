@@ -6,7 +6,6 @@ from typing import Iterable, Literal
 
 import numpy as np
 import pandas as pd
-import shap
 import torch
 import yaml
 
@@ -77,6 +76,9 @@ class UKBDataset:
         deterministic: bool = False,
         memmap: bool = False,
     ):
+
+        self._init_args = locals().copy()
+        self._init_args.pop("self")  # Remove 'self' reference
 
         (
             self.tokenizer,

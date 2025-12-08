@@ -29,6 +29,8 @@ def kaplan_meier_incidence(
     """
     assumes the same survival times across all diseases and all participants
 
+    ! this can be vectorized but is actually faster AS IS when # participants is large
+
     inputs:
         – surv_prob [# participants, # tokens, # time_intervals]
         – surv_time [# time_intervals]
@@ -39,11 +41,13 @@ def kaplan_meier_incidence(
     assert len(surv_time.shape) == 1
     assert surv_prob.shape[-1] == surv_time.size
 
-    in_range = (surv_time >= start) & (surv_time <= end)
+    start_mask = surv_time < start
+    end_mask = surv_time <= end
+
     incidence = list()
     for token in range(surv_prob.shape[1]):
-        _estimator = surv_prob[:, token, in_range]
-        start_surv, end_surv = _estimator.max(axis=-1), _estimator.min(axis=-1)
+        start_surv = surv_prob[:, token, start_mask].min(axis=-1)
+        end_surv = surv_prob[:, token, end_mask].min(axis=-1)
         incidence.append((start_surv - end_surv) / start_surv)
 
     return np.stack(incidence, axis=1)
@@ -448,12 +452,12 @@ class AgeStratRatesCollator:
 
 class DiseaseRatesCollator:
 
-    def __init__(self, vocab_size: int):
-        self.vocab_size = vocab_size
+    def __init__(self, targets: torch.Tensor):
+        self.targets = targets
         self.dis_rates = list()
         self.dis_times = list()
 
-    def step(self, tokens, timesteps, logits):
+    def step(self, tokens: torch.Tensor, timesteps: torch.Tensor, logits: torch.Tensor):
 
         dis_time = torch.full(
             (logits.shape[0], logits.shape[-1]),
@@ -469,7 +473,7 @@ class DiseaseRatesCollator:
             fill_value=torch.nan,
         ).to(logits.device)
         uniq_tokens = torch.unique(tokens)
-        uniq_tokens = uniq_tokens[uniq_tokens > 1]
+        uniq_tokens = uniq_tokens[torch.isin(uniq_tokens, self.targets)]
         for token in uniq_tokens:
             have_disease = tokens == token
             dis_rate[have_disease.any(dim=1), token] = logits[have_disease][:, token]
