@@ -9,9 +9,19 @@ from delphi import DAYS_PER_YEAR
 from delphi.env import IN_RAP
 
 if IN_RAP:
-    from utils_rap import all_ukb_participants, load_fid
+    from utils_rap import (
+        all_ukb_participants,
+        assessment_age,
+        load_fid,
+        month_of_birth
+    )
 else:
-    from utils_codon import all_ukb_participants, load_fid
+    from utils_codon import (
+        all_ukb_participants,
+        assessment_age,
+        load_fid,
+        month_of_birth
+    )
 
 
 def index_by_visit(df: pd.DataFrame, visits: list[str]) -> pd.Series:

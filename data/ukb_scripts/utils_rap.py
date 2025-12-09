@@ -20,30 +20,42 @@ dataset = dxdata.load_dataset(id=DATASET_ID)
 pheno = dataset["participant"]
 
 
-def all_ukb_participants() -> np.ndarray:
-    field_eid = pheno.find_field(name="eid")
-    eid = pheno.retrieve_fields(
-        engine=engine, fields=[field_eid], coding_values="replace"
-    ).toPandas()
-    eid = eid["eid"].values.astype(np.int64)
-    return eid
+_participants_cache = None
 
+def all_ukb_participants() -> np.ndarray:
+    
+    global _participants_cache
+    if _participants_cache is None:
+        field_eid = pheno.find_field(name="eid")
+        eid = pheno.retrieve_fields(
+            engine=engine, fields=[field_eid], coding_values="replace"
+        ).toPandas()
+        _participants_cache = eid["eid"].values.astype(np.int64)
+
+    return _participants_cache
+
+
+_mob_cache = None
 
 def month_of_birth() -> pd.DataFrame:
-    field_birth_year = pheno.find_field(title="Year of birth")  # 34
-    birth_year = pheno.retrieve_fields(
-        engine=engine, fields=[field_birth_year], coding_values="replace"
-    ).toPandas()
-    field_birth_month = pheno.find_field(title="Month of birth")  # 52
-    birth_month = pheno.retrieve_fields(
-        engine=engine, fields=[field_birth_month], coding_values="replace"
-    ).toPandas()
-    mob = pd.concat((birth_year, birth_month), axis=1)
-    mob = mob.rename(columns={"p34": "year", "p52": "month"})
-    mob["day"] = 1
-    mob["month"] = pd.to_datetime(mob["month"], format="%B").dt.month
-    mob["year_month"] = pd.to_datetime(mob)
-    return mob
+    
+    global _mob_cache
+    if _mob_cache is None:
+        field_birth_year = pheno.find_field(title="Year of birth")  # 34
+        birth_year = pheno.retrieve_fields(
+            engine=engine, fields=[field_birth_year], coding_values="replace"
+        ).toPandas()
+        field_birth_month = pheno.find_field(title="Month of birth")  # 52
+        birth_month = pheno.retrieve_fields(
+            engine=engine, fields=[field_birth_month], coding_values="replace"
+        ).toPandas()
+        mob = pd.concat((birth_year, birth_month), axis=1)
+        _mob_cache = mob.rename(columns={"p34": "year", "p52": "month"})
+        _mob_cache["day"] = 1
+        _mob_cache["month"] = pd.to_datetime(_mob_cache["month"], format="%B").dt.month
+        _mob_cache["year_month"] = pd.to_datetime(_mob_cache)
+    
+    return _mob_cache
 
 
 def load_fid(fid: str | int) -> pd.DataFrame:
@@ -54,18 +66,27 @@ def load_fid(fid: str | int) -> pd.DataFrame:
     return fid_df
 
 
+_assess_date_cache = None
+
 def assessment_age(visits: list[str]):
 
+    global _assess_date_cache
     mob = month_of_birth()
-    assess_date = load_fid(fid=53)
-    assess_date = assess_date.rename(
-        columns={
-            "p53_i0": "init_assess",
-            "p53_i1": "1st_repeat_assess",
-            "p53_i2": "img",
-            "p53_i3": "1st_repeat_img",
-        }
-    )
+    
+    if _assess_date_cache is None:
+        assess_date = load_fid(fid=53)
+        assess_date = assess_date.rename(
+            columns={
+                "p53_i0": "init_assess",
+                "p53_i1": "1st_repeat_assess",
+                "p53_i2": "img",
+                "p53_i3": "1st_repeat_img",
+            }
+        )
+        _assess_date_cache = assess_date
+    else:
+        assess_date = _assess_date_cache
+    
     assert set(visits).issubset(set(assess_date.columns))
     age_at_visits = pd.DataFrame(columns=visits, index=assess_date.index)
     for col in visits:
