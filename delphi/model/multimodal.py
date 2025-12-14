@@ -408,14 +408,8 @@ class DelphiM4(torch.nn.Module):
             self.transformer.embed.token_embedding.weight = self.lm_head.weight
 
         self.fuse_early = self.config.fuse == "early"
-        if (not self.fuse_early) and config.biomarker_only:
-            raise ValueError
-        if self.config.fuse in {"concat", "concat-raw"}:
+        if not self.fuse_early:
             raise NotImplementedError
-        elif self.config.fuse == "cross":
-            self.fuse = CrossFusion(config)
-        elif self.config.fuse == "late":
-            self.fuse = SelfFusion(config)
 
         self.apply(self._init_weights)
         # apply special scaled init to the residual projections, per GPT-2 paper
@@ -487,19 +481,15 @@ class DelphiM4(torch.nn.Module):
         if self.config.biomarker_only:
             x = raw["age"]
 
-        if self.fuse_early:
-            x, fused_mod_idx = fuse_embed(
-                emb=x, age=age, mod_idx=mod_idx, mod_age=mod_age, mod_emb=mod_emb
-            )
-            t0 = fuse_age(age, mod_age, fused_mod_idx)
-            t1 = (
-                fuse_age(targets_age, mod_age, fused_mod_idx)
-                if targets_age is not None
-                else None
-            )
-        else:
-            t0 = age
-            t1 = targets_age
+        x, fused_mod_idx = fuse_embed(
+            emb=x, age=age, mod_idx=mod_idx, mod_age=mod_age, mod_emb=mod_emb
+        )
+        t0 = fuse_age(age, mod_age, fused_mod_idx)
+        t1 = (
+            fuse_age(targets_age, mod_age, fused_mod_idx)
+            if targets_age is not None
+            else None
+        )
         attn_mask = causal_attention_mask(
             pad=t0 != -1e4, t0=t0, t1=t1, mask_ties=self.config.mask_ties
         )
@@ -519,23 +509,6 @@ class DelphiM4(torch.nn.Module):
             att.append(a)
         x = self.transformer.ln_f(x)
         att = torch.stack(att)
-
-        if not self.fuse_early:
-            if self.config.fuse == "cross":
-                x, fused_mod_idx = self.fuse(
-                    x=x, age=age, mod_idx=mod_idx, mod_age=mod_age, mod_emb=mod_emb
-                )
-            elif self.config.fuse == "late":
-                x, fused_mod_idx = self.fuse(
-                    x=x,
-                    age=age,
-                    targets_age=targets_age,
-                    mod_idx=mod_idx,
-                    mod_age=mod_age,
-                    mod_emb=mod_emb,
-                )
-            else:
-                raise NotImplementedError
 
         x = x[fused_mod_idx == 1].view(*idx.shape, -1)  # type: ignore
         logits = self.lm_head(x)
