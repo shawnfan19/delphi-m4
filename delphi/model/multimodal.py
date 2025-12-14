@@ -8,7 +8,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from delphi.data.ukb import collate_batch
+from delphi.data.shap import from_shap_array
+from delphi.data.utils import collate_batch
 from delphi.exponential import exponential_nll
 from delphi.model.transformer import (
     MLP,
@@ -432,6 +433,12 @@ class DelphiM4(torch.nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
+    @property
+    def targets(self):
+        all = torch.arange(self.config.vocab_size)
+        targets = all[~torch.isin(all, torch.tensor(self.config.ignore_tokens))]
+        return targets
+
     def loss(
         self,
         logits: torch.Tensor,
@@ -537,14 +544,61 @@ class DelphiM4(torch.nn.Module):
             is_valid_target = targets != 0
             for k in self.config.ignore_tokens:
                 is_valid_target *= targets != k
-            loss = self.loss(
+            if self.config.biomarker_only:
+                min_mod_age = mod_age.min(dim=1, keepdim=True)[0]
+                is_valid_target *= age >= min_mod_age
+            loss_ce, loss_dt = self.loss(
                 logits=logits,
                 targets=targets,
                 age=age,
                 targets_age=targets_age,
-                targets_mask=is_valid_target,
             )
+            loss_ce = torch.mean(loss_ce[is_valid_target])
+            loss_dt = torch.mean(loss_dt[is_valid_target])
+            loss = {
+                "loss_ce": loss_ce * self.config.ce_beta,
+                "loss_dt": loss_dt * self.config.dt_beta,
+            }
         else:
             loss = None
 
         return {"logits": logits, "attn_mask": attn_mask}, loss, att
+
+
+@torch.no_grad
+def shap_forward(
+    all_x_lst: list[np.ndarray],
+    all_t_lst: list[np.ndarray],
+    all_m_lst: list[np.ndarray],
+    model,
+    doi: list[int],
+):
+    x_lst, t_lst = list(), list()
+    biomarker, bio_t_lst, bio_m_lst = defaultdict(list), list(), list()
+
+    for all_x, all_t, all_m in zip(all_x_lst, all_t_lst, all_m_lst):
+        x, t, bio_x_dict, bio_t, bio_m = from_shap_array((all_x, all_t, all_m))
+        x_lst.append(x)
+        t_lst.append(t)
+        for modality in bio_x_dict.keys():
+            biomarker[modality].extend(bio_x_dict[modality])
+        bio_t_lst.append(bio_t)
+        bio_m_lst.append(bio_m)
+
+    device = next(model.parameters()).device
+    idx = collate_batch(x_lst)
+    idx = torch.tensor(idx, dtype=torch.long).to(device)
+    age = collate_batch(t_lst, fill_value=-1e4)
+    age = torch.tensor(age, dtype=torch.float32).to(device)
+    for modality, bio_x_lst in biomarker.items():
+        biomarker[modality] = torch.from_numpy(np.stack(bio_x_lst)).to(device)  # type: ignore
+    mod_age = collate_batch(bio_t_lst, fill_value=-1e4)
+    mod_age = torch.tensor(mod_age, dtype=torch.float32).to(device)
+    mod_idx = collate_batch(bio_m_lst)
+    mod_idx = torch.tensor(mod_idx, dtype=torch.long).to(device)
+
+    outputs, _, _ = model.forward(idx, age, biomarker, mod_age, mod_idx)
+    logits = outputs["logits"]
+    doi_logits = logits[:, -1, doi].detach().cpu().numpy()
+
+    return doi_logits
