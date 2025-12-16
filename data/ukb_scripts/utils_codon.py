@@ -15,14 +15,6 @@ for file in _tab_dir.rglob("*"):
         _pheno[key] = str(file)
 
 
-def all_ukb_participants() -> np.ndarray:
-
-    participant_dir = Path(DELPHI_DATA_DIR) / "ukb_real_data" / "participants"
-    participants = np.fromfile(participant_dir / "all.bin", dtype=np.uint32)
-
-    return participants
-
-
 def load_fid(fid: str | int) -> pd.DataFrame:
 
     return pd.read_csv(_pheno[str(fid)], delimiter="\t", index_col="f.eid")

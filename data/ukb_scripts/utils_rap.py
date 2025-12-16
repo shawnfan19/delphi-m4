@@ -20,21 +20,6 @@ dataset = dxdata.load_dataset(id=DATASET_ID)
 pheno = dataset["participant"]
 
 
-_participants_cache = None
-
-def all_ukb_participants() -> np.ndarray:
-    
-    global _participants_cache
-    if _participants_cache is None:
-        field_eid = pheno.find_field(name="eid")
-        eid = pheno.retrieve_fields(
-            engine=engine, fields=[field_eid], coding_values="replace"
-        ).toPandas()
-        _participants_cache = eid["eid"].values.astype(np.int64)
-
-    return _participants_cache
-
-
 _mob_cache = None
 
 def month_of_birth() -> pd.DataFrame:

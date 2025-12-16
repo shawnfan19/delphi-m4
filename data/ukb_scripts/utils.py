@@ -6,24 +6,30 @@ import pandas as pd
 import yaml
 
 from delphi import DAYS_PER_YEAR
-from delphi.env import IN_RAP
+from delphi.env import DELPHI_DATA_DIR, IN_RAP
 
 if IN_RAP:
     from utils_rap import (
-        all_ukb_participants,
         assessment_age,
         load_fid,
         month_of_birth
     )
 else:
     from utils_codon import (
-        all_ukb_participants,
         assessment_age,
         load_fid,
         month_of_birth
     )
 
+    
+def all_ukb_participants() -> np.ndarray:
 
+    participant_dir = Path(DELPHI_DATA_DIR) / "ukb_real_data" / "participants"
+    participants = np.fromfile(participant_dir / "all.bin", dtype=np.uint32)
+
+    return participants
+    
+    
 def index_by_visit(df: pd.DataFrame, visits: list[str]) -> pd.Series:
 
     n = df.shape[0]
@@ -128,8 +134,7 @@ def build_expansion_pack(
 def build_biomarker(
     biomarker_df: pd.DataFrame,
     time_series: pd.Series,
-    odir,
-    str,
+    odir: str,
     biomarker: str,
     data_dtype=np.float32,
 ):
