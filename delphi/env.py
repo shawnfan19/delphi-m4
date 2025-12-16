@@ -4,8 +4,8 @@ dx_id = os.getenv("DX_PROJECT_CONTEXT_ID")
 IN_RAP = dx_id != None
 
 if IN_RAP:
-    DELPHI_DATA_DIR = "opt/notebooks/data"
-    DELPHI_CKPT_DIR = "opt/notebooks/ckpt"
+    DELPHI_DATA_DIR = "/opt/data"
+    DELPHI_CKPT_DIR = "/opt/ckpt"
 else:
     try:
         DELPHI_DATA_DIR = os.environ["DELPHI_DATA_DIR"]
