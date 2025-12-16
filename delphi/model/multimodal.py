@@ -16,7 +16,6 @@ from delphi.model.transformer import (
     AgeEncoding,
     Block,
     LayerNorm,
-    causal_attention_mask,
 )
 from delphi.multimodal import Modality, module_name
 
@@ -364,6 +363,32 @@ def fuse_age(age: torch.Tensor, mod_age: torch.Tensor, fused_mod_idx: torch.Tens
     return fused_age
 
 
+def causal_attention_mask(
+    pad: torch.Tensor, timestep: None | torch.Tensor = None
+) -> torch.Tensor:
+
+    b, l = pad.shape
+    device = pad.device
+
+    if timestep is not None:
+        assert timestep.shape == (b, l)
+        q_time = timestep.view(b, l, 1)
+        k_time = timestep.view(b, 1, l)
+        attn_mask = (k_time <= q_time).int()
+    else:
+        attn_mask = torch.tril(torch.ones((l, l), device=device))
+        attn_mask = attn_mask.view(1, l, l)
+    pad_mask = pad.int().view(b, 1, l).to(torch.int)
+    attn_mask = attn_mask * pad_mask
+    diag_indices = torch.arange(attn_mask.shape[-1])
+    attn_mask[..., diag_indices, diag_indices] = 1
+    # attn_mask += (attn_mask.sum(-1, keepdim=True) == 0) * torch.diag(
+    #     torch.ones(l, device=device)
+    # ) > 0
+
+    return attn_mask.unsqueeze(1)
+
+
 @dataclass
 class DelphiM4Config:
     block_size: None | int = 256
@@ -376,13 +401,14 @@ class DelphiM4Config:
     t_min: float = 0.1
     bias: bool = True
     mask_ties: bool = True
+    attn_mask: str = "triangular"
     weight_tying: bool = True
     ignore_tokens: list = field(
         default_factory=lambda: [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     )
     biomarkers: dict[str, BiomarkerEmbedConfig] = field(default_factory=dict)
     modality_emb: bool = True
-    biomarker_only: bool = False
+    ablate_biomarker: None | str = None  # biomarker, token, both
     ce_beta: float = 1.0
     dt_beta: float = 1.0
     fuse: str = "early"  # early, cross, concat, concat-raw
@@ -440,6 +466,18 @@ class DelphiM4(torch.nn.Module):
         age: torch.Tensor,
         targets_age: torch.Tensor,
     ):
+        if self.config.mask_ties:
+            dt = targets_age - age
+            is_tie = dt == 0
+            is_tie[age == -1e4] = False
+            corr_idx = torch.where(
+                is_tie, 0, torch.arange(age.shape[1], device=age.device)
+            )
+            corr_idx = torch.cummax(corr_idx, dim=1)[0]
+            age = torch.take_along_dim(input=age, indices=corr_idx, dim=1)
+            logits = torch.take_along_dim(
+                input=logits, indices=corr_idx.unsqueeze(-1), dim=1
+            )
 
         loss_ce = F.cross_entropy(
             # (b, l, n_vocab) -> (b, n_vocab, l)
@@ -449,12 +487,7 @@ class DelphiM4(torch.nn.Module):
         )
 
         dt = targets_age - age
-        is_tie = dt == 0
         dt = torch.clamp(dt, min=self.config.t_min)
-        is_tie[age == -1e4] = False
-        if self.config.mask_ties:
-            dt = forward_fill(dt, is_tie, dim=1)
-
         loss_dt = exponential_nll(
             delta_t=dt,
             log_lambda=torch.logsumexp(logits, -1),
@@ -474,33 +507,39 @@ class DelphiM4(torch.nn.Module):
         targets_age: None | torch.Tensor = None,
     ) -> tuple[tensor_dict, None | tensor_dict, torch.Tensor]:
 
+        if self.config.ablate_biomarker is not None:
+            _mod_age = mod_age.clone()
+            _mod_age[_mod_age == -1e4] = torch.inf
+            _mod_age = _mod_age.min(dim=1, keepdim=True)[0]
+            if self.config.ablate_biomarker == "biomarker":
+                idx *= 0
+            elif self.config.ablate_biomarker == "token":
+                idx[age >= _mod_age] = 0
+            elif self.config.ablate_biomarker == "both":
+                idx[age > _mod_age] = 0
+            else:
+                raise NotImplementedError
+
         x, mod_emb, raw = self.transformer.embed(
             idx=idx, age=age, mod_idx=mod_idx, mod_age=mod_age, biomarker_x=biomarker
         )
-
-        if self.config.biomarker_only:
-            x = raw["age"]
-
         x, fused_mod_idx = fuse_embed(
             emb=x, age=age, mod_idx=mod_idx, mod_age=mod_age, mod_emb=mod_emb
         )
         t0 = fuse_age(age, mod_age, fused_mod_idx)
-        t1 = (
-            fuse_age(targets_age, mod_age, fused_mod_idx)
-            if targets_age is not None
-            else None
-        )
-        attn_mask = causal_attention_mask(
-            pad=t0 != -1e4, t0=t0, t1=t1, mask_ties=self.config.mask_ties
-        )
-        if self.config.biomarker_only:
-            attn_idx = torch.arange(attn_mask.shape[-1], device=attn_mask.device)
-            attn_idx = attn_idx.view(1, 1, 1, -1) * attn_mask
-            last_idx = attn_idx.max(dim=-1, keepdim=True)[0]
-            attn_mask *= (fused_mod_idx != 1).view(
-                fused_mod_idx.shape[0], 1, 1, fused_mod_idx.shape[-1]
-            )
-            attn_mask.scatter_(dim=-1, index=last_idx.long(), value=1)
+        pad = t0 != -1e4
+        if self.config.ablate_biomarker is not None:
+            if self.config.ablate_biomarker == "biomarker":
+                pad *= fused_mod_idx != 1
+            elif self.config.ablate_biomarker == "token":
+                pad *= t0 < _mod_age  # type: ignore
+            elif self.config.ablate_biomarker == "both":
+                pad *= t0 <= _mod_age  # type: ignore
+
+        if self.config.attn_mask == "triangular":
+            attn_mask = causal_attention_mask(pad=pad)
+        else:
+            attn_mask = causal_attention_mask(pad=pad, timestep=t0)
 
         x = self.transformer.drop(x)
         att = []
@@ -517,9 +556,8 @@ class DelphiM4(torch.nn.Module):
             is_valid_target = targets != 0
             for k in self.config.ignore_tokens:
                 is_valid_target *= targets != k
-            if self.config.biomarker_only:
-                min_mod_age = mod_age.min(dim=1, keepdim=True)[0]
-                is_valid_target *= age >= min_mod_age
+            if self.config.ablate_biomarker is not None:
+                is_valid_target *= age >= _mod_age  # type: ignore
             loss_ce, loss_dt = self.loss(
                 logits=logits,
                 targets=targets,
