@@ -19,23 +19,34 @@ class TrainConfig(TrainBaseConfig):
         default_factory=lambda: DelphiM4Config(block_size=256)
     )
     biomarkers: None | dict[str, int] = None
+    z_score_biomarkers: bool = False
+    first_time_only: bool = False
+    must_have: bool = False
     expansion_packs: None | list[str] = None
-    log: TrainLogConfig = field(
-        default_factory=lambda: TrainLogConfig(wandb_project="delphi-m4")
-    )
+    log: TrainLogConfig = field(default_factory=lambda: TrainLogConfig())
 
 
 def train(cfg: TrainConfig):
 
     biomarkers = list(cfg.biomarkers.keys()) if cfg.biomarkers is not None else None
     data_args = {
-        "biomarkers": biomarkers,
         "expansion_packs": cfg.expansion_packs,
         "block_size": cfg.model.block_size,
+        "first_time_only": cfg.first_time_only,
     }
-    train_ds = MultimodalUKBDataset(subject_list=cfg.train_subject_list, **data_args)
+    if cfg.must_have:
+        data_args["must_have_biomarkers"] = biomarkers
+    train_ds = MultimodalUKBDataset(
+        subject_list=cfg.train_subject_list,
+        biomarkers=biomarkers,
+        z_score_biomarkers=cfg.z_score_biomarkers,
+        **data_args,
+    )
     val_ds = MultimodalUKBDataset(
-        subject_list=cfg.val_subject_list, perturb=False, **data_args
+        subject_list=cfg.val_subject_list,
+        biomarker_datasets=train_ds.mod_ds,
+        perturb=False,
+        **data_args,
     )
 
     cfg.model.vocab_size = train_ds.vocab_size
@@ -51,6 +62,7 @@ def train(cfg: TrainConfig):
     model = DelphiM4(cfg.model)
 
     backend = distributed.make_backend_from_args(cfg)
+    cfg.log.wandb_project = cfg.ckpt_dir
     trainer = BaseTrainer(
         cfg=cfg,
         backend=backend,
