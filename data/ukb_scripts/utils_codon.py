@@ -15,6 +15,9 @@ for file in _tab_dir.rglob("*"):
         _pheno[key] = str(file)
 
 
+VISITS = ["birth", "init_assess", "1st_repeat_assess", "img", "1st_repeat_img"]
+
+
 def load_fid(fid: str | int) -> pd.DataFrame:
 
     return pd.read_csv(_pheno[str(fid)], delimiter="\t", index_col="f.eid")
@@ -50,24 +53,32 @@ def month_of_birth() -> pd.DataFrame:
     return mob
 
 
-def assessment_age(visits: list):
+_assess_age_cache = None
 
+
+def assessment_age():
+
+    global _assess_age_cache
     mob = month_of_birth()
 
-    assess_date = load_fid(fid="53")
-    assess_date = assess_date.rename(
-        columns={
-            "f.53.0.0": "init_assess",
-            "f.53.1.0": "1st_repeat_assess",
-            "f.53.2.0": "img",
-            "f.53.3.0": "1st_repeat_img",
-        }
-    )
+    if _assess_age_cache is None:
+        assess_date = load_fid(fid=53)
+        assess_date = assess_date.rename(
+            columns={
+                "f.53.0.0": "init_assess",
+                "f.53.1.0": "1st_repeat_assess",
+                "f.53.2.0": "img",
+                "f.53.3.0": "1st_repeat_img",
+            }
+        )
+        assess_date["birth"] = mob["year_month"]
 
-    assert set(visits).issubset(set(assess_date.columns))
-    assess_age = pd.DataFrame(columns=visits, index=assess_date.index)
-    for col in visits:
-        assess_date[col] = pd.to_datetime(assess_date[col], format="%Y-%m-%d")
-        assess_age[col] = (assess_date[col] - mob["year_month"]).dt.days.astype(float)
+        assess_age = pd.DataFrame(columns=np.array(VISITS), index=assess_date.index)
+        for col in VISITS:
+            assess_date[col] = pd.to_datetime(assess_date[col], format="%Y-%m-%d")
+            assess_age[col] = (assess_date[col] - mob["year_month"]).dt.days.astype(
+                float
+            )
+        _assess_age_cache = assess_age
 
-    return assess_age
+    return _assess_age_cache

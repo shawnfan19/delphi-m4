@@ -9,27 +9,33 @@ from delphi import DAYS_PER_YEAR
 from delphi.env import DELPHI_DATA_DIR, IN_RAP
 
 if IN_RAP:
-    from utils_rap import (
-        assessment_age,
-        load_fid,
-        month_of_birth
-    )
+    from utils_rap import VISITS, assessment_age, load_fid, month_of_birth
 else:
-    from utils_codon import (
-        assessment_age,
-        load_fid,
-        month_of_birth
-    )
+    from utils_codon import VISITS, assessment_age, load_fid, month_of_birth
 
-    
+
 def all_ukb_participants() -> np.ndarray:
 
     participant_dir = Path(DELPHI_DATA_DIR) / "ukb_real_data" / "participants"
     participants = np.fromfile(participant_dir / "all.bin", dtype=np.uint32)
 
     return participants
-    
-    
+
+
+_long_assess_age_cache = None
+
+
+def _long_assessment_age() -> pd.Series:
+
+    global _long_assess_age_cache
+    if _long_assess_age_cache is None:
+        assess_age = assessment_age()
+        long_assess_age = index_by_visit(assess_age, visits=VISITS)
+        _long_assess_age_cache = long_assess_age
+
+    return _long_assess_age_cache
+
+
 def index_by_visit(df: pd.DataFrame, visits: list[str]) -> pd.Series:
 
     n = df.shape[0]
@@ -50,6 +56,7 @@ def index_by_visit(df: pd.DataFrame, visits: list[str]) -> pd.Series:
 
 
 def load_biomarker_df(fids: list, visits: list[str]) -> pd.DataFrame:
+    "load fids and perform wide-to-long conversion"
 
     markers = []
     for fid in fids:
@@ -133,14 +140,11 @@ def build_expansion_pack(
 
 def build_biomarker(
     biomarker_df: pd.DataFrame,
-    time_series: pd.Series,
-    odir: str,
-    biomarker: str,
+    odir: str | Path,
     data_dtype=np.float32,
 ):
 
-    print(biomarker)
-    odir = Path(odir) / biomarker
+    odir = Path(odir)
     os.makedirs(odir, exist_ok=True)
 
     features = biomarker_df.columns.tolist()
@@ -161,13 +165,14 @@ def build_biomarker(
     print(f"\t - not found in Delphi cohort: {not_in_ukb_subjects.sum()}")
     is_valid = ~not_in_ukb_subjects
 
+    time_series = _long_assessment_age()
     time_np = time_series[biomarker_df.index].to_numpy().astype(np.float32)
     has_nan_time = np.isnan(time_np)
     print(f"\t - has NaN in time: {has_nan_time.sum()}")
     is_valid *= ~has_nan_time
 
     data_np = biomarker_df.to_numpy().astype(data_dtype)
-    has_nan_data = biomarker_df.isna().any(axis=1)
+    has_nan_data = np.isnan(biomarker_df.values).any(axis=1)
     print(f"\t - has NaN in data: {has_nan_data.sum()}")
     is_valid *= ~has_nan_data
 
@@ -212,5 +217,5 @@ def build_biomarker(
 
     p2i = pd.concat([p2i, miss_p2i], axis=0)
 
-    data_np.ravel().astype(np.float32).tofile(odir / "data.bin")
-    p2i.to_csv(odir / "p2i.csv", index=False)
+    # data_np.ravel().astype(np.float32).tofile(odir / "data.bin")
+    # p2i.to_csv(odir / "p2i.csv", index=False)

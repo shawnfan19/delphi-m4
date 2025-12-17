@@ -1,11 +1,11 @@
 import os
-from datetime import datetime
 
-import dxdata
+import dxdata  # type: ignore
 import numpy as np
 import pandas as pd
 
 project = os.getenv("DX_PROJECT_CONTEXT_ID")
+assert project is not None
 record = (
     os.popen("dx find data --type Dataset --delimiter ',' | awk -F ',' '{print $5}'")
     .read()
@@ -19,11 +19,13 @@ dataset = dxdata.load_dataset(id=DATASET_ID)
 
 pheno = dataset["participant"]
 
+VISITS = ["birth", "init_assess", "1st_repeat_assess", "img", "1st_repeat_img"]
 
 _mob_cache = None
 
+
 def month_of_birth() -> pd.DataFrame:
-    
+
     global _mob_cache
     if _mob_cache is None:
         field_birth_year = pheno.find_field(title="Year of birth")  # 34
@@ -39,7 +41,7 @@ def month_of_birth() -> pd.DataFrame:
         _mob_cache["day"] = 1
         _mob_cache["month"] = pd.to_datetime(_mob_cache["month"], format="%B").dt.month
         _mob_cache["year_month"] = pd.to_datetime(_mob_cache)
-    
+
     return _mob_cache
 
 
@@ -51,14 +53,15 @@ def load_fid(fid: str | int) -> pd.DataFrame:
     return fid_df
 
 
-_assess_date_cache = None
+_assess_age_cache = None
 
-def assessment_age(visits: list[str]):
 
-    global _assess_date_cache
+def assessment_age():
+
+    global _assess_age_cache
     mob = month_of_birth()
-    
-    if _assess_date_cache is None:
+
+    if _assess_age_cache is None:
         assess_date = load_fid(fid=53)
         assess_date = assess_date.rename(
             columns={
@@ -68,16 +71,14 @@ def assessment_age(visits: list[str]):
                 "p53_i3": "1st_repeat_img",
             }
         )
-        _assess_date_cache = assess_date
-    else:
-        assess_date = _assess_date_cache
-    
-    assert set(visits).issubset(set(assess_date.columns))
-    age_at_visits = pd.DataFrame(columns=visits, index=assess_date.index)
-    for col in visits:
-        assess_date[col] = pd.to_datetime(assess_date[col], format="%Y-%m-%d")
-        age_at_visits[col] = (assess_date[col] - mob["year_month"]).dt.days.astype(
-            float
-        )
+        assess_date["birth"] = mob["year_month"]
 
-    return age_at_visits
+        assess_age = pd.DataFrame(columns=np.array(VISITS), index=assess_date.index)
+        for col in VISITS:
+            assess_date[col] = pd.to_datetime(assess_date[col], format="%Y-%m-%d")
+            assess_age[col] = (assess_date[col] - mob["year_month"]).dt.days.astype(
+                float
+            )
+        _assess_age_cache = assess_age
+
+    return _assess_age_cache
