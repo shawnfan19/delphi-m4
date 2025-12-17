@@ -18,6 +18,7 @@ engine = dxdata.connect(dialect="hive+pyspark")
 dataset = dxdata.load_dataset(id=DATASET_ID)
 
 pheno = dataset["participant"]
+field_eid = pheno.find_field(name="eid")
 
 VISITS = ["birth", "init_assess", "1st_repeat_assess", "img", "1st_repeat_img"]
 
@@ -29,15 +30,14 @@ def month_of_birth() -> pd.DataFrame:
     global _mob_cache
     if _mob_cache is None:
         field_birth_year = pheno.find_field(title="Year of birth")  # 34
-        birth_year = pheno.retrieve_fields(
-            engine=engine, fields=[field_birth_year], coding_values="replace"
-        ).toPandas()
         field_birth_month = pheno.find_field(title="Month of birth")  # 52
-        birth_month = pheno.retrieve_fields(
-            engine=engine, fields=[field_birth_month], coding_values="replace"
+        mob = pheno.retrieve_fields(
+            engine=engine, fields=[field_eid, field_birth_year, field_birth_month],
+            coding_values="replace"
         ).toPandas()
-        mob = pd.concat((birth_year, birth_month), axis=1)
-        _mob_cache = mob.rename(columns={"p34": "year", "p52": "month"})
+        mob = mob.rename(columns={"p34": "year", "p52": "month"})
+        mob = mob.set_index("eid")
+        _mob_cache = mob
         _mob_cache["day"] = 1
         _mob_cache["month"] = pd.to_datetime(_mob_cache["month"], format="%B").dt.month
         _mob_cache["year_month"] = pd.to_datetime(_mob_cache)
@@ -45,12 +45,41 @@ def month_of_birth() -> pd.DataFrame:
     return _mob_cache
 
 
-def load_fid(fid: str | int) -> pd.DataFrame:
+def regex_search(fid):
+
     fields = list(pheno.find_fields(name_regex=f".*p{fid}_.*"))
-    fid_df = pheno.retrieve_fields(
-        engine=engine, fields=fields, coding_values="replace"
-    ).toPandas()
+    if len(fields) == 0:
+        fields = list(pheno.find_fields(name_regex=f".*p{fid}.*"))
+        
+    return fields
+
+
+def load_fid(fid: str | int, preload: None | pd.DataFrame = None) -> pd.DataFrame:
+    fields = regex_search(fid)
+    if preload is None:
+        fields.append(field_eid)
+        fid_df = pheno.retrieve_fields(
+            engine=engine, fields=fields,
+            # coding_values="replace"
+        ).toPandas()
+        fid_df = fid_df.set_index("eid")
+    else:
+        fields = [field.name for field in fields]
+        fid_df = preload[fields]
     return fid_df
+
+
+def load_fids(fids: list[str | int]) -> pd.DataFrame:
+    fields = list()
+    for fid in fids:
+        fields.extend(regex_search(fid))
+    fields.append(field_eid)
+    df = pheno.retrieve_fields(
+        engine=engine, fields=fields,
+        # coding_values="replace"
+    ).toPandas()
+    df = df.set_index("eid")
+    return df
 
 
 _assess_age_cache = None

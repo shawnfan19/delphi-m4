@@ -9,9 +9,9 @@ from delphi import DAYS_PER_YEAR
 from delphi.env import DELPHI_DATA_DIR, IN_RAP
 
 if IN_RAP:
-    from utils_rap import VISITS, assessment_age, load_fid, month_of_birth
+    from utils_rap import VISITS, assessment_age, load_fid, load_fids, month_of_birth
 else:
-    from utils_codon import VISITS, assessment_age, load_fid, month_of_birth
+    from utils_codon import VISITS, assessment_age, load_fid, load_fids, month_of_birth
 
 
 def all_ukb_participants() -> np.ndarray:
@@ -55,12 +55,12 @@ def index_by_visit(df: pd.DataFrame, visits: list[str]) -> pd.Series:
     )
 
 
-def load_biomarker_df(fids: list, visits: list[str]) -> pd.DataFrame:
+def load_biomarker_df(fids: list, visits: list[str], preload: None | pd.DataFrame) -> pd.DataFrame:
     "load fids and perform wide-to-long conversion"
 
     markers = []
     for fid in fids:
-        marker = load_fid(str(fid))
+        marker = load_fid(str(fid), preload=preload)
         marker = index_by_visit(df=marker, visits=visits)
         marker.name = str(fid)
         markers.append(marker)
@@ -146,9 +146,10 @@ def build_biomarker(
 
     odir = Path(odir)
     os.makedirs(odir, exist_ok=True)
+    print(f"{odir}")
 
     features = biomarker_df.columns.tolist()
-    print(features)
+    print(f"\t - features: {features}")
     with open(odir / "features.yaml", "w") as f:
         yaml.dump(
             features,
@@ -217,5 +218,5 @@ def build_biomarker(
 
     p2i = pd.concat([p2i, miss_p2i], axis=0)
 
-    # data_np.ravel().astype(np.float32).tofile(odir / "data.bin")
-    # p2i.to_csv(odir / "p2i.csv", index=False)
+    data_np.ravel().astype(np.float32).tofile(odir / "data.bin")
+    p2i.to_csv(odir / "p2i.csv", index=False)

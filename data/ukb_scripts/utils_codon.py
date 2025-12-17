@@ -23,6 +23,13 @@ def load_fid(fid: str | int) -> pd.DataFrame:
     return pd.read_csv(_pheno[str(fid)], delimiter="\t", index_col="f.eid")
 
 
+def load_fids(fids: list[str | int]) -> pd.DataFrame:
+    
+    dfs = [load_fid(fid) for fid in fids]
+    
+    return pd.concat(dfs, axis=1)
+
+
 def load_coding(scheme: int) -> pd.DataFrame:
 
     coding_path = _raw_dir / "coding" / f"{str(scheme)}.txt"
