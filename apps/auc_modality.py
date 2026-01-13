@@ -2,20 +2,15 @@
 import argparse
 import json
 import math
-import os
 import pprint
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Optional
 
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import yaml
 from tqdm import tqdm
 
-from delphi import DAYS_PER_YEAR
 from delphi.data.ukb import MultimodalUKBDataset
 from delphi.env import DELPHI_CKPT_DIR
 from delphi.eval import AgeStratRatesCollator as ControlRatesCollator
@@ -24,7 +19,6 @@ from delphi.eval import (
     ModalityCollator,
     SexCollator,
     correct_time_offset,
-    corrective_indices,
     mann_whitney_auc,
 )
 from delphi.experiment import eval_iter, move_batch_to_device
@@ -60,7 +54,7 @@ parser.add_argument("--fname", type=str)
 if "ipykernel" in sys.modules:
     print(f"running in jupyter notebook")
     args = parser.parse_args([])
-    args.ckpt = "fusion/blood-early/ckpt.pt"
+    args.ckpt = "fusion/baseline/ckpt.pt"
     args.modality = "wbc"
 else:
     args = parser.parse_args()
@@ -82,19 +76,11 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 model.to(device)
 model.eval()
 print(f"model: {ckpt} [iter: {ckpt_dict['iter_num']}]")
-# +
-# biomarkers = ckpt_dict["config"]["biomarkers"]
-# if biomarkers is not None:
-#     biomarkers = list(biomarkers.keys())
-# print(f"biomarkers: {biomarkers}")
-# expansion_packs = ckpt_dict["config"]["expansion_packs"]
-# print(f"expansion packs: {expansion_packs}")
-
+# -
 data_args = ckpt_dict["data_args"].copy()
 data_args["subject_list"] = "participants/val_fold.bin"
 data_args["stats_subject_list"] = ckpt_dict["data_args"]["subject_list"]
 pprint.pp(data_args)
-# -
 
 biomarkers = data_args["biomarkers"]
 if biomarkers is not None:
@@ -107,7 +93,6 @@ else:
     biomarkers = [args.modality]
     data_args["biomarkers"] = biomarkers
     to_remove = True
-data_args["biomarkers"], to_remove
 
 ds = MultimodalUKBDataset(**data_args)
 
@@ -122,10 +107,13 @@ age_groups = [
 ]
 
 # +
+model_targets = model.targets.to(device)
+model_targets = model_targets[model_targets > 1]
+
 ctl_collator = ControlRatesCollator(
     age_groups=torch.from_numpy(age_group_edges).to(device)
 )
-dis_collator = DiseaseRatesCollator(vocab_size=ds.vocab_size)
+dis_collator = DiseaseRatesCollator(targets=model_targets)
 sex_collator = SexCollator()
 mod_collator = ModalityCollator(modalities=biomarkers)
 moi = Modality[args.modality.upper()]
@@ -139,7 +127,8 @@ with torch.no_grad():
     for batch_idx in it:
         batch_input = ds.get_batch(batch_idx)
         batch_input = move_batch_to_device(batch_input, device=device)
-        x0, t0, mod_idx, biomarker, mod_age, x1, t1 = batch_input
+        x0, t0, biomarker, mod_age, mod_idx, x1, t1 = batch_input
+        raw_x0 = x0.clone()
 
         mod_timesteps = mod_collator.step(mod_tokens=mod_idx, timesteps=mod_age)
         mod_timesteps = mod_timesteps[:, [moi.value]]
@@ -149,7 +138,7 @@ with torch.no_grad():
                 mod_idx, biomarker, mod_age, remove=moi
             )
 
-        out_dict, _, _ = model(x0, t0, mod_idx, biomarker, mod_age, x1, t1)
+        out_dict, _, _ = model(x0, t0, biomarker, mod_age, mod_idx, x1, t1)
         logits = out_dict["logits"].half()
 
         t0, logits = correct_time_offset(
@@ -161,7 +150,7 @@ with torch.no_grad():
         timesteps[timesteps < mod_timesteps] = -1e4
         ctl_collator.step(timesteps=timesteps, logits=logits)
         dis_collator.step(tokens=x1, timesteps=timesteps, logits=logits)
-        sex_collator.step(tokens=x0)
+        sex_collator.step(tokens=raw_x0)
 
 ctl_rates, ctl_times = ctl_collator.finalize()
 dis_rates, dis_times = dis_collator.finalize()
@@ -189,14 +178,15 @@ ctl_times[ctl_times < mod_time[:, None]] = np.nan
 dis_time_bin = np.searchsorted(age_group_edges, dis_times, side="right") - 1
 mod_time = np.searchsorted(age_group_edges, mod_time, side="right") - 1
 
-auc_grids = list()
+auc_grids, ctl_grids, dis_grids = list(), list(), list()
 for is_gender in [is_female, is_male]:
-    auc_grid = np.zeros((n_age_groups, n_age_groups))
+    auc_grid = np.zeros((n_age_groups, n_age_groups, model.config.vocab_size))
+    ctl_grid, dis_grid = auc_grid.copy(), auc_grid.copy()
     for j in tqdm(range(n_age_groups), leave=False):
         mod_mask = mod_time == j
         for i in range(n_age_groups):
             dis_in_range = dis_time_bin == i
-            aucs = list()
+            aucs, ctl_cts, dis_cts = list(), list(), list()
             for dis_token in range(0, 1270):
                 ctl = ctl_rates[:, i, dis_token].copy()
                 dis = dis_rates[:, dis_token].copy()
@@ -204,34 +194,72 @@ for is_gender in [is_female, is_male]:
                 dis[~dis_in_range[:, dis_token]] = np.nan
                 ctl[~is_gender] = np.nan
                 dis[~is_gender] = np.nan
-                auc = mann_whitney_auc(ctl[mod_mask], dis[mod_mask])
-                aucs.append(auc)
-            auc_grid[j, i] = np.nanmean(np.array(aucs))
+
+                ctl[~mod_mask] = np.nan
+                dis[~mod_mask] = np.nan
+                aucs.append(mann_whitney_auc(ctl, dis))
+
+                ctl_cts.append((~np.isnan(ctl)).sum())
+                dis_cts.append((~np.isnan(dis)).sum())
+
+            auc_grid[j, i] = np.array(aucs)
+            ctl_grid[j, i] = np.array(ctl_cts)
+            dis_grid[j, i] = np.array(dis_cts)
+
     auc_grids.append(auc_grid)
+    ctl_grids.append(ctl_grid)
+    dis_grids.append(dis_grid)
+
 f_auc_grid, m_auc_grid = auc_grids
-
-
+f_ctl_grid, m_ctl_grid = ctl_grids
+f_dis_grid, m_dis_grid = dis_grids
 # -
-def grid_to_json_dict(grid: np.ndarray, keys1: list, keys2: list):
-    assert len(grid.shape) == 2
-    assert grid.shape[0] == len(keys1)
-    assert grid.shape[1] == len(keys2)
+
+
+def grid_to_json_dict(
+    auc_grid: np.ndarray,
+    ctl_grid: np.ndarray,
+    dis_grid: np.ndarray,
+    keys1: list,
+    keys2: list,
+    detokenizer: dict,
+):
+    assert len(auc_grid.shape) == 3
+    assert auc_grid.shape == ctl_grid.shape == dis_grid.shape
+    assert auc_grid.shape[0] == len(keys1)
+    assert auc_grid.shape[1] == len(keys2)
     grid_dict = dict()
     for j, k1 in enumerate(keys1):
-        grid_dict[k1] = dict()
+        grid_dict[k1] = defaultdict(dict)
         for i, k2 in enumerate(keys2):
-            val = grid[j, i]
-            if np.isnan(val):
-                val = None
-            else:
-                val = float(val)
-            grid_dict[k1][k2] = val
+            aucs, ctl_cts, dis_cts = auc_grid[j, i], ctl_grid[j, i], dis_grid[j, i]
+            for i, (auc, ctl_ct, dis_ct) in enumerate(zip(aucs, ctl_cts, dis_cts)):
+                if not np.isnan(auc):
+                    grid_dict[k1][k2][detokenizer[i]] = {
+                        "auc": float(auc),
+                        "ctl_count": int(ctl_ct),
+                        "dis_count": int(dis_ct),
+                    }
     return grid_dict
 
 
 # +
-f_auc_dict = grid_to_json_dict(f_auc_grid, age_groups, age_groups)
-m_auc_dict = grid_to_json_dict(m_auc_grid, age_groups, age_groups)
+f_auc_dict = grid_to_json_dict(
+    f_auc_grid,
+    f_ctl_grid,
+    f_dis_grid,
+    age_groups,
+    age_groups,
+    detokenizer=ds.detokenizer,
+)
+m_auc_dict = grid_to_json_dict(
+    m_auc_grid,
+    m_ctl_grid,
+    m_dis_grid,
+    age_groups,
+    age_groups,
+    detokenizer=ds.detokenizer,
+)
 
 f_mod_time_cnt = {
     age_groups[i]: int(np.logical_and(is_female, mod_time == i).sum())
@@ -251,41 +279,3 @@ logbook = {
 }
 with open(ckpt.parent / f"{args.modality.lower()}_auc.json", "w") as f:
     json.dump(logbook, f)
-
-# +
-# np.save(ckpt.parent / f"m_{args.modality}_time_cnt.npy", m_mod_time_cnt)
-# np.save(ckpt.parent / "f_auc_grid.npy", f_auc_grid)
-# np.save(ckpt.parent / "m_auc_grid.npy", m_auc_grid)
-
-# +
-auc_grid = m_auc_grid
-mod_time_cnt = m_mod_time_cnt
-fig, axs = plt.subplots(1, 2, figsize=(16, 8))
-axs = axs.ravel()
-im = axs[0].imshow(auc_grid, cmap="viridis")
-im.set_clim(vmin=0.5, vmax=1)
-cbar = plt.colorbar(im, ax=axs[0])
-for i in range(auc_grid.shape[0]):
-    for j in range(auc_grid.shape[1]):
-        auc_val = auc_grid[i, j]
-        if not np.isnan(auc_val):
-            axs[0].text(
-                j,
-                i,
-                f"{auc_val:.2f}",
-                ha="center",
-                va="center",
-                color="white" if auc_val < 0.5 else "black",
-            )
-axs[0].set_xticks(np.arange(auc_grid.shape[1]), age_group_edges[:-1] / 365.25)
-axs[0].set_yticks(np.arange(auc_grid.shape[1]), age_group_edges[:-1] / 365.25)
-axs[0].set_xlabel("disease age bin")
-axs[0].set_ylabel("modality age bin")
-
-axs[1].bar(np.arange(len(mod_time_cnt)), mod_time_cnt)
-axs[1].set_yscale("log")
-axs[1].set_xticks(np.arange(auc_grid.shape[1]), age_group_edges[:-1] / 365.25)
-# -
-
-
-age_groups
