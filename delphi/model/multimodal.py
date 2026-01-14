@@ -19,6 +19,15 @@ tensor_dict = dict[str, torch.Tensor]
 
 
 class BiomarkerEmbedConfig(TypedDict, total=False):
+    """
+    attributes:
+        input_size [required]: dimensionality of the raw biomarker input features.
+        projector [required]: type of projection network to use (e.g., "mlp", "linear").
+        n_layers: number of layers in the projector network.
+        n_hidden: hidden layer dimensionality for multi-layer projectors.
+        bias: whether to include bias terms in projector layers.
+    """
+
     input_size: Required[int]
     projector: Required[str]
     n_layers: None | int
@@ -387,6 +396,38 @@ def causal_attention_mask(
 
 @dataclass
 class DelphiM4Config:
+    """
+    attributes:
+        block_size: maximum sequence length for the model, None for unlimited.
+        vocab_size: size of the vocabulary.
+        n_layer: # transformer layers.
+        n_head: # attention heads.
+        n_embd: dimensionality of the embeddings and hidden states.
+        dropout: dropout probability for regularization.
+        token_dropout: dropout probability specifically for token embeddings.
+        t_min: epsilon for time to next event.
+        bias: whether to include bias terms in linear layers.
+        mask_ties: how to handle targets occurring at the same timestep.
+            False: allow next-token predictions with 0 time-to-next-event values.
+            True: compute loss separately for each target where multiple targets occur together at the next timestep.
+        attn_mask: type of attention masking.
+            "time" [default]: causal masking based on timestep.
+            "triangular": classic lower triangular, causal masking.
+        weight_tying: whether to tie input and output embedding weights.
+        ignore_tokens: list of tokens to ignore as targets.
+            default [0, 2-12] includes zero padding tokens and gender and lifestyle tokens in the UKB.
+        biomarkers: mapping biomarker names to their embedding configs.
+        modality_emb: whether to introduce modality-specific embeddings.
+        ablate_biomarker: settings for biomarker ablation experiments
+            None [default]: no ablation setting applied.
+            "biomarker": only attend to biomarker(s).
+            "token": only attend to tokens before the first biomarker.
+            "both": attend both biomarker(s) and the tokens before the first biomarker.
+        ce_beta: weight coefficient for cross-entropy loss.
+        dt_beta: weight coefficient for delta-time loss.
+        fuse: strategy for fusing multimodal information (only "early" is currently supported).
+    """
+
     block_size: None | int = 256
     vocab_size: int = 1270
     n_layer: int = 12

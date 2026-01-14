@@ -370,8 +370,31 @@ class MultimodalUKBDataset:
     ):
         """
         args:
-        - biomarker_datasets(optional): a list of pre-initialized Biomarkers
-        - stats_subject_list(optional): path to an array of subjects for compputing Biomarker stats
+            data_dir: directory name of UKB dataset
+            expansion_pack_dir: sub-directory within data_dir containing data for expansion packs
+            expansion_packs: a list of expansion packs to include
+            biomarker_datasets: a list of pre-initialized Biomarkers
+            biomarker_dir: sub-directory within data_dir containing biomarker data
+            biomarkers: a list of biomarkers to load
+            z_score_biomarkers: whether to z-score biomarker values
+            first_time_only: if True only use the first occurrence of each biomarker; NOT CURRENTLY SUPPORTED.
+            must_have_biomarkers: a list of biomarkers
+            stats_subject_list: sub-path within data_dir to an array of subjects for computing Biomarker stats
+            subject_list: sub-path within data_dir to an array of subjects for loading
+            no_event_interval: average time intervals for introducing no-event tokens
+            no_event_mode: mode for introducing no-event tokens
+                refer to append_no_event for more details
+            perturb: whether to perturb timestamps of tokens in perturb_list
+            perturb_list: a list of tokens whose timestamps are perturbed for data augmentation
+                default is the lifestyle tokens in the UKB
+            block_size: maximum sequence length
+            crop_mode: where to start cropping a sequence that exceeds block_size
+                "left": start from the beginning
+                "right": start from the end
+                "random": start from a random position in the middle
+            seed: random seed for reproducibility
+            deterministic: if True, the same participant will always receive the same augmentations.
+            memmap: whether to load data files in memmap mode
         note: the following defaults differ from UKBDataset
             - crop_mode
             - perturb

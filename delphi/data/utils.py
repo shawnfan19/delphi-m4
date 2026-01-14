@@ -2,9 +2,6 @@ import itertools
 from typing import Literal
 
 import numpy as np
-import torch
-
-from delphi.multimodal import Modality
 
 
 def collate_batch(
