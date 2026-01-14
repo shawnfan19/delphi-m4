@@ -230,33 +230,3 @@ def update_tokenizer(base_tokenizer: dict, add_tokenizer: dict) -> tuple[dict, i
         else:
             raise ValueError(f"{key} already exists in base tokenizer")
     return base_tokenizer, offset
-
-
-def pad_trailing_biomarkers(
-    X: torch.Tensor,
-    T: torch.Tensor,
-    M: torch.Tensor,
-):
-
-    trailing_M = M[:, -1:]
-    if trailing_M.max() > 1:
-        M = torch.cat([M, trailing_M * 0], dim=1)
-        X = torch.cat([X, torch.zeros_like(trailing_M, dtype=X.dtype)], dim=1)
-        T = torch.cat([T, T[:, -1:]], dim=1)
-
-    return X, T, M
-
-
-def remove_biomarkers_after_time(biomarker, biomarker_t, m, final_time):
-    drop_mask = biomarker_t >= final_time
-    m_to_drop = m[drop_mask]
-    if m_to_drop.size == 0:
-        return biomarker, biomarker_t, m
-    else:
-        uniq_val, uniq_ct = np.unique(m_to_drop, return_counts=True)
-        for m_val, m_ct in zip(uniq_val, uniq_ct):
-            modality = Modality(m_val)
-            del biomarker[modality][-m_ct:]
-        biomarker_t = biomarker_t[~drop_mask]
-        m = m[~drop_mask]
-        return biomarker, biomarker_t, m

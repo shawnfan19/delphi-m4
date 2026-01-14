@@ -16,7 +16,6 @@ from delphi.data.utils import (
     exclude_tokens,
     identity_transform,
     perturb_time,
-    remove_biomarkers_after_time,
     sort_by_time,
     update_tokenizer,
 )
@@ -551,9 +550,6 @@ class MultimodalUKBDataset:
             bio_m = np.concatenate(bio_m_lst)
 
             bio_t, bio_m = sort_by_time(bio_t, bio_m)
-            bio_x_dict, bio_t, bio_m = remove_biomarkers_after_time(
-                bio_x_dict, bio_t, bio_m, t.max()
-            )
 
         x0, x1 = x[:-1].copy(), x[1:].copy()
         t0, t1 = t[:-1].copy(), t[1:].copy()
