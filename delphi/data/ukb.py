@@ -256,29 +256,32 @@ class Biomarker:
     def __repr__(self):
         return f"Biomarker(path={self.path}, n_features={self.n_features})"
 
+    def to_array(self, subjects):
+        data = list()
+        subs = list()
+        include = np.isin(self.pids, subjects)
+        start_pos = self.start_pos[include]
+        seq_len = self.seq_len[include]
+        pids = self.pids[include]
+        for pid, i, l in zip(pids, start_pos, seq_len):
+            pid_data = self.data[i : i + l]
+            if pid_data.size > 0:
+                data.append(pid_data)
+                subs.append(pid)
+        data = np.stack(data, axis=0)
+        subs = np.stack(subs, axis=0)
+        return data, subs
+
     @property
     def mask(self):
         if self.z_score:
-            if self.n_features > 1:
-                return np.zeros((self.n_features,))
-            else:
-                return 0
+            return np.zeros((self.n_features,))
         else:
             return self.mean
 
     def stats(self, subjects: np.ndarray):
-        data = list()
-        start_pos = self.start_pos[np.isin(self.pids, subjects)]
-        seq_len = self.seq_len[np.isin(self.pids, subjects)]
-        for i, l in zip(start_pos, seq_len):
-            pid_data = self.data[i : i + l]
-            if pid_data.size > 0:
-                data.append(pid_data)
-        data = np.stack(data, axis=0)
-        if data.shape[1] > 1:
-            return np.mean(data, axis=0), np.std(data, axis=0)
-        else:
-            return np.mean(data), np.std(data)
+        data, _ = self.to_array(subjects)
+        return np.mean(data, axis=0), np.std(data, axis=0)
 
     def transform(self, x):
         if self.z_score:
