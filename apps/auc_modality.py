@@ -54,7 +54,7 @@ parser.add_argument("--fname", type=str)
 if "ipykernel" in sys.modules:
     print(f"running in jupyter notebook")
     args = parser.parse_args([])
-    args.ckpt = "fusion/baseline/ckpt.pt"
+    args.ckpt = "ablate_blood_biomarker/token/ckpt.pt"
     args.modality = "wbc"
 else:
     args = parser.parse_args()
@@ -96,10 +96,9 @@ else:
 
 ds = MultimodalUKBDataset(**data_args)
 
-age_start = args.age_start
-age_end = args.age_end
-age_gap = args.age_gap
-age_group_edges = np.arange(age_start, age_end + age_gap, age_gap) * 365.25
+age_group_edges = (
+    np.arange(args.age_start, args.age_end + args.age_gap, args.age_gap) * 365.25
+)
 n_age_groups = len(age_group_edges) - 1
 age_groups = [
     f"{int(i/365.25)}–{int(j/365.25)}"
@@ -154,7 +153,7 @@ with torch.no_grad():
 
 ctl_rates, ctl_times = ctl_collator.finalize()
 dis_rates, dis_times = dis_collator.finalize()
-sex = sex_collator.finalize()
+is_female = sex_collator.finalize()
 mod_times = mod_collator.finalize()
 
 
@@ -163,9 +162,8 @@ ctl_rates, ctl_times = ctl_rates.numpy(), ctl_times.numpy()
 dis_rates, dis_times = dis_rates.numpy(), dis_times.numpy()
 mod_times = mod_times.numpy()
 
-sex = sex.numpy()
-is_female = sex
-is_male = ~sex
+is_female = is_female.numpy()
+is_male = ~is_female
 either = np.logical_or(is_female, is_male)
 # -
 
@@ -176,29 +174,33 @@ ctl_times[ctl_times < mod_time[:, None]] = np.nan
 
 # +
 dis_time_bin = np.searchsorted(age_group_edges, dis_times, side="right") - 1
-mod_time = np.searchsorted(age_group_edges, mod_time, side="right") - 1
+mod_time_bin = np.searchsorted(age_group_edges, mod_time, side="right") - 1
 
 auc_grids, ctl_grids, dis_grids = list(), list(), list()
 for is_gender in [is_female, is_male]:
     auc_grid = np.zeros((n_age_groups, n_age_groups, model.config.vocab_size))
     ctl_grid, dis_grid = auc_grid.copy(), auc_grid.copy()
     for j in tqdm(range(n_age_groups), leave=False):
-        mod_mask = mod_time == j
+        mod_mask = np.logical_and(mod_time_bin == j, ~np.isnan(mod_time))
         for i in range(n_age_groups):
-            dis_in_range = dis_time_bin == i
             aucs, ctl_cts, dis_cts = list(), list(), list()
             for dis_token in range(0, 1270):
                 ctl = ctl_rates[:, i, dis_token].copy()
                 dis = dis_rates[:, dis_token].copy()
+
                 ctl[~np.isnan(dis)] = np.nan
-                dis[~dis_in_range[:, dis_token]] = np.nan
+                dis_in_range = np.logical_and(
+                    dis_time_bin[:, dis_token] == i, ~np.isnan(dis_times[:, dis_token])
+                )
+                dis[~dis_in_range] = np.nan
+
                 ctl[~is_gender] = np.nan
                 dis[~is_gender] = np.nan
 
                 ctl[~mod_mask] = np.nan
                 dis[~mod_mask] = np.nan
-                aucs.append(mann_whitney_auc(ctl, dis))
 
+                aucs.append(mann_whitney_auc(ctl, dis))
                 ctl_cts.append((~np.isnan(ctl)).sum())
                 dis_cts.append((~np.isnan(dis)).sum())
 
@@ -213,6 +215,8 @@ for is_gender in [is_female, is_male]:
 f_auc_grid, m_auc_grid = auc_grids
 f_ctl_grid, m_ctl_grid = ctl_grids
 f_dis_grid, m_dis_grid = dis_grids
+
+
 # -
 
 

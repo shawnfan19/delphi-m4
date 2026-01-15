@@ -555,9 +555,7 @@ class DelphiM4(torch.nn.Module):
                 ).to(age.device)
             if self.config.ablate_biomarker == "biomarker":
                 idx *= 0
-            elif self.config.ablate_biomarker == "token":
-                idx[age >= min_mod_age] = 0
-            elif self.config.ablate_biomarker == "both":
+            elif self.config.ablate_biomarker in {"token", "both"}:
                 idx[age > min_mod_age] = 0
             else:
                 raise NotImplementedError
@@ -574,7 +572,7 @@ class DelphiM4(torch.nn.Module):
             if self.config.ablate_biomarker == "biomarker":
                 pad *= fused_mod_idx != 1
             elif self.config.ablate_biomarker == "token":
-                pad *= t0 < min_mod_age  # type: ignore
+                pad *= torch.logical_and(t0 <= min_mod_age, fused_mod_idx == 1)  # type: ignore
             elif self.config.ablate_biomarker == "both":
                 pad *= t0 <= min_mod_age  # type: ignore
 
@@ -599,7 +597,7 @@ class DelphiM4(torch.nn.Module):
             for k in self.config.ignore_tokens:
                 is_valid_target *= targets != k
             if self.config.ablate_biomarker is not None:
-                is_valid_target *= age >= min_mod_age  # type: ignore
+                is_valid_target *= age > min_mod_age  # type: ignore
             loss_ce, loss_dt = self.loss(
                 logits=logits,
                 targets=targets,
