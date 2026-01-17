@@ -18,15 +18,15 @@ for file in _tab_dir.rglob("*"):
 VISITS = ["birth", "init_assess", "1st_repeat_assess", "img", "1st_repeat_img"]
 
 
-def load_fid(fid: str | int) -> pd.DataFrame:
+def load_fid(fid: str | int, preload: None | pd.DataFrame = None) -> pd.DataFrame:
 
     return pd.read_csv(_pheno[str(fid)], delimiter="\t", index_col="f.eid")
 
 
 def load_fids(fids: list[str | int]) -> pd.DataFrame:
-    
+
     dfs = [load_fid(fid) for fid in fids]
-    
+
     return pd.concat(dfs, axis=1)
 
 

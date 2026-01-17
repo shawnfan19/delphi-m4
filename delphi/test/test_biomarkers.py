@@ -17,7 +17,7 @@ def has_required_columns(p2i: pd.DataFrame) -> bool:
 
 def has_all_participants(p2i: pd.DataFrame, pids: np.ndarray) -> bool:
 
-    return bool(np.isin(pids, p2i["pid"].astype(int).to_numpy()).all())
+    return bool(np.isin(p2i["pid"].astype(int).to_numpy(), pids).all())
 
 
 def data_is_1d(data: np.ndarray) -> bool:
@@ -26,6 +26,10 @@ def data_is_1d(data: np.ndarray) -> bool:
 
 def no_nan_data(data: np.ndarray) -> bool:
     return not np.isnan(data).any()
+
+
+def no_empty_data(p2i: pd.DataFrame) -> bool:
+    return bool((p2i["seq_len"] > 0).all())
 
 
 def total_dimensions_match(p2i: pd.DataFrame, data: np.ndarray) -> bool:
@@ -43,28 +47,6 @@ def no_duplicate_start_pos(p2i: pd.DataFrame) -> bool:
     return is_unique
 
 
-def placeholder_time_where_no_data(
-    p2i: pd.DataFrame,
-) -> bool:
-
-    no_data_where_time_is_placeholder = (
-        p2i.loc[p2i["time"] == -1e4, "seq_len"] == 0
-    ).all()
-
-    placeholder_time_where_no_data = (
-        p2i.loc[p2i["seq_len"] == 0, "time"] == -1e4
-    ).all()
-
-    return no_data_where_time_is_placeholder and placeholder_time_where_no_data
-
-
-def real_time_where_data_exists(
-    p2i: pd.DataFrame,
-) -> bool:
-
-    return (p2i.loc[p2i["seq_len"] > 0, "time"] >= 0).all()
-
-
 @pytest.mark.parametrize("biomarker", all_biomarkers)
 def test_biomarkers(dataset_dir, all_participants, biomarker):
     biomarker_path = os.path.join(dataset_dir, "biomarkers", biomarker)
@@ -76,7 +58,6 @@ def test_biomarkers(dataset_dir, all_participants, biomarker):
     assert has_all_participants(p2i=p2i, pids=all_participants)
     assert data_is_1d(data=data)
     assert no_nan_data(data=data)
+    assert no_empty_data(p2i=p2i)
     assert total_dimensions_match(p2i=p2i, data=data)
     assert no_duplicate_start_pos(p2i=p2i)
-    assert placeholder_time_where_no_data(p2i=p2i)
-    assert real_time_where_data_exists(p2i=p2i)

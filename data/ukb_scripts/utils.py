@@ -55,7 +55,9 @@ def index_by_visit(df: pd.DataFrame, visits: list[str]) -> pd.Series:
     )
 
 
-def load_biomarker_df(fids: list, visits: list[str], preload: None | pd.DataFrame) -> pd.DataFrame:
+def load_biomarker_df(
+    fids: list, visits: list[str], preload: None | pd.DataFrame
+) -> pd.DataFrame:
     "load fids and perform wide-to-long conversion"
 
     markers = []
@@ -204,19 +206,6 @@ def build_biomarker(
             "time": time_np,
         }
     )
-
-    miss_subjects = list(set(ukb_subjects) - set(subjects))
-    miss_p2i = pd.DataFrame.from_dict(
-        data={
-            "pid": miss_subjects,
-            "visit": "none",
-            "start_pos": 0,
-            "seq_len": 0,
-            "time": -1e4,
-        }
-    )
-
-    p2i = pd.concat([p2i, miss_p2i], axis=0)
 
     data_np.ravel().astype(np.float32).tofile(odir / "data.bin")
     p2i.to_csv(odir / "p2i.csv", index=False)
