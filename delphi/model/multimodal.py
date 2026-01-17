@@ -8,7 +8,6 @@ import torch.nn.functional as F
 
 from delphi.exponential import exponential_nll
 from delphi.model.transformer import (
-    MLP,
     AgeEncoding,
     Block,
     LayerNorm,
@@ -136,236 +135,58 @@ class DelphiEmbedding(nn.Module):
         return emb, biomarker_emb, raw
 
 
-class CrossAttention(nn.Module):
-
-    def __init__(self, n_embd, n_head, bias, dropout):
-        super().__init__()
-        self.n_embd = n_embd
-        self.n_head = n_head
-
-        self.q_proj = nn.Linear(n_embd, n_embd, bias=bias)
-        self.k_proj = nn.Linear(n_embd, n_embd, bias=bias)
-        self.v_proj = nn.Linear(n_embd, n_embd, bias=bias)
-
-        self.c_proj = nn.Linear(n_embd, n_embd, bias=bias)
-        self.attn_dropout = nn.Dropout(dropout)
-        self.resid_dropout = nn.Dropout(dropout)
-        pass
-
-    def forward(self, main_seq, side_seq, attn_mask):
-
-        B, L_main, _ = main_seq.shape
-        _, L_side, _ = side_seq.shape
-
-        q = self.q_proj(main_seq)
-        k = self.k_proj(side_seq)
-        v = self.v_proj(side_seq)
-
-        k = k.view(B, L_side, self.n_head, self.n_embd // self.n_head).transpose(
-            1, 2
-        )  # (B, nh, L_side, hs)
-        q = q.view(B, L_main, self.n_head, self.n_embd // self.n_head).transpose(
-            1, 2
-        )  # (B, nh, L_main, hs)
-        v = v.view(B, L_side, self.n_head, self.n_embd // self.n_head).transpose(
-            1, 2
-        )  # (B, nh, L_side, hs)
-
-        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-        att = att.masked_fill(attn_mask == 0, float("-inf"))
-        all_masked = torch.all(attn_mask == 0, dim=-1, keepdim=True)
-        att = F.softmax(att, dim=-1)
-        att = self.attn_dropout(att)
-        att = att.masked_fill(all_masked, 0)
-        y = att @ v
-        # (B, nh, L_main, L_side) x (B, nh, L_side, hs) -> (B, nh, L_main, hs)
-        y = (
-            y.transpose(1, 2).contiguous().view(B, L_main, self.n_embd)
-        )  # re-assemble all head outputs side by side
-
-        # output projection
-        y = self.resid_dropout(self.c_proj(y))
-        return y, att
-
-
-class CrossBlock(nn.Module):
-
-    def __init__(self, config):
-        super().__init__()
-        self.ln_0 = LayerNorm(config.n_embd, bias=config.bias)
-        self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
-        self.attn = CrossAttention(
-            n_embd=config.n_embd,
-            n_head=config.n_head,
-            bias=config.bias,
-            dropout=config.dropout,
-        )
-        self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
-        self.mlp = MLP(config)
-
-    def forward(self, x, side_x, attn_mask):
-        y, att = self.attn(self.ln_1(x), self.ln_0(side_x), attn_mask)
-        x = x + y
-        x = x + self.mlp(self.ln_2(x))
-        return x, att
-
-
-def time_attention_mask(query_age: torch.Tensor, key_age: torch.Tensor):
-    assert query_age.shape[0] == key_age.shape[0]
-    attn_mask = query_age.unsqueeze(-1) >= key_age.unsqueeze(1)
-    pad_mask = (key_age >= 0).view(key_age.shape[0], 1, key_age.shape[1])
-    attn_mask *= pad_mask
-    attn_mask = attn_mask.unsqueeze(1)
-    return attn_mask
-
-
-class CrossFusion(nn.Module):
-
-    def __init__(self, config):
-        super().__init__()
-        self.config = config
-        self.fuse = CrossBlock(config)
-
-    def forward(self, x, age, mod_idx, mod_age, mod_emb):
-        mod_x, _ = fuse_embed(mod_idx=mod_idx, mod_age=mod_age, mod_emb=mod_emb)
-        attn_mask = time_attention_mask(query_age=age, key_age=mod_age)
-        x, _ = self.fuse(x=x, side_x=mod_x, attn_mask=attn_mask)
-        return x, torch.ones_like(age)
-
-
-class SelfFusion(nn.Module):
-
-    def __init__(self, config):
-        super().__init__()
-        self.config = config
-        self.fuse = Block(config)
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        age: torch.Tensor,
-        targets_age: torch.Tensor,
-        mod_idx: torch.Tensor,
-        mod_age: torch.Tensor,
-        mod_emb: dict[Modality, torch.Tensor],
-    ):
-        x, fused_mod_idx = fuse_embed(
-            mod_idx=mod_idx, mod_age=mod_age, mod_emb=mod_emb, emb=x, age=age
-        )
-        fused_age = fuse_age(age, mod_age, fused_mod_idx)
-        fused_targets_age = fuse_age(targets_age, mod_age, fused_mod_idx)
-
-        attn_mask = causal_attention_mask(
-            pad=fused_age != -1e4,
-            mask_ties=self.config.mask_ties,
-            t0=fused_age,
-            t1=fused_targets_age,
-        )
-        x, _ = self.fuse(x=x, attn_mask=attn_mask)
-        return x, fused_mod_idx
-
-
-class ConcatFusion(nn.Module):
-
-    def __init__(self, config):
-        super().__init__()
-        self.raw = "raw" in config.fuse
-        if self.raw:
-            self.biomarkers = {
-                Modality[k.upper()]: biomarker["input_size"]
-                for k, biomarker in config.biomarkers.items()
-            }
-        else:
-            self.biomarkers = {
-                Modality[k.upper()]: config.n_embd for k in config.biomarkers.keys()
-            }
-        input_dim = sum(list(self.biomarkers.values()))
-        input_dim += config.n_embd
-        self.fuse = nn.Linear(input_dim, config.n_embd)
-
-    def forward(
-        self,
-        age: torch.Tensor,
-        mod_idx: torch.Tensor,
-        mod_age: torch.Tensor,
-        idx_emb: torch.Tensor,
-        bio_emb: dict[Modality, torch.Tensor],
-    ):
-        all_bio_X = list()
-        for modality, bio_dim in self.biomarkers.items():
-            n_per_sample = torch.sum(mod_idx == modality.value, dim=1)
-            assert torch.all(n_per_sample <= 1)
-
-            bio_x = torch.zeros((idx_emb.shape[0], bio_dim), device=idx_emb.device)
-            bio_x[n_per_sample > 0, :] = bio_emb[modality]
-            bio_x = bio_x.unsqueeze(1).expand(-1, age.shape[1], -1).clone()
-
-            bio_t = torch.full(
-                (idx_emb.shape[0],), fill_value=-1e4, device=idx_emb.device
-            )
-            bio_t[n_per_sample > 0] = mod_age[mod_idx == modality.value]
-            bio_x[age < bio_t.unsqueeze(-1)] = 0
-
-            all_bio_X.append(bio_x)
-        all_bio_X = torch.cat(all_bio_X, dim=-1)
-        idx_emb = torch.cat((idx_emb, all_bio_X), dim=-1)
-        x = self.fuse(idx_emb)
-
-        return x, None
-
-
-def forward_fill(tensor: torch.Tensor, fill_mask: torch.Tensor, dim: int):
-    assert tensor.shape == fill_mask.shape
-    idx = torch.where(
-        fill_mask, 0, torch.arange(fill_mask.shape[dim], device=tensor.device)
-    )
-    idx = torch.cummax(idx, dim=dim)[0]
-    return torch.gather(tensor, dim, idx)
-
-
 def fuse_embed(
     mod_idx: torch.Tensor,
     mod_age: torch.Tensor,
     mod_emb: dict[Modality, torch.Tensor],
-    emb: None | torch.Tensor = None,
-    age: None | torch.Tensor = None,
-):
-    if emb is not None:
-        assert age is not None
-        pseudo_mod_idx = torch.ones_like(age)
-        fused_mod_idx = torch.cat((mod_idx, pseudo_mod_idx), dim=1)
-        fused_age = torch.cat((mod_age, age), dim=1)
-        n_embd = emb.shape[-1]
-    else:
-        fused_mod_idx = mod_idx
-        fused_age = mod_age
-        n_embd = list(mod_emb.values())[0].shape[-1]
+    emb: torch.Tensor,
+    age: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    fuse modality embeddings and base embeddings, sorted by age.
 
-    # stable = True ensures biomarkers precede disease tokens
+    construct the full unsorted tensors first (concatenating modality and base data),
+    then apply the time-sort index to the whole block at once.
+    """
+    _, _, n_embd = emb.shape
+    device = emb.device
+    mod_emb_dense = torch.zeros(
+        (*mod_idx.shape, n_embd), dtype=emb.dtype, device=device
+    )
+    for modality, m_tensor in mod_emb.items():
+        mask = mod_idx == modality.value
+        if m_tensor.shape[0] != mask.sum():
+            raise ValueError(
+                f"Shape mismatch for {modality}: mask expects {mask.sum()} tokens, "
+                f"got {m_tensor.shape[0]}"
+            )
+        mod_emb_dense[mask] = m_tensor
+
+    fused_emb_unsorted = torch.cat((mod_emb_dense, emb), dim=1)
+    fused_idx_unsorted = torch.cat(
+        (mod_idx, torch.ones_like(age, dtype=mod_idx.dtype)), dim=1
+    )
+    fused_age_unsorted = torch.cat((mod_age, age), dim=1)
+
+    # stable=True ensures biomarkers (mod_emb) precede disease tokens (emb) when ages are equal
+    sort_indices = torch.argsort(fused_age_unsorted, stable=True, dim=1)
+    fused_emb = torch.take_along_dim(
+        fused_emb_unsorted, sort_indices.unsqueeze(-1), dim=1
+    )
+    fused_age = torch.take_along_dim(fused_age_unsorted, sort_indices, dim=1)
+    fused_mod_idx = torch.take_along_dim(fused_idx_unsorted, sort_indices, dim=1)
+
+    return fused_emb, fused_age, fused_mod_idx
+
+
+def fuse_targets_mask(targets_age: torch.Tensor, mod_age: torch.Tensor):
+    fused_age = torch.cat((mod_age, targets_age), dim=1)
     time_sort = torch.argsort(fused_age, stable=True, dim=1)
-    fused_mod_idx = torch.take_along_dim(fused_mod_idx, time_sort, dim=1)
-    fused_emb = torch.zeros((*fused_mod_idx.shape, n_embd)).to(mod_idx.device)
-    if emb is not None:
-        m_pos = torch.nonzero(fused_mod_idx == 1)
-        fused_emb[m_pos[:, 0], m_pos[:, 1]] = emb.view(-1, emb.shape[-1])
-    for modality, m_emb in mod_emb.items():
-        m_pos = torch.nonzero(fused_mod_idx == modality.value)  # N * 2
-        assert (
-            m_emb.shape[0] == m_pos.shape[0]
-        ), f"modality {modality}: m_emb {m_emb.shape} does not match m_pos {m_pos.shape}"
-        fused_emb[m_pos[:, 0], m_pos[:, 1], :] *= 0
-        fused_emb[m_pos[:, 0], m_pos[:, 1], :] += m_emb
-
-    return fused_emb, fused_mod_idx
-
-
-def fuse_age(age: torch.Tensor, mod_age: torch.Tensor, fused_mod_idx: torch.Tensor):
-
-    fused_age = torch.zeros_like(fused_mod_idx).to(age.dtype)
-    fused_age[fused_mod_idx == 1] = age.view(-1)
-    fused_age[fused_mod_idx != 1] = mod_age.view(-1)
-
-    return fused_age
+    is_target = torch.cat(
+        (torch.zeros_like(mod_age), torch.ones_like(targets_age)), dim=1
+    )
+    is_target = torch.take_along_dim(is_target, time_sort, dim=1)
+    return is_target
 
 
 def causal_attention_mask(
@@ -560,26 +381,25 @@ class DelphiM4(torch.nn.Module):
             else:
                 raise NotImplementedError
 
-        x, mod_emb, raw = self.transformer.embed(
+        x, mod_emb, _ = self.transformer.embed(
             idx=idx, age=age, mod_idx=mod_idx, mod_age=mod_age, biomarker_x=biomarker
         )
-        x, fused_mod_idx = fuse_embed(
+        x, fused_age, fused_mod_idx = fuse_embed(
             emb=x, age=age, mod_idx=mod_idx, mod_age=mod_age, mod_emb=mod_emb
         )
-        t0 = fuse_age(age, mod_age, fused_mod_idx)
-        pad = t0 != -1e4
+        pad = fused_age != -1e4
         if self.config.ablate_biomarker is not None:
             if self.config.ablate_biomarker == "biomarker":
                 pad *= fused_mod_idx != 1
             elif self.config.ablate_biomarker == "token":
-                pad *= torch.logical_and(t0 <= min_mod_age, fused_mod_idx == 1)  # type: ignore
+                pad *= torch.logical_and(fused_age <= min_mod_age, fused_mod_idx == 1)  # type: ignore
             elif self.config.ablate_biomarker == "both":
-                pad *= t0 <= min_mod_age  # type: ignore
+                pad *= fused_age <= min_mod_age  # type: ignore
 
         if self.config.attn_mask == "triangular":
             attn_mask = causal_attention_mask(pad=pad)
         else:
-            attn_mask = causal_attention_mask(pad=pad, timestep=t0)
+            attn_mask = causal_attention_mask(pad=pad, timestep=fused_age)
 
         x = self.transformer.drop(x)
         att = []
@@ -589,10 +409,14 @@ class DelphiM4(torch.nn.Module):
         x = self.transformer.ln_f(x)
         att = torch.stack(att)
 
-        x = x[fused_mod_idx == 1].view(*idx.shape, -1)  # type: ignore
         logits = self.lm_head(x)
 
         if (targets is not None) and (targets_age is not None):
+            is_target = fuse_targets_mask(
+                targets_age=targets_age, mod_age=mod_age
+            ).bool()
+            logits = logits[is_target].view(*idx.shape, -1)
+
             is_valid_target = targets != 0
             for k in self.config.ignore_tokens:
                 is_valid_target *= targets != k
