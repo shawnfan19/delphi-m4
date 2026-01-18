@@ -46,6 +46,9 @@ parser.add_argument("--ckpt", type=str, default="delphi-m4/delphi-m4/ckpt.pt")
 parser.add_argument("--modality", type=str)
 parser.add_argument("--batch_size", type=int, default=64)
 parser.add_argument("--min_time_gap", type=float, default=0.01)
+parser.add_argument("--mod_age_start", type=int, default=40)
+parser.add_argument("--mod_age_end", type=int, default=85)
+parser.add_argument("--mod_age_gap", type=int, default=5)
 parser.add_argument("--age_start", type=int, default=40)
 parser.add_argument("--age_end", type=int, default=85)
 parser.add_argument("--age_gap", type=int, default=5)
@@ -54,8 +57,11 @@ parser.add_argument("--fname", type=str)
 if "ipykernel" in sys.modules:
     print(f"running in jupyter notebook")
     args = parser.parse_args([])
-    args.ckpt = "ablate_blood_biomarker/token/ckpt.pt"
-    args.modality = "wbc"
+    args.ckpt = "ablate_prs_biomarker/biomarker/ckpt.pt"
+    args.modality = "prs"
+    args.mod_age_start = 0
+    args.mod_age_end = 80
+    args.mod_age_gap = 80
 else:
     args = parser.parse_args()
 
@@ -96,13 +102,20 @@ else:
 
 ds = MultimodalUKBDataset(**data_args)
 
+# +
 age_group_edges = (
     np.arange(args.age_start, args.age_end + args.age_gap, args.age_gap) * 365.25
 )
 n_age_groups = len(age_group_edges) - 1
-age_groups = [
+
+mod_age_group_edges = (
+    np.arange(args.mod_age_start, args.mod_age_end + args.mod_age_gap, args.mod_age_gap)
+    * 365.25
+)
+n_mod_age_groups = len(mod_age_group_edges) - 1
+mod_age_groups = [
     f"{int(i/365.25)}–{int(j/365.25)}"
-    for i, j in zip(age_group_edges[:-1], age_group_edges[1:])
+    for i, j in zip(mod_age_group_edges[:-1], mod_age_group_edges[1:])
 ]
 
 # +
@@ -174,13 +187,13 @@ ctl_times[ctl_times < mod_time[:, None]] = np.nan
 
 # +
 dis_time_bin = np.searchsorted(age_group_edges, dis_times, side="right") - 1
-mod_time_bin = np.searchsorted(age_group_edges, mod_time, side="right") - 1
+mod_time_bin = np.searchsorted(mod_age_group_edges, mod_time, side="right") - 1
 
 auc_grids, ctl_grids, dis_grids = list(), list(), list()
 for is_gender in [is_female, is_male]:
-    auc_grid = np.zeros((n_age_groups, n_age_groups, model.config.vocab_size))
+    auc_grid = np.zeros((n_mod_age_groups, n_age_groups, model.config.vocab_size))
     ctl_grid, dis_grid = auc_grid.copy(), auc_grid.copy()
-    for j in tqdm(range(n_age_groups), leave=False):
+    for j in tqdm(range(n_mod_age_groups), leave=False):
         mod_mask = np.logical_and(mod_time_bin == j, ~np.isnan(mod_time))
         for i in range(n_age_groups):
             aucs, ctl_cts, dis_cts = list(), list(), list()
@@ -248,30 +261,39 @@ def grid_to_json_dict(
 
 
 # +
+mod_age_keys = [
+    f"{int(i/365.25)}–{int(j/365.25)}"
+    for i, j in zip(mod_age_group_edges[:-1], mod_age_group_edges[1:])
+]
+age_keys = [
+    f"{int(i/365.25)}–{int(j/365.25)}"
+    for i, j in zip(age_group_edges[:-1], age_group_edges[1:])
+]
+
 f_auc_dict = grid_to_json_dict(
     f_auc_grid,
     f_ctl_grid,
     f_dis_grid,
-    age_groups,
-    age_groups,
+    mod_age_keys,
+    age_keys,
     detokenizer=ds.detokenizer,
 )
 m_auc_dict = grid_to_json_dict(
     m_auc_grid,
     m_ctl_grid,
     m_dis_grid,
-    age_groups,
-    age_groups,
+    mod_age_keys,
+    age_keys,
     detokenizer=ds.detokenizer,
 )
 
 f_mod_time_cnt = {
-    age_groups[i]: int(np.logical_and(is_female, mod_time == i).sum())
-    for i in range(n_age_groups)
+    mod_age_keys[i]: int(np.logical_and(is_female, mod_time == i).sum())
+    for i in range(len(mod_age_keys))
 }
 m_mod_time_cnt = {
-    age_groups[i]: int(np.logical_and(is_male, mod_time == i).sum())
-    for i in range(n_age_groups)
+    mod_age_keys[i]: int(np.logical_and(is_male, mod_time == i).sum())
+    for i in range(len(mod_age_keys))
 }
 # -
 

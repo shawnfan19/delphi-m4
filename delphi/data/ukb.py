@@ -234,6 +234,7 @@ class Biomarker:
 
         with open(os.path.join(path, "features.yaml"), "r") as f:
             self.features = yaml.safe_load(f)
+        self.feat2idx = {feat: i for i, feat in enumerate(self.features)}
         self.n_features = len(self.features)
 
         p2i = pd.read_csv(os.path.join(path, "p2i.csv")).sort_values(by=["pid", "time"])
@@ -256,20 +257,24 @@ class Biomarker:
         return f"Biomarker(path={self.path}, n_features={self.n_features})"
 
     def to_array(self, subjects):
-        data = list()
-        subs = list()
+        data, subs = list(), list()
         include = np.isin(self.pids, subjects)
         start_pos = self.start_pos[include]
         seq_len = self.seq_len[include]
         pids = self.pids[include]
         for pid, i, l in zip(pids, start_pos, seq_len):
             pid_data = self.data[i : i + l]
-            if pid_data.size > 0:
-                data.append(pid_data)
-                subs.append(pid)
+            data.append(pid_data)
+            subs.append(pid)
         data = np.stack(data, axis=0)
-        subs = np.stack(subs, axis=0)
-        return data, subs
+        return data, np.array(subs)
+
+    def to_transformed_array(self, subjects):
+        data, subs = self.to_array(subjects)
+        if self.z_score:
+            return (data - self.mean[np.newaxis, :]) / self.std[np.newaxis, :], subs
+        else:
+            return data, subs
 
     @property
     def mask(self):
@@ -292,20 +297,21 @@ class Biomarker:
         self, pid: int
     ) -> tuple[None | list[np.ndarray], None | np.ndarray]:
 
+        if pid not in self.pid2idx:
+            return None, None
+
         pid_i = self.pid2idx[pid]
         pid_l = self.pid2cnt[pid]
         pid_slice = slice(pid_i, pid_i + pid_l)
+
+        pid_data = list()
         pid_time = self.time_steps[pid_slice]
-        if (pid_time == -1e4).all():
-            return None, None
         pid_seq_len = self.seq_len[pid_slice]
         pid_start_pos = self.start_pos[pid_slice]
-        pid_data = list()
         for i, l in zip(pid_start_pos, pid_seq_len):
-            if l > 0:
-                x = self.data[i : i + l]
-                x = self.transform(x)
-                pid_data.append(x)
+            x = self.data[i : i + l]
+            x = self.transform(x)
+            pid_data.append(x)
             if self.first_time_only:
                 pid_time = pid_time[[0]]
                 break
@@ -353,7 +359,7 @@ class MultimodalUKBDataset:
         biomarker_datasets: None | dict = None,
         biomarker_dir: str = "biomarkers",
         biomarkers: None | list = None,
-        z_score_biomarkers: bool = False,
+        z_score_biomarkers: bool = True,
         first_time_only: bool = True,
         must_have_biomarkers: None | list = None,
         stats_subject_list: None | str = None,
@@ -377,8 +383,8 @@ class MultimodalUKBDataset:
             biomarker_dir: sub-directory within data_dir containing biomarker data
             biomarkers: a list of biomarkers to load
             z_score_biomarkers: whether to z-score biomarker values
-            first_time_only: if True only use the first occurrence of each biomarker; NOT CURRENTLY SUPPORTED.
-            must_have_biomarkers: a list of biomarkers
+            first_time_only: if True only use the first occurrence of each biomarker
+            must_have_biomarkers: a list of biomarkers that each participant must have to be included
             stats_subject_list: sub-path within data_dir to an array of subjects for computing Biomarker stats
             subject_list: sub-path within data_dir to an array of subjects for loading
             no_event_interval: average time intervals for introducing no-event tokens
@@ -473,9 +479,8 @@ class MultimodalUKBDataset:
             old_n = self.participants.size
             for modality in must_have_biomarkers:
                 modality = Modality[modality.upper()]
-                data_participants = self.mod_ds[modality].participants
                 self.participants = self.participants[
-                    np.isin(self.participants, data_participants)
+                    np.isin(self.participants, self.mod_ds[modality].pids)
                 ]
             print(f"{self.participants.size}/{old_n} remaining")
 
@@ -527,6 +532,11 @@ class MultimodalUKBDataset:
         for exp_pack in self.expansion_packs:
             tokens.extend([v + exp_pack.offset for v in exp_pack.tokenizer.values()])
         return tokens
+
+    def update_subjects(self, new_subjects: np.ndarray, intersect: bool = True):
+        if intersect:
+            new_subjects = new_subjects[np.isin(new_subjects, self.participants)]
+        self.participants = new_subjects
 
     def __getitem__(self, idx: int):
 

@@ -13,13 +13,14 @@ from delphi.model.multimodal import DelphiM4, DelphiM4Config
 class TrainConfig(TrainBaseConfig):
     ckpt_dir: str = "delphi-m4"
     batch_size: int = 128
+    seed: int = 42
+    deterministic: bool = False
     train_subject_list: str = "participants/train_fold.bin"
     val_subject_list: str = "participants/val_fold.bin"
     model: DelphiM4Config = field(
         default_factory=lambda: DelphiM4Config(block_size=256)
     )
     biomarkers: None | dict[str, int] = None
-    z_score_biomarkers: bool = False
     first_time_only: bool = False
     must_have: bool = False
     expansion_packs: None | list[str] = None
@@ -33,13 +34,14 @@ def train(cfg: TrainConfig):
         "expansion_packs": cfg.expansion_packs,
         "block_size": cfg.model.block_size,
         "first_time_only": cfg.first_time_only,
+        "seed": cfg.seed,
+        "deterministic": cfg.deterministic,
     }
     if cfg.must_have:
         data_args["must_have_biomarkers"] = biomarkers
     train_ds = MultimodalUKBDataset(
         subject_list=cfg.train_subject_list,
         biomarkers=biomarkers,
-        z_score_biomarkers=cfg.z_score_biomarkers,
         **data_args,
     )
     val_ds = MultimodalUKBDataset(

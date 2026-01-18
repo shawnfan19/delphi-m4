@@ -2,19 +2,15 @@
 import argparse
 import json
 import math
-import os
 import pprint
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import torch
-import yaml
 from tqdm import tqdm
 
-from delphi import DAYS_PER_YEAR
 from delphi.data.ukb import MultimodalUKBDataset
 from delphi.env import DELPHI_CKPT_DIR
 from delphi.eval import AgeStratRatesCollator as ControlRatesCollator
@@ -23,7 +19,6 @@ from delphi.eval import (
     SexCollator,
     correct_time_offset,
     mann_whitney_auc,
-    sample_boolean_mask,
 )
 from delphi.experiment import eval_iter, move_batch_to_device
 from delphi.model.multimodal import DelphiM4, DelphiM4Config
