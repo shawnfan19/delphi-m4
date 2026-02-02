@@ -7,69 +7,38 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 from delphi.data.utils import collate_batch
-from delphi.exponential import (
-    exponential_nll,
-    sample_competing_exponentials,
-    sample_zlpr_competing_exponentials,
-)
 
 
 def causal_attention_mask(
-    pad: torch.Tensor,
-    mask_ties: bool = False,
-    t0: None | torch.Tensor = None,
-    t1: None | torch.Tensor = None,
+    pad: torch.Tensor, timestep: None | torch.Tensor = None
 ) -> torch.Tensor:
 
     b, l = pad.shape
     device = pad.device
 
-    lower_tri_mask = torch.tril(torch.ones((l, l), device=device))
-    lower_tri_mask = lower_tri_mask.view(1, l, l)
-    pad_mask = pad.view(b, 1, l).to(torch.int)
-    attn_mask = pad_mask * lower_tri_mask
-
-    if mask_ties:
-        assert t0 is not None
-        if t1 is not None:
-            ties_mask = (t1.view(b, l, 1) != t0.view(b, 1, l)).to(torch.int)
-            attn_mask *= ties_mask
-
-    attn_mask += (attn_mask.sum(-1, keepdim=True) == 0) * torch.diag(
-        torch.ones(l, device=device)
-    ) > 0
+    if timestep is not None:
+        assert timestep.shape == (b, l)
+        q_time = timestep.view(b, l, 1)
+        k_time = timestep.view(b, 1, l)
+        attn_mask = (k_time <= q_time).int()
+    else:
+        attn_mask = torch.tril(torch.ones((l, l), device=device))
+        attn_mask = attn_mask.view(1, l, l)
+    pad_mask = pad.int().view(b, 1, l).to(torch.int)
+    attn_mask = attn_mask * pad_mask
+    diag_indices = torch.arange(attn_mask.shape[-1])
+    attn_mask[..., diag_indices, diag_indices] = 1
 
     return attn_mask.unsqueeze(1)
 
 
-def ties_adjusted_delta_t(
-    t0: torch.Tensor,
-    t1: torch.Tensor,
-    mask_ties: bool,
-    attn_mask: torch.Tensor | None = None,
-    eps: float = 1.0,
-) -> tuple[torch.Tensor, None | torch.Tensor]:
-
-    delta_t = t1 - t0
-    delta_t = torch.clamp(delta_t, min=eps)
-
-    if mask_ties:
-        assert attn_mask is not None
-        idx = (
-            (
-                attn_mask
-                * torch.arange(
-                    0, t0.size(1), device=t0.device, dtype=torch.float32
-                ).view(1, 1, 1, -1)
-            )
-            .max(-1)
-            .indices.squeeze((1, 2))
-        )
-        delta_t = torch.gather(delta_t, -1, idx)
-    else:
-        idx = None
-
-    return delta_t, idx
+def untie_idx(age: torch.Tensor, targets_age: torch.Tensor):
+    dt = targets_age - age
+    is_tie = dt == 0
+    is_tie[age == -1e4] = False
+    corr_idx = torch.where(is_tie, 0, torch.arange(age.shape[1], device=age.device))
+    corr_idx = torch.cummax(corr_idx, dim=1)[0]
+    return corr_idx
 
 
 def multi_hot(
@@ -100,22 +69,124 @@ def multi_hot(
     return hot_targets, cooccur
 
 
-def zlpr(
-    logits: torch.Tensor, hot_targets: torch.Tensor, thresh_logits: None | torch.Tensor
+def exponential_nll(
+    delta_t: torch.Tensor,
+    log_lambda: torch.Tensor,
+    t_min: float,
+    n: None | torch.Tensor = None,
+):
+    """
+    when n > 1, return nll according to the erlang distribution
+    """
+    ldt = -torch.log(delta_t + t_min)
+    lse = -torch.log(torch.exp(-log_lambda) + t_min)
+    # when n == 1: nll = -(lse - torch.exp(lse - ldt))
+    if n is None:
+        n = torch.ones_like(delta_t)
+    nll = -(n * lse + (n - 1) * (-ldt) - torch.exp(lse - ldt) - torch.lgamma(n))
+    return nll
+
+
+def nll_homogeneous_poisson(
+    log_intensity: torch.Tensor,
+    targets: torch.Tensor,
+    delta_t: torch.Tensor,
 ):
 
-    assert logits.shape == hot_targets.shape
-    if thresh_logits is None:
-        thresh_logits = torch.zeros_like(logits)
-    else:
-        assert thresh_logits.shape == logits.shape[:2]
+    part1 = torch.gather(input=log_intensity, dim=-1, index=targets.unsqueeze(-1))
+    log_sum_intensity = torch.logsumexp(log_intensity, dim=-1, keepdim=True)
+    part2 = -torch.exp(log_sum_intensity) * delta_t.unsqueeze(-1)
 
-    loss = torch.log(
-        torch.exp(-thresh_logits) + (hot_targets * torch.exp(-logits)).sum(dim=-1)
-    ) + torch.log(
-        torch.exp(thresh_logits) + ((1 - hot_targets) * torch.exp(logits)).sum(dim=-1)
+    return -(part1 + part2)
+
+
+def nll_homogeneous_cluster_poisson(
+    log_intensity: torch.Tensor,
+    log_aux_intensity: torch.Tensor,
+    targets: torch.Tensor,
+    targets_age: torch.Tensor,
+    age: torch.Tensor,
+):
+    hot_targets, cooccur = multi_hot(
+        targets=targets, targets_age=targets_age, vocab_size=log_intensity.shape[-1]
     )
-    return loss
+    delta_t = targets_age - age
+    EPS = 1e-8
+    delta_t = torch.clamp(delta_t, min=EPS)
+    part1 = log_aux_intensity
+    part2 = -torch.exp(log_aux_intensity) * delta_t
+
+    rate_times_dt = torch.exp(log_intensity) * delta_t.unsqueeze(-1)
+    log_cdf = torch.log(-torch.expm1(-rate_times_dt))
+    ll_have_occur = (hot_targets * log_cdf).sum(dim=-1)
+    ll_have_not_occur = (
+        -((1 - hot_targets) * torch.exp(log_intensity)).sum(dim=-1) * delta_t
+    )
+    ll_cluster = ll_have_occur + ll_have_not_occur
+
+    return -(part1 + part2), -ll_cluster, cooccur
+
+
+def sample_competing_exponentials(
+    logits: torch.Tensor, clamp_min: float = 0.0, clamp_max: float = 365.25 * 80.0
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    inverse CDF method
+    """
+
+    t_next = torch.clamp(
+        -torch.exp(-logits) * torch.rand(logits.shape, device=logits.device).log(),
+        min=clamp_min,
+        max=clamp_max,
+    ).min(1)
+    next_token = t_next[1][:, None]
+    time_til_next = t_next[0][:, None]
+
+    return next_token, time_til_next
+
+
+def sample_homo_cluster_poisson(
+    logits: torch.Tensor,
+    thresh_logits: torch.Tensor,
+    clamp_min: float = 0.0,
+    clamp_max: float = 365.25 * 80.0,
+):
+    batch_size = logits.shape[0]
+    assert thresh_logits.shape == (batch_size,)
+    thresh_logits = thresh_logits.unsqueeze(-1)
+    device = logits.device
+
+    t_next = torch.clamp(
+        -torch.exp(-logits) * torch.rand(logits.shape, device=device).log(),
+        min=clamp_min,
+        max=clamp_max,
+    )
+    t_nod_next = torch.clamp(
+        -torch.exp(-thresh_logits)
+        * torch.rand(thresh_logits.shape, device=device).log(),
+        min=clamp_min,
+        max=clamp_max,
+    )
+    sample_mask = t_next <= t_nod_next
+    max_n = sample_mask.sum(dim=1).max().item()
+    if max_n > 0:
+        subject_idx, token_idx = torch.nonzero(sample_mask, as_tuple=True)
+        pseudo_idx = sample_mask.cumsum(1) - 1
+        pseudo_idx = pseudo_idx[sample_mask]
+
+        next_token = torch.zeros((batch_size, int(max_n)), device=device).long()
+        next_token[subject_idx, pseudo_idx] = token_idx
+
+        no_event = (next_token == 0).all(dim=1)
+        next_token[no_event, 0] = 1
+
+        time_til_next = t_nod_next.expand(-1, int(max_n)).clone()
+        time_til_next[next_token == 0] = -1e4
+    else:
+        next_token = torch.ones(batch_size, 1, device=device).long()
+        time_til_next = t_nod_next.expand(-1, 1).clone()
+
+    return next_token, time_til_next
 
 
 class AgeEncoding(nn.Module):
@@ -174,12 +245,6 @@ class CausalSelfAttention(nn.Module):
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.dropout = config.dropout
-        self.register_buffer(
-            "bias",
-            torch.tril(torch.ones(config.block_size, config.block_size)).view(
-                1, 1, config.block_size, config.block_size
-            ),
-        )
 
     def forward(self, x, attn_mask):
         B, T, C = x.size()
@@ -255,29 +320,30 @@ class Delphi2MConfig:
     # - dt_beta
     # - mask_no_event_attention
     # - no_event_rate
-    block_size: int = 48
+    block_size: None | int = 48
     vocab_size: int = 1270
     n_layer: int = 12
     n_head: int = 12
     n_embd: int = 120
-    dropout: float = 0.0
+    dropout: float = 0.1
     token_dropout: float = 0.0
     t_min: float = 0.1
     bias: bool = False
     mask_ties: bool = True
+    attn_mask: str = "time"
     weight_tying: bool = True
     ignore_tokens: None | list = field(
         default_factory=lambda: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     )  # 0 always ignored
     no_event_rate: None | float = None
     mask_no_event_attention: bool = False
-    loss: str = "default"
+    loss: str = "default"  # homo_poisson, homo_cluster_poisson
     aux_head: str = "linear"
     ce_beta: float = 1.0
     dt_beta: float = 1.0
 
     def __post_init__(self):
-        if self.loss == "zlpr":
+        if "cluster" in self.loss:
             assert not self.mask_ties
 
 
@@ -293,8 +359,6 @@ class Delphi2M(nn.Module):
 
     def __init__(self, config: Delphi2MConfig):
         super().__init__()
-        assert config.vocab_size is not None
-        assert config.block_size is not None
         self.config = config
 
         self.transformer = nn.ModuleDict(
@@ -317,7 +381,7 @@ class Delphi2M(nn.Module):
                 self.lm_head.weight
             )  # https://paperswithcode.com/method/weight-tying
 
-        if config.loss in {"zlpr", "br"}:
+        if "cluster" in config.loss:
             if self.config.aux_head == "linear":
                 self.aux_head = nn.Linear(config.n_embd, 1, bias=True)
             elif self.config.aux_head == "mlp":
@@ -359,72 +423,51 @@ class Delphi2M(nn.Module):
         **kwargs,
     ):
 
-        if self.config.loss in {"default", "erlang"}:
+        if self.config.mask_ties:
+            corr_idx = untie_idx(age, targets_age)
+            age = torch.take_along_dim(input=age, indices=corr_idx, dim=1)
+            logits = torch.take_along_dim(
+                input=logits, indices=corr_idx.unsqueeze(-1), dim=1
+            )
+
+        if self.config.loss == "default":
             loss_ce = F.cross_entropy(
                 # (b, l, n_vocab) -> (b, n_vocab, l)
                 logits.permute(0, 2, 1),
                 targets,
                 reduction="none",
             )
-
-            dt, idx = ties_adjusted_delta_t(
-                t0=age,
-                t1=targets_age,
-                attn_mask=kwargs["attn_mask"],
-                mask_ties=self.config.mask_ties,
-                eps=self.config.t_min,
-            )
-            if self.config.loss == "default":
-                n = None
-            else:
-                _, ct, inv = torch.unique(
-                    targets_age, return_counts=True, return_inverse=True
-                )
-                n = ct[inv]
-                assert idx is not None
-                n = torch.gather(n, -1, idx)
-
+            dt = targets_age - age
+            dt = torch.clamp(dt, min=self.config.t_min)
             loss_dt = exponential_nll(
                 delta_t=dt,
                 log_lambda=torch.logsumexp(logits, -1),
                 t_min=self.config.t_min,
-                n=n,
             )
 
             return {"loss_ce": loss_ce, "loss_dt": loss_dt}
-        elif self.config.loss in {"zlpr", "br"}:
-            hot_targets, cooccur = multi_hot(
-                targets=targets, targets_age=targets_age, vocab_size=logits.shape[-1]
-            )
-            thresh_logits = kwargs["aux_rates"]
-            if self.config.loss == "zlpr":
-                loss_ce = zlpr(
-                    logits=logits,
-                    hot_targets=hot_targets,
-                    thresh_logits=kwargs["aux_rates"],
-                )
-            else:
-                raise NotImplementedError
-                # loss_ce = F.binary_cross_entropy(
-                #     input=torch.exp(logits),
-                #     target=hot_targets,
-                #     reduction="none"
-                # )
-
+        elif self.config.loss == "homo_poisson":
             dt = targets_age - age
-            loss_dt = exponential_nll(
-                delta_t=dt, log_lambda=thresh_logits, t_min=self.config.t_min
+            dt = torch.clamp(dt, min=0)
+            nll = nll_homogeneous_poisson(
+                log_intensity=logits, targets=targets, delta_t=dt
             )
 
-            return {"loss_ce": loss_ce, "loss_dt": loss_dt, "mask": ~cooccur}
-        elif self.config.loss == "motor-one":
-            raise NotImplementedError
+            return {"loss_nll": nll}
+        elif self.config.loss == "homo_cluster_poisson":
+            thresh_logits = kwargs["aux_rates"]
+            nll, nll_cluster, cooccur = nll_homogeneous_cluster_poisson(
+                log_intensity=logits,
+                log_aux_intensity=thresh_logits,
+                targets=targets,
+                targets_age=targets_age,
+                age=age,
+            )
+            return {"loss_nll": nll, "loss_cluster": nll_cluster, "mask": ~cooccur}
         else:
             raise NotImplementedError
 
-    def forward(
-        self, idx, age, targets=None, targets_age=None, validation_loss_mode=False
-    ):
+    def forward(self, idx, age, targets=None, targets_age=None):
         tok_emb = self.transformer.wte(idx)
         age_emb = self.transformer.wae(age.unsqueeze(-1))
         x = self.transformer.token_drop(tok_emb) * (1 - self.config.token_dropout)
@@ -434,9 +477,11 @@ class Delphi2M(nn.Module):
         pad = idx > 0
         if self.config.mask_no_event_attention:
             pad = idx > 1
-        attn_mask = causal_attention_mask(
-            pad=pad, mask_ties=self.config.mask_ties, t0=age, t1=targets_age
-        )
+
+        if self.config.attn_mask == "triangular":
+            attn_mask = causal_attention_mask(pad=pad)
+        else:
+            attn_mask = causal_attention_mask(pad=pad, timestep=age)
 
         att = []
         for block in self.transformer.h:
@@ -461,10 +506,6 @@ class Delphi2M(nn.Module):
             ignored_tokens = [0]
             if self.config.ignore_tokens is not None:
                 ignored_tokens += self.config.ignore_tokens.copy()
-            if validation_loss_mode:
-                ignored_tokens += [1]
-                logits[..., ignored_tokens] = -torch.inf
-
             is_valid_target = targets != 0
             for k in ignored_tokens:
                 is_valid_target *= targets != k
@@ -474,12 +515,9 @@ class Delphi2M(nn.Module):
             loss_mask = is_valid_target
             if "mask" in loss:
                 loss_mask *= loss["mask"]
-            loss_ce = torch.mean(loss["loss_ce"][loss_mask])
-            loss_dt = torch.mean(loss["loss_dt"][loss_mask])
-            loss = {
-                "loss_ce": loss_ce * self.config.ce_beta,
-                "loss_dt": loss_dt * self.config.dt_beta,
-            }
+                del loss["mask"]
+            for loss_key in loss.keys():
+                loss[loss_key] = torch.mean(loss[loss_key][loss_mask])
         else:
             loss = None
 
@@ -487,10 +525,10 @@ class Delphi2M(nn.Module):
 
     @torch.no_grad()
     def sample_next(self, logits: torch.Tensor, outputs: dict[str, torch.Tensor]):
-        if self.config.loss == "default":
+        if self.config.loss in {"default", "homo_poisson"}:
             idx_next, time_til_next = sample_competing_exponentials(logits=logits)
-        elif self.config.loss == "zlpr":
-            idx_next, time_til_next = sample_zlpr_competing_exponentials(
+        elif self.config.loss == "homo_cluster_poisson":
+            idx_next, time_til_next = sample_homo_cluster_poisson(
                 logits=logits, thresh_logits=outputs["aux_rates"][:, -1]
             )
         else:
@@ -498,43 +536,50 @@ class Delphi2M(nn.Module):
         return idx_next, time_til_next
 
 
-def truncate_top_k(logits: torch.Tensor, k: int) -> torch.Tensor:
-    topk_value, _ = torch.topk(logits, k)  # batch_sz x topk
-    min_value_top_k = topk_value[:, [-1]]
-    logits[logits < min_value_top_k] = -torch.inf
-    return logits
-
-
 @torch.no_grad()
 def generate(
-    model,
-    idx,
-    age,
-    max_new_tokens=100,
-    max_age=85 * 365.25,
-    no_repeat=True,
-    termination_tokens=None,
-    top_k=None,
+    model: torch.nn.Module,
+    idx: torch.Tensor,
+    age: torch.Tensor,
+    termination_tokens: list | torch.Tensor,
+    max_new_tokens: None | int = 100,
+    max_age: float | torch.Tensor = 85 * 365.25,
+    no_repeat: bool = True,
+    top_k: None | int = None,
     stop_at_block_size: bool = True,
+    exclude_pad: bool = True,
 ):
-    if termination_tokens is None:
-        import warnings
-
-        warnings.warn(
-            "When using a custem dataset, consider changing the `termination_tokens` argument."
-        )
-        termination_tokens = [1269]
 
     termination_tokens = torch.tensor(
         termination_tokens, dtype=torch.int64, device=idx.device
     )
-    mask_time = -10000
 
-    if max_new_tokens == -1:
+    if max_new_tokens is None:
         max_new_tokens = 128
 
+    if isinstance(max_age, torch.Tensor):
+        assert len(max_age.shape) == 1
+        assert max_age.shape[0] == age.shape[0]
+    else:
+        max_age = torch.full((age.shape[0],), fill_value=max_age).to(idx.device)  # type: ignore
+    max_age = max_age.unsqueeze(1)  # type: ignore
+
+    batch_size = idx.shape[0]
+    active_indices = torch.arange(batch_size, device=idx.device)
+    completed_idx, completed_age = dict(), dict()
+    cur_idx = idx.clone()
+    cur_age = age.clone()
+
+    ignore_tokens = [0]
+    if (
+        hasattr(model.config, "ignore_tokens")
+        and model.config.ignore_tokens is not None
+    ):
+        ignore_tokens += model.config.ignore_tokens
+
+    pmt_cnt = (idx > 0).sum(dim=1).detach().cpu().numpy()
     for _ in range(max_new_tokens):
-        outputs, _, _ = model(idx, age)
+        outputs, _, _ = model(cur_idx, cur_age)
         if isinstance(outputs, torch.Tensor):
             # for backwards compatibility with legacy model definition
             logits = outputs
@@ -542,21 +587,14 @@ def generate(
             assert isinstance(outputs, dict)
             logits = outputs["logits"]
         logits = logits[:, -1, :]
-        ignore_tokens = [0]
-        if (
-            hasattr(model.config, "ignore_tokens")
-            and model.config.ignore_tokens is not None
-        ):
-            ignore_tokens += model.config.ignore_tokens
         logits[:, ignore_tokens] = -torch.inf
 
-        # optionally crop the logits to only the top k options
         if top_k is not None:
             v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
             logits[logits < v[:, [-1]]] = -torch.inf
 
         if no_repeat:
-            fill = idx.clone()
+            fill = cur_idx.clone()
             fill[fill == 1] = 0
             logits = logits.scatter_(1, fill, -torch.inf)
 
@@ -565,33 +603,75 @@ def generate(
         else:
             # fallback
             idx_next, time_til_next = sample_competing_exponentials(logits=logits)
-        age_next = age[..., [-1]] + time_til_next
+        age_next = cur_age[..., [-1]] + time_til_next
+        age_next[time_til_next == -1e4] = -1e4
 
-        idx = torch.cat((idx, idx_next), dim=1)
-        age = torch.cat((age, age_next), dim=1)
+        cur_idx = torch.cat((cur_idx, idx_next), dim=1)
+        cur_age = torch.cat((cur_age, age_next), dim=1)
+        sort_by_age = torch.argsort(cur_age, dim=1)
+        cur_age = torch.take_along_dim(cur_age, sort_by_age, dim=1)
+        cur_idx = torch.take_along_dim(cur_idx, sort_by_age, dim=1)
+        margin = torch.min(torch.sum(cur_idx == 0, dim=1)).item()
+        cur_idx, cur_age = cur_idx[:, margin:], cur_age[:, margin:]
 
-        if torch.logical_or(
-            torch.isin(idx, termination_tokens).any(-1), age_next > max_age
-        ).all():
+        terminated = torch.isin(idx_next, termination_tokens).any(-1)
+        aged_out = (age_next > max_age[active_indices]).any(-1)
+        if stop_at_block_size and (model.config.block_size is not None):
+            # cur_idx includes the newly added token
+            if exclude_pad:
+                block_size = (cur_idx != 0).sum(dim=1)
+            else:
+                block_size = torch.full_like(
+                    active_indices, fill_value=cur_idx.shape[1]
+                )
+            reached_block = block_size >= model.config.block_size
+        else:
+            reached_block = torch.zeros_like(terminated)
+        should_stop = terminated | aged_out | reached_block
+
+        if should_stop.any():
+            # identify indices relative to the current active batch
+            stop_indices = torch.where(should_stop)[0]
+            for local_i in stop_indices:
+                global_i = active_indices[local_i].item()
+                completed_idx[global_i] = cur_idx[local_i]
+                completed_age[global_i] = cur_age[local_i]
+            # filter the running batch to keep only unfinished sequences
+            cur_idx = cur_idx[~should_stop]
+            cur_age = cur_age[~should_stop]
+            active_indices = active_indices[~should_stop]
+
+        if len(active_indices) == 0:
             break
 
-        if (idx.shape[1] > model.config.block_size) and stop_at_block_size:
-            break
+    # collect stragglers (reached max_new_tokens without terminating)
+    for local_i, global_i in enumerate(active_indices):
+        completed_idx[global_i.item()] = cur_idx[local_i]
+        completed_age[global_i.item()] = cur_age[local_i]
 
-    pad = (
-        torch.cumsum(
-            torch.cumsum(torch.isin(idx, termination_tokens), 1).bool().int(), 1
-        )
-        > 1
-    ) + (age > max_age)
+    max_len = max(t.numel() for t in completed_idx.values())
+    final_idx = torch.full((batch_size, max_len), 0, dtype=idx.dtype, device=idx.device)
+    final_age = torch.full(
+        (batch_size, max_len), -1e4, dtype=age.dtype, device=age.device
+    )
+    for i in range(batch_size):
+        idx_i, age_i = completed_idx[i], completed_age[i]
+        final_idx[i, -idx_i.numel() :] = idx_i
+        final_age[i, -age_i.numel() :] = age_i
+
+    final_idx[final_age > max_age] = 0
+    final_age[final_age > max_age] = -1e4
+    sort_by_age = torch.argsort(final_age, dim=1)
+    age = torch.take_along_dim(input=final_age, indices=sort_by_age, dim=1)
+    idx = torch.take_along_dim(input=final_idx, indices=sort_by_age, dim=1)
+    margin = torch.min(torch.sum(idx == 0, dim=1)).item()
+    idx, age = idx[:, margin:], age[:, margin:]
 
     outputs, _, _ = model(idx, age)
     if isinstance(outputs, torch.Tensor):
         logits = outputs
     else:
         logits = outputs["logits"]
-    idx[pad] = 0
-    age[pad] = mask_time
 
     if no_repeat:
         fill = idx + 0
@@ -603,14 +683,9 @@ def generate(
             ]
         ).transpose(0, 1)
 
-    sort_by_age = torch.argsort(age, dim=1)
-    logits = torch.take_along_dim(
-        input=logits, indices=sort_by_age.unsqueeze(-1), dim=1
-    )
-    age = torch.take_along_dim(input=age, indices=sort_by_age, dim=1)
-    idx = torch.take_along_dim(input=idx, indices=sort_by_age, dim=1)
+    gen_cnt = (idx > 0).sum(dim=1).detach().cpu().numpy()
 
-    return idx, age, logits
+    return idx, age, logits, {"n_prompt": pmt_cnt, "n_gen": gen_cnt}
 
 
 @torch.no_grad

@@ -6,11 +6,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from delphi.exponential import exponential_nll
 from delphi.model.transformer import (
     AgeEncoding,
     Block,
     LayerNorm,
+    causal_attention_mask,
+    exponential_nll,
+    untie_idx,
 )
 from delphi.multimodal import Modality, module_name
 
@@ -189,32 +191,6 @@ def fuse_targets_mask(targets_age: torch.Tensor, mod_age: torch.Tensor):
     return is_target
 
 
-def causal_attention_mask(
-    pad: torch.Tensor, timestep: None | torch.Tensor = None
-) -> torch.Tensor:
-
-    b, l = pad.shape
-    device = pad.device
-
-    if timestep is not None:
-        assert timestep.shape == (b, l)
-        q_time = timestep.view(b, l, 1)
-        k_time = timestep.view(b, 1, l)
-        attn_mask = (k_time <= q_time).int()
-    else:
-        attn_mask = torch.tril(torch.ones((l, l), device=device))
-        attn_mask = attn_mask.view(1, l, l)
-    pad_mask = pad.int().view(b, 1, l).to(torch.int)
-    attn_mask = attn_mask * pad_mask
-    diag_indices = torch.arange(attn_mask.shape[-1])
-    attn_mask[..., diag_indices, diag_indices] = 1
-    # attn_mask += (attn_mask.sum(-1, keepdim=True) == 0) * torch.diag(
-    #     torch.ones(l, device=device)
-    # ) > 0
-
-    return attn_mask.unsqueeze(1)
-
-
 @dataclass
 class DelphiM4Config:
     """
@@ -325,13 +301,7 @@ class DelphiM4(torch.nn.Module):
         targets_age: torch.Tensor,
     ):
         if self.config.mask_ties:
-            dt = targets_age - age
-            is_tie = dt == 0
-            is_tie[age == -1e4] = False
-            corr_idx = torch.where(
-                is_tie, 0, torch.arange(age.shape[1], device=age.device)
-            )
-            corr_idx = torch.cummax(corr_idx, dim=1)[0]
+            corr_idx = untie_idx(age, targets_age)
             age = torch.take_along_dim(input=age, indices=corr_idx, dim=1)
             logits = torch.take_along_dim(
                 input=logits, indices=corr_idx.unsqueeze(-1), dim=1
