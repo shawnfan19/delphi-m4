@@ -41,7 +41,7 @@ def kaplan_meier_incidence(
     assert len(surv_time.shape) == 1
     assert surv_prob.shape[-1] == surv_time.size
 
-    start_mask = surv_time < start
+    start_mask = surv_time <= start
     end_mask = surv_time <= end
 
     incidence = list()
@@ -55,12 +55,7 @@ def kaplan_meier_incidence(
 
 class KaplanMeierEstimator:
 
-    def __init__(self, surv_percent: list[np.ndarray], surv_time: list[np.ndarray]):
-        self.surv_percent = surv_percent
-        self.surv_time = surv_time
-
-    @classmethod
-    def from_population(cls, timestep: np.ndarray, tokens: np.ndarray, vocab_size: int):
+    def __init__(self, timestep: np.ndarray, tokens: np.ndarray, vocab_size: int):
 
         assert timestep.shape == tokens.shape
         n_subjects = tokens.shape[0]
@@ -97,20 +92,21 @@ class KaplanMeierEstimator:
             surv_percent.append(np.cumprod(1 - n_occur / n_surv))
             surv_timestep.append(uniq_time)
 
-        return cls(surv_percent, surv_timestep)
+        self.surv_percent = surv_percent
+        self.surv_time = surv_timestep
 
     def incidence(self, start_age: float, end_age: float) -> np.ndarray:
 
         incidence = list()
         for token in range(len(self.surv_percent)):
-            in_range = (self.surv_time[token] >= start_age) & (
-                self.surv_time[token] <= end_age
-            )
-            if in_range.sum() > 0:
-                _prob = self.surv_percent[token][in_range]
-                incidence.append((_prob.max() - _prob.min()) / _prob.max())
+            start_mask = self.surv_time[token] <= start_age
+            end_mask = self.surv_time[token] <= end_age
+            if (start_mask.sum() == 0) or (end_mask.sum() == 0):
+                incidence.append(np.nan)
             else:
-                incidence.append(float("nan"))
+                start_surv = self.surv_percent[token][start_mask].min()
+                end_surv = self.surv_percent[token][end_mask].min()
+                incidence.append((start_surv - end_surv) / start_surv)
         return np.array(incidence)
 
 
@@ -167,12 +163,15 @@ def integrate_risk(
     return torch.stack(risks, dim=-1)
 
 
-class IntervalRiskCollator:
+class OnlineSurvivalEstimator:
 
-    def __init__(self, time_intervals: list[float], n_repeats: int = 1):
-        self.risk_per_interval = list()
+    def __init__(
+        self, time_intervals: list[float], vocab_size: int, n_repeats: int = 1
+    ):
         self.time_intervals = time_intervals
         self.n_intervals = len(time_intervals) - 1
+        self.risk_per_interval = np.zeros((vocab_size, self.n_intervals))
+        self.counter = self.risk_per_interval.copy()
         self.n_repeats = n_repeats
 
     def step(self, tokens: torch.Tensor, timestep: torch.Tensor, logits: torch.Tensor):
@@ -191,13 +190,14 @@ class IntervalRiskCollator:
         )  # participants, # repeats, # vocab_size, # time_intervals
         risk_per_interval = torch.nanmean(risk_per_interval, dim=1)
         # participants, # vocab_size, # time_intervals
+        risk_per_interval = risk_per_interval.detach().cpu().numpy()
 
-        self.risk_per_interval.append(risk_per_interval.detach().cpu())
+        self.risk_per_interval += np.nansum(risk_per_interval, axis=0)
+        self.counter += (~np.isnan(risk_per_interval)).sum(axis=0)
 
     def finalize(self):
-        out = torch.cat(self.risk_per_interval, dim=0)
-        self.risk_per_interval.clear()
-        return out
+        self.risk_per_interval /= self.counter
+        return np.cumprod(1 - self.risk_per_interval, axis=-1), self.time_intervals
 
 
 class IntervalKaplanMeierCollator:

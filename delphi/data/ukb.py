@@ -35,17 +35,31 @@ LIFESTYLE = [
 ]
 
 
-def cut_batch_for_prompt(idx, age, prompt_age, append_no_event):
+def cut_prompt(
+    idx: torch.Tensor,
+    age: torch.Tensor,
+    prompt_age: None | float | torch.Tensor,
+    prompt_token: None | torch.Tensor,
+    append_no_event: bool,
+):
 
     idx = idx.clone()
     age = age.clone()
 
+    if prompt_age is None:
+        assert prompt_token is not None
+        is_prompt = torch.isin(idx, prompt_token)
+        assert is_prompt.any(dim=1).all(), "found sequences with no prompt_token(s)"
+        prompt_age = age.clone()
+        prompt_age[~is_prompt] = -10000
+        prompt_age = prompt_age.max(dim=1, keepdim=True)[0]
+
     idx[age > prompt_age] = 0
     age[age > prompt_age] = -10000.0
 
-    if prompt_age > 0 and append_no_event:
+    if append_no_event:
         idx = torch.nn.functional.pad(idx, (0, 1), "constant", 1)
-        age = torch.nn.functional.pad(age, (0, 1), "constant", prompt_age)
+        age = torch.cat((age, age.max(dim=1, keepdim=True)[0]), dim=1)
 
     age_sort = age.argsort(1)
     idx = idx.gather(1, age_sort)
@@ -150,6 +164,10 @@ class UKBDataset:
     def detokenizer(self):
         return {v: k for k, v in self.tokenizer.items()}
 
+    @property
+    def lifestyle_tokens(self):
+        return np.array([self.tokenizer[i] for i in LIFESTYLE])
+
     def __getitem__(self, idx: int):
 
         pid = self.participants[idx]
@@ -170,9 +188,8 @@ class UKBDataset:
         return x_pid[:-1], t_pid[:-1], x_pid[1:], t_pid[1:]
 
     def subset_participants_for_prompt(
-        self, prompt_age: float, must_have_lifestyle: bool = False
+        self, prompt_age: None | float, must_have_lifestyle: bool = False
     ):
-        lifestyle_tokens = np.array(self.tokenizer[i] for i in LIFESTYLE)
         keep_lst = list()
         for i in range(self.participants.size):
             x_pid, t_pid, _, _ = self[i]
@@ -180,15 +197,22 @@ class UKBDataset:
             have_after = t_pid.max() >= prompt_age
             if must_have_lifestyle:
                 have_lifestyle = np.isin(
-                    x_pid[t_pid <= prompt_age], lifestyle_tokens
+                    x_pid[t_pid <= prompt_age], self.lifestyle_tokens
                 ).any()
                 if not have_lifestyle:
                     continue
             if have_before and have_after:
                 keep_lst.append(i)
-        print(
-            f"prompt age {prompt_age}: {len(keep_lst)}/{self.participants.size} participants remaining"
-        )
+        print(f"{len(keep_lst)}/{self.participants.size} participants remaining")
+        self.participants = self.participants[keep_lst]
+
+    def subset_by_tokens(self, tokens: np.ndarray):
+        keep_lst = list()
+        for i in range(self.participants.size):
+            x_pid, _, _, _ = self[i]
+            if np.isin(x_pid, tokens).any():
+                keep_lst.append(i)
+        print(f"{len(keep_lst)}/{self.participants.size} participants remaining")
         self.participants = self.participants[keep_lst]
 
     def get_batch(self, batch_idx: Iterable):
