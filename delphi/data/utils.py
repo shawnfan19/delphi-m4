@@ -52,6 +52,45 @@ def identity_transform(*args, **kwargs):
     return args
 
 
+def forward_fill(dt, mask):
+    idx = np.arange(len(dt))
+    val_idx = np.where(~mask, idx, 0)
+    ffill_idx = np.maximum.accumulate(val_idx)
+    return dt[ffill_idx]
+
+
+def dissolve_clusters(
+    x: np.ndarray,
+    t: np.ndarray,
+    rng: np.random.Generator,
+    whitelist: np.ndarray,
+    dx_token: int,
+):
+    t = t.copy()
+    x = x.copy()
+
+    is_dis = ~np.isin(x, whitelist)
+    uniq_t = np.unique(t[is_dis])
+    diag_t = uniq_t
+    diag_x = np.full_like(diag_t, fill_value=dx_token)
+
+    dt = np.diff(t)
+    dt = np.insert(dt, 0, t[0])
+    dt = forward_fill(dt, dt == 0)
+    assert dt.min() >= 0
+
+    perturb_t = rng.uniform(size=len(dt))
+    perturb_t *= dt
+    t[is_dis] = t[is_dis] - perturb_t[is_dis]
+
+    t = np.concatenate((t, diag_t))
+    x = np.concatenate((x, diag_x))
+
+    t, x = sort_by_time(t, x)
+
+    return x.astype(np.uint32), t.astype(np.float32)
+
+
 def append_no_event(
     x: np.ndarray,
     t: np.ndarray,

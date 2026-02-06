@@ -13,6 +13,7 @@ from delphi.data.utils import (
     append_no_event,
     collate_batch,
     crop_contiguous,
+    dissolve_clusters,
     exclude_tokens,
     identity_transform,
     perturb_time,
@@ -33,6 +34,10 @@ LIFESTYLE = [
     "alcohol_mid",
     "alcohol_high",
 ]
+
+SEX = ["female", "male"]
+
+NO_EVENT_TOKEN = 1
 
 
 def cut_prompt(
@@ -85,6 +90,7 @@ class UKBDataset:
         exclude: bool = False,
         exclude_list: None | list = None,
         crop_mode: Literal["left", "right", "random"] = "right",
+        break_clusters: bool = False,
         seed: int = 42,
         deterministic: bool = False,
         memmap: bool = False,
@@ -153,6 +159,17 @@ class UKBDataset:
         else:
             self.crop_block_size = identity_transform
 
+        if break_clusters:
+            self.break_clusters = functools.partial(
+                dissolve_clusters,
+                whitelist=np.concatenate(
+                    (np.array([NO_EVENT_TOKEN]), self.sex_tokens, self.lifestyle_tokens)
+                ),
+                dx_token=NO_EVENT_TOKEN,
+            )
+        else:
+            self.break_clusters = identity_transform
+
     def __len__(self):
         return self.participants.size
 
@@ -167,6 +184,10 @@ class UKBDataset:
     @property
     def lifestyle_tokens(self):
         return np.array([self.tokenizer[i] for i in LIFESTYLE])
+
+    @property
+    def sex_tokens(self):
+        return np.array([self.tokenizer[i] for i in SEX])
 
     def __getitem__(self, idx: int):
 
@@ -184,6 +205,7 @@ class UKBDataset:
         x_pid, t_pid = self.perturb_time(x_pid, t_pid, rng=rng)
         t_pid, x_pid = sort_by_time(t_pid, x_pid, stable=self.deterministic)
         x_pid, t_pid = self.crop_block_size(x_pid, t_pid, rng=rng)
+        x_pid, t_pid = self.break_clusters(x_pid, t_pid, rng=rng)
 
         return x_pid[:-1], t_pid[:-1], x_pid[1:], t_pid[1:]
 
