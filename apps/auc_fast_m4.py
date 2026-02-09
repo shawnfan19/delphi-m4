@@ -95,10 +95,9 @@ pprint.pp(data_args)
 # -
 ds = MultimodalUKBDataset(**data_args)
 
-age_start = args.age_start
-age_end = args.age_end
-age_gap = args.age_gap
-age_group_edges = np.arange(age_start, age_end + age_gap, age_gap) * 365.25
+age_group_edges = (
+    np.arange(args.age_start, args.age_end + args.age_gap, args.age_gap) * 365.25
+)
 age_groups = [(i, j) for i, j in zip(age_group_edges[:-1], age_group_edges[1:])]
 
 # +
@@ -134,14 +133,13 @@ with torch.no_grad():
 
 ctl_rates, ctl_times = ctl_collator.finalize()
 dis_rates, dis_times = dis_collator.finalize()
-sex = sex_collator.finalize()
+is_female = sex_collator.finalize()
 # +
 ctl_rates, ctl_times = ctl_rates.numpy(), ctl_times.numpy()
 dis_rates, dis_times = dis_rates.numpy(), dis_times.numpy()
-sex = sex.numpy()
+is_female = is_female.numpy()
 
-is_female = sex
-is_male = ~sex
+is_male = ~is_female
 either = np.logical_or(is_female, is_male)
 
 

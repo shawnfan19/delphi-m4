@@ -18,20 +18,16 @@ import argparse
 # %%
 import json
 import math
-import os
 import pprint
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import torch
-import yaml
 from tqdm import tqdm
 
 # %%
-from delphi import DAYS_PER_YEAR
 from delphi.data.ukb import UKBDataset
 from delphi.env import DELPHI_CKPT_DIR
 from delphi.eval import AgeStratRatesCollator as ControlRatesCollator
@@ -40,7 +36,6 @@ from delphi.eval import (
     SexCollator,
     correct_time_offset,
     mann_whitney_auc,
-    sample_boolean_mask,
 )
 from delphi.experiment import eval_iter, move_batch_to_device
 from delphi.model.transformer import Delphi2M, Delphi2MConfig
@@ -99,7 +94,6 @@ print(f"model: {ckpt} [iter: {ckpt_dict['iter_num']}]")
 data_args = ckpt_dict.get("data_args", dict())
 if len(data_args) > 0:
     data_args = ckpt_dict["data_args"].copy()
-    data_args["stats_subject_list"] = ckpt_dict["data_args"]["subject_list"]
 else:
     print(f"no data args found in checkpoint")
     data_args = get_init_defaults(UKBDataset)
@@ -111,10 +105,9 @@ pprint.pp(data_args)
 ds = UKBDataset(**data_args)
 
 # %%
-age_start = args.age_start
-age_end = args.age_end
-age_gap = args.age_gap
-age_group_edges = np.arange(age_start, age_end + age_gap, age_gap) * 365.25
+age_group_edges = (
+    np.arange(args.age_start, args.age_end + args.age_gap, args.age_gap) * 365.25
+)
 age_groups = [(i, j) for i, j in zip(age_group_edges[:-1], age_group_edges[1:])]
 
 # %%
@@ -150,17 +143,16 @@ with torch.no_grad():
 
 ctl_rates, ctl_times = ctl_collator.finalize()
 dis_rates, dis_times = dis_collator.finalize()
-sex = sex_collator.finalize()
+is_female = sex_collator.finalize()
 
 # %%
 
 # %%
 ctl_rates, ctl_times = ctl_rates.numpy(), ctl_times.numpy()
 dis_rates, dis_times = dis_rates.numpy(), dis_times.numpy()
-sex = sex.numpy()
+is_female = is_female.numpy()
 
-is_female = sex
-is_male = ~sex
+is_male = ~is_female
 either = np.logical_or(is_female, is_male)
 
 # %%
@@ -170,8 +162,6 @@ dis_time_bin -= 1
 logbook = defaultdict(dict)
 
 for i in tqdm(range(len(age_groups))):
-
-    dis_in_range = dis_time_bin == i
 
     for dis_token in range(0, 1270):
 
@@ -183,8 +173,13 @@ for i in tqdm(range(len(age_groups))):
 
             ctl = ctl_rates[:, i, dis_token].copy()
             dis = dis_rates[:, dis_token].copy()
+
             ctl[~np.isnan(dis)] = np.nan
-            dis[~dis_in_range[:, dis_token]] = np.nan
+            dis_in_range = np.logical_and(
+                dis_time_bin[:, dis_token] == i, ~np.isnan(dis_times[:, dis_token])
+            )
+            dis[~dis_in_range] = np.nan
+
             ctl[~is_gender] = np.nan
             dis[~is_gender] = np.nan
 
