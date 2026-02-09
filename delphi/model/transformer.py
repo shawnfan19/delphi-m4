@@ -659,11 +659,13 @@ def generate(
         final_idx[i, -idx_i.numel() :] = idx_i
         final_age[i, -age_i.numel() :] = age_i
 
-    final_idx[final_age > max_age] = 0
-    final_age[final_age > max_age] = -1e4
+    final_idx[final_age > max_age] = 1
+    final_age = torch.clamp(final_age, max=max_age)
+
     sort_by_age = torch.argsort(final_age, dim=1)
     age = torch.take_along_dim(input=final_age, indices=sort_by_age, dim=1)
     idx = torch.take_along_dim(input=final_idx, indices=sort_by_age, dim=1)
+
     margin = torch.min(torch.sum(idx == 0, dim=1)).item()
     idx, age = idx[:, margin:], age[:, margin:]
 

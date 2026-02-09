@@ -22,9 +22,10 @@ from delphi.data.utils import collate_batches
 from delphi.env import DELPHI_CKPT_DIR
 from delphi.eval import KaplanMeierEstimator
 from delphi.experiment import eval_iter
-from delphi.model.transformer import Delphi2M, Delphi2MConfig, generate
+from delphi.model.transformer import Delphi2M, Delphi2MConfig
 
 delphi_labels = pd.read_csv("notebook/delphi_labels_chapters_colours_icd.csv")
+# -
 
 
 # +
@@ -37,16 +38,15 @@ parser.add_argument("--subsample", type=int, default=None)
 parser.add_argument("--n_repeats", type=int, default=1)
 parser.add_argument("--stop_at_block_size", type=bool, default=True)
 parser.add_argument("--max_new_tokens", type=int, default=128)
-parser.add_argument("--prompt_no_event", type=bool, default=True)
+parser.add_argument("--prompt_no_event", type=bool, default=False)
 parser.add_argument("--must_have_lifestyle", type=bool, default=False)
 
 
 if "ipykernel" in sys.modules:
     print(f"running in jupyter notebook")
     args = parser.parse_args([])
-    args.ckpt = "cluster/homo_poisson/ckpt.pt"
+    args.ckpt = "cluster/freectx/ckpt.pt"
     args.age = None
-    args.prompt_no_event = False
     args.must_have_lifestyle = True
 else:
     args = parser.parse_args()
@@ -68,20 +68,16 @@ print("unexpected:", unexpected)
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model.to(device)
 model.eval()
+# -
+data_args = ckpt_dict["data_args"]
+data_args["subject_list"] = "participants/val_fold.bin"
+data_args["perturb"] = False
+data_args["deterministic"] = True
+data_args["crop_mode"] = "left"
+pprint.pp(data_args)
 
-exclude_lifestyle = ckpt_dict["config"].get("exclude_lifestyle", False)
-no_event_mode = ckpt_dict["config"].get("no_event_mode", "legacy-random")
 # +
-ds = UKBDataset(
-    data_dir="ukb_real_data",
-    subject_list="participants/val_fold.bin",
-    crop_mode="left",
-    perturb=False,
-    no_event_mode=no_event_mode,
-    exclude=exclude_lifestyle,
-    block_size=model.config.block_size,
-    deterministic=True,
-)
+ds = UKBDataset(**data_args)
 
 if args.age is not None:
     ds.subset_participants_for_prompt(
@@ -89,7 +85,6 @@ if args.age is not None:
     )
 else:
     ds.subset_by_tokens(ds.lifestyle_tokens)
-# -
 
 
 # +
@@ -103,8 +98,8 @@ for batch_idx in pbar:
 
     X0, T0, X1, T1 = ds.get_batch(batch_idx)
 
-    real_idx.append(torch.cat((X0[:, [0]], X1), dim=1).detach().cpu().numpy())
-    real_age.append(torch.cat((T0[:, [0]], T1), dim=1).detach().cpu().numpy())
+    real_idx.append(torch.cat((X0, X1[:, [-1]]), dim=1).detach().cpu().numpy())
+    real_age.append(torch.cat((T0, T1[:, [-1]]), dim=1).detach().cpu().numpy())
 
     pmt_idx, pmt_age = cut_prompt(
         X0,
@@ -133,6 +128,7 @@ for batch_idx in pbar:
             "n_gen": stats["n_gen"].mean() - stats["n_prompt"].mean(),
         }
     )
+# -
 
 
 # +
@@ -150,8 +146,8 @@ real_estimator = KaplanMeierEstimator(
 
 
 # +
-start_age = 60
-end_age = 80
+start_age = 50
+end_age = 70
 
 real = real_estimator.incidence(start_age * 365.25, end_age * 365.25)
 syn = syn_estimator.incidence(start_age * 365.25, end_age * 365.25)
@@ -167,3 +163,12 @@ plt.title(f"probability of disease between age {start_age} and {end_age}")
 plt.xlim(1e-5, 1)
 plt.ylim(1e-5, 1)
 # -
+
+plt.figure(figsize=(15, 5))
+bins = np.arange(30, 85) * 365.25
+plt.hist(real_age.max(axis=1), bins=bins, alpha=0.3, label="real")
+plt.hist(syn_age.max(axis=1), bins=bins, alpha=0.3, label="generated")
+plt.xticks(bins, (bins / 365.25).astype(int))
+plt.xlabel("age of final token")
+plt.ylabel("# participants")
+plt.legend()

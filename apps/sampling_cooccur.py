@@ -52,7 +52,7 @@ parser.add_argument("--prompt_no_event", type=bool, default=False)
 if "ipykernel" in sys.modules:
     print(f"running in jupyter notebook")
     args = parser.parse_args([])
-    args.ckpt = "cluster/chain/ckpt.pt"
+    args.ckpt = "cluster/homo_cluster_poisson/ckpt.pt"
     args.batch_size = 512
     args.age = None
 else:
@@ -381,6 +381,8 @@ gt_stats = ClusterStatsTracker()
 tracker = CooccurrenceTracker(vocab_size=model.config.vocab_size)
 stats = ClusterStatsTracker()
 
+break_clusters = data_args.get("break_clusters", False)
+
 torch.manual_seed(42)
 
 for batch_idx in pbar:
@@ -398,7 +400,7 @@ for batch_idx in pbar:
     T1_np = T1.detach().cpu().numpy().copy()
     X1_np[T1_np <= cutoff] = 0
     T1_np[T1_np <= cutoff] = -1e4
-    if data_args["break_clusters"]:
+    if break_clusters:
         X1_np, T1_np = pack_clusters(X1_np, T1_np, dx_token=1)
     gt_tracker.step(tokens=X1_np, timesteps=T1_np)
     gt_stats.step(tokens=X1_np, timesteps=T1_np)
@@ -421,7 +423,7 @@ for batch_idx in pbar:
     timesteps = timesteps.detach().cpu().numpy()
     tokens[timesteps <= cutoff] = 0
     timesteps[timesteps <= cutoff] = -1e4
-    if data_args["break_clusters"]:
+    if break_clusters:
         tokens, timesteps = pack_clusters(tokens, timesteps, dx_token=1)
     tracker.step(tokens=tokens, timesteps=timesteps)
     stats.step(tokens=tokens, timesteps=timesteps)
