@@ -91,6 +91,59 @@ def dissolve_clusters(
     return x.astype(np.uint32), t.astype(np.float32)
 
 
+def pack_clusters(tokens, timesteps, whitelist, dx_token=1):
+    batch_size = tokens.shape[0]
+    is_dx_token = tokens == dx_token
+    if dx_token == 1:
+        prev_token = np.concatenate(
+            (np.full((batch_size, 1), fill_value=0), tokens[:, :-1]), axis=1
+        )
+        is_dx_token = np.logical_and(is_dx_token, ~np.isin(prev_token, whitelist))
+    to_pack = ~np.isin(tokens, whitelist)
+    timesteps = backward_fill(timesteps, to_pack, axis=1)
+
+    tokens[is_dx_token] = 0
+    timesteps[is_dx_token] = -1e4
+
+    sort_by_age = np.argsort(timesteps, axis=1)
+    timesteps = np.take_along_axis(timesteps, sort_by_age, axis=1)
+    tokens = np.take_along_axis(tokens, sort_by_age, axis=1)
+
+    return tokens, timesteps
+
+
+def backward_fill(t, mask, axis=-1):
+    """
+    Args:
+        t: Data array (e.g. shape [Batch, Time])
+        mask: Boolean mask, True indicates missing value
+        axis: The axis to fill along (default -1)
+    """
+    idx_len = t.shape[axis]
+
+    # 1. Create indices [0, 1, ... L-1]
+    # We reshape it so it broadcasts against t (e.g. shape [1, L] for 2D)
+    idx = np.arange(idx_len)
+    shape_view = [1] * t.ndim
+    shape_view[axis] = idx_len
+    idx = idx.reshape(shape_view)
+
+    # 2. Fill masked areas with the LAST index (L-1)
+    # This prepares the array for minimum accumulation from right-to-left
+    val_idx = np.where(~mask, idx, idx_len - 1)
+
+    # 3. Propagate indices backwards
+    # NumPy accumulate works left-to-right, so we:
+    # Flip -> Accumulate Minimum -> Flip Back
+    val_idx_flipped = np.flip(val_idx, axis=axis)
+    bfill_idx_flipped = np.minimum.accumulate(val_idx_flipped, axis=axis)
+    bfill_idx = np.flip(bfill_idx_flipped, axis=axis)
+
+    # 4. Use take_along_axis to fetch values
+    # t[bfill_idx] would not work correctly in 2D+
+    return np.take_along_axis(t, bfill_idx, axis=axis)
+
+
 def append_no_event(
     x: np.ndarray,
     t: np.ndarray,

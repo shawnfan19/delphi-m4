@@ -103,7 +103,7 @@ for batch_idx in pbar:
     real_idx.append(torch.cat((X0, X1[:, [-1]]), dim=1).detach().cpu().numpy())
     real_age.append(torch.cat((T0, T1[:, [-1]]), dim=1).detach().cpu().numpy())
 
-    pmt_idx, pmt_age = cut_prompt(
+    pmt_idx, pmt_age, _ = cut_prompt(
         X0,
         T0,
         prompt_age=prompt_age,
@@ -148,7 +148,7 @@ real_estimator = KaplanMeierEstimator(
 
 
 # +
-start_age = 78
+start_age = 60
 end_age = 80
 
 real = real_estimator.incidence(start_age * 365.25, end_age * 365.25)

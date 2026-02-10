@@ -73,7 +73,7 @@ def cut_prompt(
     trim_margin = torch.min(torch.sum(idx == 0, dim=1)).item()
     idx, age = idx[:, trim_margin:], age[:, trim_margin:]
 
-    return idx, age
+    return idx, age, prompt_age
 
 
 class UKBDataset:

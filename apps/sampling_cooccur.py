@@ -31,11 +31,12 @@ import numpy as np
 import pandas as pd
 import torch
 import yaml
-from scipy import sparse
 from tqdm import tqdm
 
 from delphi.data.ukb import UKBDataset, cut_prompt
+from delphi.data.utils import pack_clusters
 from delphi.env import DELPHI_CKPT_DIR
+from delphi.eval import ClusterStatsTracker, CooccurrenceTracker
 from delphi.experiment import eval_iter
 from delphi.model.transformer import Delphi2M, Delphi2MConfig, generate
 
@@ -99,231 +100,13 @@ ds.dx_token
 
 
 # %%
-
-
-# %%
-class ClusterStatsTracker:
-    def __init__(self):
-        self.n_clusters_per_sub = list()
-        self.cluster_size = list()
-
-    def step(self, tokens: np.ndarray, timesteps: np.ndarray):
-
-        # 1. Mask Padding
-        # Filter out 0 (padding) tokens
-        mask = tokens != 0
-        if not np.any(mask):
-            return  # Skip empty batches
-        flat_tokens = tokens[mask]
-        flat_times = timesteps[mask]
-
-        # Get row indices (0 to N-1) for every valid token
-        N, K = tokens.shape
-        row_indices = np.arange(N).repeat(K).reshape(N, K)
-        flat_rows = row_indices[mask]
-        # 2. Identify Unique Events
-        # An event is a unique combination of (Batch_Row_Index, Timestep)
-        # We stack them to create unique keys for grouping
-        event_keys = np.column_stack((flat_rows, flat_times))
-
-        # np.unique maps every (row, time) pair to a unique integer ID (0 to Num_Events-1)
-        _, event_ids, cluster_size = np.unique(
-            event_keys, axis=0, return_index=True, return_counts=True
-        )
-
-        event_subs = flat_rows[event_ids]
-        cluster_subs = event_subs[cluster_size > 1]
-        _, n_clusters_per_sub = np.unique(cluster_subs, return_counts=True)
-
-        self.n_clusters_per_sub.append(n_clusters_per_sub)
-        self.cluster_size.append(cluster_size)
-
-    def finalize(self):
-        return np.concatenate(self.n_clusters_per_sub), np.concatenate(
-            self.cluster_size
-        )
-
-
-class CooccurrenceTracker:
-    def __init__(self, vocab_size):
-        """
-        Initializes the tracker.
-
-        Parameters:
-        - vocab_size: int, the dimension V of the vocabulary (max token id + 1).
-        """
-        self.vocab_size = vocab_size
-
-        # We use a sparse matrix for the running sum to save memory during accumulation.
-        # CSR format is efficient for arithmetic operations.
-        self.global_cooccurrence = sparse.csr_matrix(
-            (vocab_size, vocab_size), dtype=np.int32
-        )
-
-    def step(self, tokens, timesteps):
-        """
-        Updates the co-occurrence counts with a new batch of data.
-
-        Parameters:
-        - tokens: (N, K) numpy array of integers.
-        - timesteps: (N, K) numpy array of discrete days.
-        """
-        # 1. Mask Padding
-        # Filter out 0 (padding) tokens
-        mask = tokens != 0
-        if not np.any(mask):
-            return  # Skip empty batches
-        flat_tokens = tokens[mask]
-        flat_times = timesteps[mask]
-
-        # Get row indices (0 to N-1) for every valid token
-        N, K = tokens.shape
-        row_indices = np.arange(N).repeat(K).reshape(N, K)
-        flat_rows = row_indices[mask]
-        # 2. Identify Unique Events
-        # An event is a unique combination of (Batch_Row_Index, Timestep)
-        # We stack them to create unique keys for grouping
-        event_keys = np.column_stack((flat_rows, flat_times))
-
-        # np.unique maps every (row, time) pair to a unique integer ID (0 to Num_Events-1)
-        _, event_ids = np.unique(event_keys, axis=0, return_inverse=True)
-        num_events = event_ids.max() + 1
-        # 3. Create Incidence Matrix for this Batch (Events x Vocab)
-        # Rows = Events, Cols = Token IDs
-        # Values = 1 (presence).
-        # Note: If a token appears twice in one event, the values sum up.
-        ones = np.ones(len(flat_tokens), dtype=int)
-
-        X_batch = sparse.csr_matrix(
-            (ones, (event_ids, flat_tokens)), shape=(num_events, self.vocab_size)
-        )
-        # 4. Compute Batch Co-occurrence via Dot Product
-        # (V x Events) @ (Events x V) -> (V x V)
-        batch_cooccurrence = X_batch.T @ X_batch
-        # 5. Update Global State
-        self.global_cooccurrence += batch_cooccurrence
-
-    def finalize(self, as_dense=True):
-        """
-        Finalizes the calculation, removes self-occurrences, and returns the heatmap.
-
-        Parameters:
-        - as_dense: bool. If True, returns a numpy array. If False, returns sparse matrix.
-
-        Returns:
-        - heatmap: (V, V) matrix.
-        """
-        # Work on a copy to avoid corrupting the running state if called multiple times
-        result_matrix = self.global_cooccurrence.copy()
-
-        # The prompt asks for co-occurrence with "any OTHER token".
-        # We set the diagonal to 0 to remove self-occurrences (Token A with Token A).
-        result_matrix.setdiag(0)
-
-        # Eliminate any zeros created by setdiag from the sparse structure
-        result_matrix.eliminate_zeros()
-
-        if as_dense:
-            return result_matrix.toarray()
-        else:
-            return result_matrix
-
-
-# %%
 whitelist = np.concatenate(
     (np.array([0, 1]), np.array([ds.dx_token]), ds.sex_tokens, ds.lifestyle_tokens)
 )
-
-
-def pack_clusters(tokens, timesteps, dx_token=1):
-    batch_size = tokens.shape[0]
-    is_dx_token = tokens == dx_token
-    if dx_token == 1:
-        prev_token = np.concatenate(
-            (np.full((batch_size, 1), fill_value=0), tokens[:, :-1]), axis=1
-        )
-        is_dx_token = np.logical_and(is_dx_token, ~np.isin(prev_token, whitelist))
-    to_pack = ~np.isin(tokens, whitelist)
-    timesteps = backward_fill(timesteps, to_pack, axis=1)
-
-    tokens[is_dx_token] = 0
-    timesteps[is_dx_token] = -1e4
-
-    sort_by_age = np.argsort(timesteps, axis=1)
-    timesteps = np.take_along_axis(timesteps, sort_by_age, axis=1)
-    tokens = np.take_along_axis(tokens, sort_by_age, axis=1)
-
-    return tokens, timesteps
-
-
-def backward_fill(t, mask, axis=-1):
-    """
-    Args:
-        t: Data array (e.g. shape [Batch, Time])
-        mask: Boolean mask, True indicates missing value
-        axis: The axis to fill along (default -1)
-    """
-    idx_len = t.shape[axis]
-
-    # 1. Create indices [0, 1, ... L-1]
-    # We reshape it so it broadcasts against t (e.g. shape [1, L] for 2D)
-    idx = np.arange(idx_len)
-    shape_view = [1] * t.ndim
-    shape_view[axis] = idx_len
-    idx = idx.reshape(shape_view)
-
-    # 2. Fill masked areas with the LAST index (L-1)
-    # This prepares the array for minimum accumulation from right-to-left
-    val_idx = np.where(~mask, idx, idx_len - 1)
-
-    # 3. Propagate indices backwards
-    # NumPy accumulate works left-to-right, so we:
-    # Flip -> Accumulate Minimum -> Flip Back
-    val_idx_flipped = np.flip(val_idx, axis=axis)
-    bfill_idx_flipped = np.minimum.accumulate(val_idx_flipped, axis=axis)
-    bfill_idx = np.flip(bfill_idx_flipped, axis=axis)
-
-    # 4. Use take_along_axis to fetch values
-    # t[bfill_idx] would not work correctly in 2D+
-    return np.take_along_axis(t, bfill_idx, axis=axis)
+whitelist
 
 
 # %%
-def cut_prompt(
-    idx: torch.Tensor,
-    age: torch.Tensor,
-    prompt_age: None | float | torch.Tensor,
-    prompt_token: None | torch.Tensor,
-    append_no_event: bool,
-):
-
-    idx = idx.clone()
-    age = age.clone()
-
-    if prompt_age is None:
-        assert prompt_token is not None
-        is_prompt = torch.isin(idx, prompt_token)
-        assert is_prompt.any(dim=1).all(), "found sequences with no prompt_token(s)"
-        prompt_age = age.clone()
-        prompt_age[~is_prompt] = -10000
-        prompt_age = prompt_age.max(dim=1, keepdim=True)[0]
-
-    idx[age > prompt_age] = 0
-    age[age > prompt_age] = -10000.0
-
-    if append_no_event:
-        idx = torch.nn.functional.pad(idx, (0, 1), "constant", 1)
-        age = torch.cat((age, age.max(dim=1, keepdim=True)[0]), dim=1)
-
-    age_sort = age.argsort(1)
-    idx = idx.gather(1, age_sort)
-    age = age.gather(1, age_sort)
-
-    trim_margin = torch.min(torch.sum(idx == 0, dim=1)).item()
-    idx, age = idx[:, trim_margin:], age[:, trim_margin:]
-
-    return idx, age, prompt_age
-
 
 # %%
 if args.subset is None:
@@ -357,7 +140,7 @@ for batch_idx in pbar:
     X1_np[T1_np <= cutoff] = 0
     T1_np[T1_np <= cutoff] = -1e4
     if break_clusters:
-        X1_np, T1_np = pack_clusters(X1_np, T1_np, dx_token=ds.dx_token)
+        X1_np, T1_np = pack_clusters(X1_np, T1_np, whitelist, dx_token=ds.dx_token)
     gt_tracker.step(tokens=X1_np, timesteps=T1_np)
     gt_stats.step(tokens=X1_np, timesteps=T1_np)
 
@@ -381,7 +164,9 @@ for batch_idx in pbar:
     tokens[timesteps <= cutoff] = 0
     timesteps[timesteps <= cutoff] = -1e4
     if break_clusters:
-        tokens, timesteps = pack_clusters(tokens, timesteps, dx_token=ds.dx_token)
+        tokens, timesteps = pack_clusters(
+            tokens, timesteps, whitelist, dx_token=ds.dx_token
+        )
     tracker.step(tokens=tokens, timesteps=timesteps)
     stats.step(tokens=tokens, timesteps=timesteps)
 
