@@ -545,6 +545,7 @@ def generate(
     max_new_tokens: None | int = 100,
     max_age: float | torch.Tensor = 85 * 365.25,
     no_repeat: bool = True,
+    no_repeat_except: None | torch.Tensor = None,
     top_k: None | int = None,
     stop_at_block_size: bool = True,
     exclude_pad: bool = True,
@@ -556,6 +557,8 @@ def generate(
 
     if max_new_tokens is None:
         max_new_tokens = 128
+    if no_repeat_except is None:
+        no_repeat_except = torch.tensor([1])
 
     if isinstance(max_age, torch.Tensor):
         assert len(max_age.shape) == 1
@@ -595,7 +598,7 @@ def generate(
 
         if no_repeat:
             fill = cur_idx.clone()
-            fill[fill == 1] = 0
+            fill[torch.isin(fill, no_repeat_except.to(fill.device))] = 0
             logits = logits.scatter_(1, fill, -torch.inf)
 
         if hasattr(model, "sample_next"):
@@ -677,7 +680,7 @@ def generate(
 
     if no_repeat:
         fill = idx + 0
-        fill[fill == 1] = 0
+        fill[torch.isin(fill, no_repeat_except.to(fill.device))] = 0
         logits = torch.stack(
             [
                 logits[:, j].scatter_(1, fill[:, : j + 1], -torch.inf)

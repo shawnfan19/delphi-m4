@@ -52,7 +52,7 @@ parser.add_argument("--prompt_no_event", type=bool, default=False)
 if "ipykernel" in sys.modules:
     print(f"running in jupyter notebook")
     args = parser.parse_args([])
-    args.ckpt = "cluster/homo_cluster_poisson/ckpt.pt"
+    args.ckpt = "cluster/dx_token/ckpt.pt"
     args.batch_size = 512
     args.age = None
 else:
@@ -78,10 +78,13 @@ model.to(device)
 model.eval()
 
 # %%
-data_args = ckpt_dict["data_args"]
+data_args = ckpt_dict["data_args"].copy()
 data_args["subject_list"] = "participants/val_fold.bin"
 data_args["perturb"] = False
 data_args["deterministic"] = True
+data_args["additional_dx_token"] = ckpt_dict["data_args"].get(
+    "additional_dx_token", False
+)
 pprint.pp(data_args)
 
 # %%
@@ -90,6 +93,12 @@ if args.age is not None:
     ds.subset_participants_for_prompt(prompt_age=args.age * 365.25)
 else:
     ds.subset_by_tokens(tokens=ds.lifestyle_tokens)
+
+# %%
+ds.dx_token
+
+
+# %%
 
 
 # %%
@@ -221,32 +230,9 @@ class CooccurrenceTracker:
 
 
 # %%
-# whitelist = torch.from_numpy(
-#     np.concatenate((np.array([0, 1]), ds.sex_tokens, ds.lifestyle_tokens))
-# )
-# def pack_clusters(tokens, timesteps, dx_token = 1):
-#     batch_size = tokens.shape[0]
-#     is_dx_token = tokens == dx_token
-#     if dx_token == 1:
-#         prev_token = torch.cat(
-#             (torch.full((batch_size, 1), fill_value=0), tokens[:, :-1]),
-#             dim=1
-#         )
-#         is_dx_token = torch.logical_and(is_dx_token, ~torch.isin(prev_token, whitelist))
-#     to_pack = ~torch.isin(tokens, whitelist)
-#     timesteps = backward_fill(timesteps, to_pack, dim=1)
-
-#     tokens[is_dx_token] = 0
-#     timesteps[is_dx_token] = -1e4
-
-#     sort_by_age = torch.argsort(timesteps, dim=1)
-#     timesteps = torch.take_along_dim(input=timesteps, indices=sort_by_age, dim=1)
-#     tokens = torch.take_along_dim(input=tokens, indices=sort_by_age, dim=1)
-
-#     return tokens, timesteps
-
-
-whitelist = np.concatenate((np.array([0, 1]), ds.sex_tokens, ds.lifestyle_tokens))
+whitelist = np.concatenate(
+    (np.array([0, 1]), np.array([ds.dx_token]), ds.sex_tokens, ds.lifestyle_tokens)
+)
 
 
 def pack_clusters(tokens, timesteps, dx_token=1):
@@ -300,36 +286,6 @@ def backward_fill(t, mask, axis=-1):
     # 4. Use take_along_axis to fetch values
     # t[bfill_idx] would not work correctly in 2D+
     return np.take_along_axis(t, bfill_idx, axis=axis)
-
-
-# def backward_fill(timestep, mask, dim=-1):
-#     """
-#     Args:
-#         timestep: The data tensor (e.g., shape [Batch, Time])
-#         mask: Boolean tensor, True indicates missing value
-#         dim: The dimension to fill along (default last dim)
-#     """
-#     l = timestep.shape[dim]
-
-#     # 1. Create indices [0, 1, ... L-1]
-#     # We unsqueeze/view to make it broadcastable (e.g. [1, L] for 2D)
-#     idx = torch.arange(l, device=timestep.device)
-#     shape_view = [1] * timestep.ndim
-#     shape_view[dim] = l
-#     idx = idx.view(shape_view)
-
-#     # 2. Fill masked areas with the LAST index (L-1)
-#     # This prepares the tensor for a minimum accumulation
-#     val_idx = torch.where(~mask, idx, torch.tensor(l - 1, device=timestep.device))
-
-#     # 3. Propagate indices backwards
-#     # PyTorch doesn't have a "reverse accumulate", so we flip, cummin, then flip back.
-#     val_idx_flipped = torch.flip(val_idx, dims=[dim])
-#     bfill_idx_flipped = torch.cummin(val_idx_flipped, dim=dim).values
-#     bfill_idx = torch.flip(bfill_idx_flipped, dims=[dim])
-
-#     # 4. Use gather to fetch values based on the calculated indices
-#     return torch.gather(timestep, dim, bfill_idx)
 
 
 # %%
@@ -401,7 +357,7 @@ for batch_idx in pbar:
     X1_np[T1_np <= cutoff] = 0
     T1_np[T1_np <= cutoff] = -1e4
     if break_clusters:
-        X1_np, T1_np = pack_clusters(X1_np, T1_np, dx_token=1)
+        X1_np, T1_np = pack_clusters(X1_np, T1_np, dx_token=ds.dx_token)
     gt_tracker.step(tokens=X1_np, timesteps=T1_np)
     gt_stats.step(tokens=X1_np, timesteps=T1_np)
 
@@ -413,6 +369,7 @@ for batch_idx in pbar:
         age=pmt_age,
         max_age=T1.max(dim=1)[0].to(device),
         no_repeat=True,
+        no_repeat_except=torch.Tensor([1, ds.dx_token]),
         max_new_tokens=args.max_new_tokens,
         termination_tokens=[1269],
         stop_at_block_size=args.stop_at_block_size,
@@ -424,7 +381,7 @@ for batch_idx in pbar:
     tokens[timesteps <= cutoff] = 0
     timesteps[timesteps <= cutoff] = -1e4
     if break_clusters:
-        tokens, timesteps = pack_clusters(tokens, timesteps, dx_token=1)
+        tokens, timesteps = pack_clusters(tokens, timesteps, dx_token=ds.dx_token)
     tracker.step(tokens=tokens, timesteps=timesteps)
     stats.step(tokens=tokens, timesteps=timesteps)
 
@@ -474,30 +431,38 @@ alpha = 0.3
 fig, axs = plt.subplots(1, 2, figsize=(16, 8))
 axs = axs.ravel()
 
+n_bins = max(gt_n_clusters.max() + 1, n_clusters.max() + 1)
+bins = np.arange(1, n_bins)
 axs[0].hist(
     gt_n_clusters,
-    bins=np.arange(gt_n_clusters.max() + 1),
+    bins=bins,
     alpha=alpha,
     label="ground truth",
 )
-axs[0].hist(
-    n_clusters, bins=np.arange(n_clusters.max() + 1), alpha=alpha, label="model"
-)
+axs[0].hist(n_clusters, bins=bins, alpha=alpha, label="model")
 axs[0].set_xlabel("# disease clusters per participant")
+axs[0].set_xticks(bins, bins)
 axs[0].legend()
+
+# n_bins = max(gt_cluster_sizes.max() + 1, cluster_sizes.max() + 1)
+n_bins = 15
+bins = np.arange(1, n_bins)
 axs[1].hist(
     gt_cluster_sizes,
-    bins=np.arange(2, gt_cluster_sizes.max() + 1),
+    bins=bins,
     alpha=alpha,
     label="ground truth",
 )
 axs[1].hist(
     cluster_sizes,
-    bins=np.arange(2, cluster_sizes.max() + 1),
+    bins=bins,
     alpha=alpha,
     label="model",
 )
+axs[1].set_xticks(bins, bins)
 axs[1].legend()
 axs[1].set_xlabel("size of disease clusters")
+
+# %%
 
 # %%

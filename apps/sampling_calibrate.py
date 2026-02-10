@@ -22,10 +22,9 @@ from delphi.data.utils import collate_batches
 from delphi.env import DELPHI_CKPT_DIR
 from delphi.eval import KaplanMeierEstimator
 from delphi.experiment import eval_iter
-from delphi.model.transformer import Delphi2M, Delphi2MConfig
+from delphi.model.transformer import Delphi2M, Delphi2MConfig, generate
 
 delphi_labels = pd.read_csv("notebook/delphi_labels_chapters_colours_icd.csv")
-# -
 
 
 # +
@@ -45,7 +44,7 @@ parser.add_argument("--must_have_lifestyle", type=bool, default=False)
 if "ipykernel" in sys.modules:
     print(f"running in jupyter notebook")
     args = parser.parse_args([])
-    args.ckpt = "cluster/freectx/ckpt.pt"
+    args.ckpt = "cluster/dx_token/ckpt.pt"
     args.age = None
     args.must_have_lifestyle = True
 else:
@@ -74,6 +73,9 @@ data_args["subject_list"] = "participants/val_fold.bin"
 data_args["perturb"] = False
 data_args["deterministic"] = True
 data_args["crop_mode"] = "left"
+data_args["additional_dx_token"] = ckpt_dict["data_args"].get(
+    "additional_dx_token", False
+)
 pprint.pp(data_args)
 
 # +
@@ -116,6 +118,7 @@ for batch_idx in pbar:
         age=pmt_age,
         max_age=T1.max(dim=1)[0].to(pmt_idx.device),
         no_repeat=True,
+        no_repeat_except=torch.Tensor([1, ds.dx_token]),
         max_new_tokens=args.max_new_tokens,
         termination_tokens=[1269],
         stop_at_block_size=True,
@@ -128,7 +131,6 @@ for batch_idx in pbar:
             "n_gen": stats["n_gen"].mean() - stats["n_prompt"].mean(),
         }
     )
-# -
 
 
 # +
@@ -146,14 +148,19 @@ real_estimator = KaplanMeierEstimator(
 
 
 # +
-start_age = 50
-end_age = 70
+start_age = 78
+end_age = 80
 
 real = real_estimator.incidence(start_age * 365.25, end_age * 365.25)
 syn = syn_estimator.incidence(start_age * 365.25, end_age * 365.25)
 
 plt.figure()
-plt.scatter(syn[13:], real[13:], marker=".", c=delphi_labels["color"][13:])
+plt.scatter(
+    syn[13:],
+    real[13:],
+    marker=".",
+    # c=delphi_labels["color"][13:]
+)
 plt.plot([0, 1], [0, 1], c="k", ls=":")
 plt.xscale("log")
 plt.yscale("log")

@@ -91,6 +91,7 @@ class UKBDataset:
         exclude_list: None | list = None,
         crop_mode: Literal["left", "right", "random"] = "right",
         break_clusters: bool = False,
+        additional_dx_token: bool = True,
         seed: int = 42,
         deterministic: bool = False,
         memmap: bool = False,
@@ -160,12 +161,17 @@ class UKBDataset:
             self.crop_block_size = identity_transform
 
         if break_clusters:
+            if additional_dx_token:
+                self.dx_token = self.vocab_size
+                self.tokenizer["dx"] = len(self.tokenizer)
+            else:
+                self.dx_token = NO_EVENT_TOKEN
             self.break_clusters = functools.partial(
                 dissolve_clusters,
                 whitelist=np.concatenate(
                     (np.array([NO_EVENT_TOKEN]), self.sex_tokens, self.lifestyle_tokens)
                 ),
-                dx_token=NO_EVENT_TOKEN,
+                dx_token=self.dx_token,
             )
         else:
             self.break_clusters = identity_transform
