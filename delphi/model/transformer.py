@@ -319,13 +319,15 @@ class Delphi2M(nn.Module):
         x = self.transformer.ln_f(x)
         att = torch.stack(att)
 
-        logits = self.lm_head(x)
-        if self.config.no_event_rate is not None:
-            logits[..., 1] = math.log(self.config.no_event_rate)
-
         outputs = dict()
-        outputs["logits"] = logits
         outputs["attn_mask"] = attn_mask
+
+        if hasattr(self, "lm_head"):
+            logits = self.lm_head(x)
+            if self.config.no_event_rate is not None:
+                logits[..., 1] = math.log(self.config.no_event_rate)
+            outputs["logits"] = logits
+
         if hasattr(self, "aux_head"):
             aux_rates = self.aux_head(x)
             outputs["aux_rates"] = aux_rates.squeeze(-1)

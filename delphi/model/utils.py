@@ -179,3 +179,82 @@ def sample_homo_cluster_poisson(
         time_til_next = t_nod_next.expand(-1, 1).clone()
 
     return next_token, time_til_next
+
+
+def nll_gompertz_hawkes(
+    A: torch.Tensor,
+    B: torch.Tensor,
+    alpha: torch.Tensor,
+    beta: torch.Tensor,
+    age: torch.Tensor,
+    targets_age: torch.Tensor,
+    targets: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Compute the negative log-likelihood for a Gompertz-Hawkes mixture TPP.
+
+    Intensity for event type v at time τ in interval [t_i, t_{i+1}]:
+        λ_v(τ) = A_v · exp(B_v · τ) + α_v · exp(-β_v · (τ - t_i))
+                 \___ aging ___/     \____ acute trigger ____/
+
+    Log-likelihood:
+        LL = log λ_k(t_{i+1}) - ∫_{t_i}^{t_{i+1}} Σ_v λ_v(τ) dτ
+
+    Args:
+        A: Gompertz amplitude, shape (B, L, V), positive
+        B: Gompertz growth rate, shape (B, L, V), positive
+        alpha: Hawkes excitation amplitude, shape (B, L, V), positive
+        beta: Hawkes decay rate, shape (B, L, V), positive
+        age: Interval start time t_i, shape (B, L)
+        targets_age: Interval end time t_{i+1}, shape (B, L)
+        targets: Event type indices, shape (B, L), dtype=long
+
+    Returns:
+        NLL tensor of shape (B, L)
+    """
+    delta_t = targets_age - age
+    eps = 1e-8
+
+    # ================================================================
+    # Part 1: log λ_k(t_{i+1}) — point process term
+    # ================================================================
+
+    idx = targets.unsqueeze(-1)  # (B, L, 1)
+    A_k = torch.gather(A, dim=-1, index=idx).squeeze(-1)
+    B_k = torch.gather(B, dim=-1, index=idx).squeeze(-1)
+    alpha_k = torch.gather(alpha, dim=-1, index=idx).squeeze(-1)
+    beta_k = torch.gather(beta, dim=-1, index=idx).squeeze(-1)
+
+    # Use logsumexp for numerical stability:
+    # log(A·e^x + α·e^y) = logsumexp([log A + x, log α + y])
+    log_gompertz = torch.log(A_k + eps) + B_k * targets_age
+    log_hawkes = torch.log(alpha_k + eps) - beta_k * delta_t
+
+    part1 = torch.logsumexp(torch.stack([log_gompertz, log_hawkes], dim=-1), dim=-1)
+
+    # ================================================================
+    # Part 2: -∫_{t_i}^{t_{i+1}} Σ_v λ_v(τ) dτ — survival term
+    # ================================================================
+
+    age_exp = age.unsqueeze(-1)
+    targets_age_exp = targets_age.unsqueeze(-1)
+    delta_t_exp = delta_t.unsqueeze(-1)
+
+    # Gompertz integral: (A/B)·[exp(B·t_{i+1}) - exp(B·t_i)]
+    gompertz_integral = (A / (B + eps)) * (
+        torch.exp(B * targets_age_exp) - torch.exp(B * age_exp)
+    )
+
+    # Hawkes integral: (α/β)·[1 - exp(-β·Δt)]
+    hawkes_integral = (alpha / (beta + eps)) * (1.0 - torch.exp(-beta * delta_t_exp))
+
+    # Sum over all event types v
+    total_integral = (gompertz_integral + hawkes_integral).sum(dim=-1)
+
+    part2 = -total_integral
+
+    # ================================================================
+    # NLL = -(part1 + part2)
+    # ================================================================
+
+    return -(part1 + part2)
