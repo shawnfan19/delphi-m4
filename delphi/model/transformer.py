@@ -245,21 +245,22 @@ class Delphi2M(nn.Module):
 
     def loss(
         self,
-        logits: torch.Tensor,
+        outputs: dict[str, torch.Tensor],
         targets: torch.Tensor,
         age: torch.Tensor,
         targets_age: torch.Tensor,
-        **kwargs,
     ):
 
-        if self.config.mask_ties:
-            corr_idx = untie_idx(age, targets_age)
-            age = torch.take_along_dim(input=age, indices=corr_idx, dim=1)
-            logits = torch.take_along_dim(
-                input=logits, indices=corr_idx.unsqueeze(-1), dim=1
-            )
-
         if self.config.loss == "default":
+            logits = outputs["logits"]
+
+            if self.config.mask_ties:
+                corr_idx = untie_idx(age, targets_age)
+                age = torch.take_along_dim(input=age, indices=corr_idx, dim=1)
+                logits = torch.take_along_dim(
+                    input=logits, indices=corr_idx.unsqueeze(-1), dim=1
+                )
+
             loss_ce = F.cross_entropy(
                 # (b, l, n_vocab) -> (b, n_vocab, l)
                 logits.permute(0, 2, 1),
@@ -276,6 +277,15 @@ class Delphi2M(nn.Module):
 
             return {"loss_ce": loss_ce, "loss_dt": loss_dt}
         elif self.config.loss == "homo_poisson":
+            logits = outputs["logits"]
+
+            if self.config.mask_ties:
+                corr_idx = untie_idx(age, targets_age)
+                age = torch.take_along_dim(input=age, indices=corr_idx, dim=1)
+                logits = torch.take_along_dim(
+                    input=logits, indices=corr_idx.unsqueeze(-1), dim=1
+                )
+
             dt = targets_age - age
             dt = torch.clamp(dt, min=0)
             nll = nll_homogeneous_poisson(
@@ -284,7 +294,7 @@ class Delphi2M(nn.Module):
 
             return {"loss_nll": nll}
         elif self.config.loss == "homo_cluster_poisson":
-            thresh_logits = kwargs["aux_rates"]
+            logits, thresh_logits = outputs["logits"], outputs["aux_rates"]
             nll, nll_cluster, cooccur = nll_homogeneous_cluster_poisson(
                 log_intensity=logits,
                 log_aux_intensity=thresh_logits,
@@ -341,7 +351,7 @@ class Delphi2M(nn.Module):
             for k in ignored_tokens:
                 is_valid_target *= targets != k
             loss = self.loss(
-                targets=targets, age=age, targets_age=targets_age, **outputs
+                outputs=outputs, targets=targets, age=age, targets_age=targets_age
             )
             loss_mask = is_valid_target
             if "mask" in loss:
