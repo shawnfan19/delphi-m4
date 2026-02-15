@@ -10,6 +10,8 @@ from delphi.data.utils import collate_batch
 from delphi.model.utils import (
     causal_attention_mask,
     exponential_nll,
+    nll_gompertz,
+    nll_hawkes,
     nll_homogeneous_cluster_poisson,
     nll_homogeneous_poisson,
     sample_competing_exponentials,
@@ -141,6 +143,30 @@ class Block(nn.Module):
         return x, att
 
 
+class ParametricHead(nn.Module):
+
+    def __init__(self, n_embd, vocab_size):
+        super().__init__()
+        # self.proj_a = nn.Linear(n_embd, vocab_size)
+        # self.proj_b = nn.Linear(n_embd, vocab_size)
+        self.proj_alpha = nn.Linear(n_embd, vocab_size)
+        self.proj_beta = nn.Linear(n_embd, vocab_size)
+
+    def forward(self, x):
+
+        # param_a = F.softplus(self.proj_a(x)) + 1e-6
+        # param_b = F.softplus(self.proj_b(x))
+        param_alpha = F.softplus(self.proj_alpha(x))
+        param_beta = F.softplus(self.proj_beta(x)) + 0.1
+
+        return {
+            # "A": param_a,
+            # "B": param_b,
+            "alpha": param_alpha,
+            "beta": param_beta,
+        }
+
+
 @dataclass
 class Delphi2MConfig:
     # defaults to config of the OG delphi-2m ckpt
@@ -167,6 +193,7 @@ class Delphi2MConfig:
     no_event_rate: None | float = None
     mask_no_event_attention: bool = False
     loss: str = "default"  # homo_poisson, homo_cluster_poisson
+    time_unit: float = 1.0
     aux_head: str = "linear"
     ce_beta: float = 1.0
     dt_beta: float = 1.0
@@ -200,15 +227,18 @@ class Delphi2M(nn.Module):
                 ln_f=LayerNorm(config.n_embd, bias=config.bias),
             )
         )
-        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
-        # with weight tying when using torch.compile() some warnings get generated:
-        # "UserWarning: functional_call was passed multiple values for tied weights.
-        # This behavior is deprecated and will be an error in future versions"
-        # not 100% sure what this is, so far seems to be harmless. TODO investigate
-        if self.config.weight_tying:
-            self.transformer.wte.weight = (
-                self.lm_head.weight
-            )  # https://paperswithcode.com/method/weight-tying
+
+        parametric_losses = {"hawkes", "gompertz"}
+
+        if not (config.loss in parametric_losses):
+            self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+            if self.config.weight_tying:
+                self.transformer.wte.weight = self.lm_head.weight
+
+        if config.loss in parametric_losses:
+            self.param_head = ParametricHead(
+                n_embd=config.n_embd, vocab_size=config.vocab_size
+            )
 
         if "cluster" in config.loss:
             if self.config.aux_head == "linear":
@@ -288,6 +318,7 @@ class Delphi2M(nn.Module):
 
             dt = targets_age - age
             dt = torch.clamp(dt, min=0)
+            dt /= self.config.time_unit
             nll = nll_homogeneous_poisson(
                 log_intensity=logits, targets=targets, delta_t=dt
             )
@@ -303,6 +334,26 @@ class Delphi2M(nn.Module):
                 age=age,
             )
             return {"loss_nll": nll, "loss_cluster": nll_cluster, "mask": ~cooccur}
+        elif self.config.loss == "hawkes":
+            nll = nll_hawkes(
+                alpha=outputs["alpha"],
+                beta=outputs["beta"],
+                age=age,
+                targets_age=targets_age,
+                targets=targets,
+                time_unit=self.config.time_unit,
+            )
+            return {"loss_nll": nll}
+        elif self.config.loss == "gompertz":
+            nll = nll_gompertz(
+                A=outputs["alpha"],
+                B=outputs["beta"],
+                age=age,
+                targets_age=targets_age,
+                targets=targets,
+                time_unit=self.config.time_unit,
+            )
+            return {"loss_nll": nll}
         else:
             raise NotImplementedError
 
@@ -341,6 +392,10 @@ class Delphi2M(nn.Module):
         if hasattr(self, "aux_head"):
             aux_rates = self.aux_head(x)
             outputs["aux_rates"] = aux_rates.squeeze(-1)
+
+        if hasattr(self, "param_head"):
+            params = self.param_head(x)
+            outputs.update(params)
 
         if (targets is not None) and (targets_age is not None):
 
