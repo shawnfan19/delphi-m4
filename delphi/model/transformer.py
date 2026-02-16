@@ -1,12 +1,10 @@
 import math
 from dataclasses import dataclass, field
 
-import numpy as np
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-from delphi.data.utils import collate_batch
 from delphi.model.utils import (
     causal_attention_mask,
     exponential_nll,
@@ -204,12 +202,6 @@ class Delphi2MConfig:
 
 
 class Delphi2M(nn.Module):
-    """
-    slightly cleaned up version of delphi-2m with extra features:
-        - zero inflation
-        - fix no-event rate as a model parameter
-        - mask attention to previous no-event tokens
-    """
 
     model_type = "delphi-2m"
 

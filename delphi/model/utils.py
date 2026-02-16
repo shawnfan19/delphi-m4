@@ -181,52 +181,6 @@ def sample_homo_cluster_poisson(
     return next_token, time_til_next
 
 
-def nll_gompertz(
-    A: torch.Tensor,
-    B: torch.Tensor,
-    age: torch.Tensor,
-    targets_age: torch.Tensor,
-    targets: torch.Tensor,
-    time_unit: float = 80 * 365.25,
-) -> torch.Tensor:
-    """
-    NLL for Gompertz intensity: λ_v(τ) = A_v · exp(B_v · τ)
-    Args:
-        A: Amplitude, shape (B, L, V), positive
-        B: Growth rate, shape (B, L, V), positive
-        age: Interval start t_i in days, shape (B, L)
-        targets_age: Interval end t_{i+1} in days, shape (B, L)
-        targets: Event type indices, shape (B, L)
-    Returns:
-        NLL tensor of shape (B, L)
-    """
-    eps = 1e-8
-    # Convert to years
-    age_years = age / time_unit
-    targets_age_years = targets_age / time_unit
-    # ================================================================
-    # Part 1: log λ_k(t_{i+1})
-    # ================================================================
-
-    idx = targets.unsqueeze(-1)
-    A_k = torch.gather(A, dim=-1, index=idx).squeeze(-1)
-    B_k = torch.gather(B, dim=-1, index=idx).squeeze(-1)
-    # log(A · exp(B · t)) = log(A) + B · t
-    part1 = torch.log(A_k + eps) + B_k * targets_age_years
-    # ================================================================
-    # Part 2: -∫_{t_i}^{t_{i+1}} Σ_v λ_v(τ) dτ
-    # ================================================================
-
-    age_years_exp = age_years.unsqueeze(-1)
-    targets_age_years_exp = targets_age_years.unsqueeze(-1)
-    # ∫ A·exp(B·τ) dτ = (A/B)·[exp(B·t_{i+1}) - exp(B·t_i)]
-    integral = (A / (B + eps)) * (
-        torch.exp(B * targets_age_years_exp) - torch.exp(B * age_years_exp)
-    )
-    part2 = -integral.sum(dim=-1)
-    return -(part1 + part2)
-
-
 def nll_hawkes(
     alpha: torch.Tensor,
     beta: torch.Tensor,
