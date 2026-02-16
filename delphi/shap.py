@@ -141,7 +141,10 @@ def to_shap_array(
     return (all_x, all_t, all_m), features, bio_bg
 
 
-def from_shap_array(s: ShapArray) -> MultimodalOut:
+def from_shap_array(
+    s: ShapArray,
+    biomarker_features: dict[Modality, list],
+) -> MultimodalOut:
 
     all_x, all_t, all_m = s
     token_mask = all_m == 1
@@ -149,7 +152,9 @@ def from_shap_array(s: ShapArray) -> MultimodalOut:
 
     bio_x_dict, bio_t, bio_m = dict(), list(), list()
 
-    modvals = np.unique(all_m)
+    _, _idx = np.unique(all_m, return_index=True)
+    modvals = all_m[np.sort(_idx)]
+
     for modval in modvals:
         if modval <= 1:
             continue
@@ -158,10 +163,13 @@ def from_shap_array(s: ShapArray) -> MultimodalOut:
         modality = Modality(modval)
         bio_x_dict[modality] = list()
 
-        for uniq_mod_t in np.sort(np.unique(mod_t)):
-            #! for each modality, assume no more than 1 measurement at each timestep
-            bio_x_dict[modality].append(mod_x[mod_t == uniq_mod_t])
-            bio_t.append(uniq_mod_t)
+        # Use known feature dimension to correctly split measurements
+        feature_dim = len(biomarker_features[modality])
+        n_measurements = len(mod_x) // feature_dim
+        for i in range(n_measurements):
+            start, end = i * feature_dim, (i + 1) * feature_dim
+            bio_x_dict[modality].append(mod_x[start:end])
+            bio_t.append(mod_t[start])  # All timestamps in chunk are identical
             bio_m.append(modval)
     bio_t, bio_m = np.array(bio_t).astype(np.float32), np.array(bio_m).astype(np.int64)
     bio_t, bio_m = sort_by_time(bio_t, bio_m)
@@ -195,13 +203,16 @@ class MultimodalShapMasker(shap.maskers.Masker):  # type: ignore
         is_tok = all_m == 1
         x, t = all_x[is_tok], all_t[is_tok]
         all_bio_x = all_x[~is_tok]
-
+        all_bio_t = all_t[~is_tok]
+        all_bio_m = all_m[~is_tok]
         tok_mask = mask[is_tok]
         ((x,), (t,)) = self.base_masker(mask=tok_mask, s=(x, t))
 
         bio_mask = mask[~is_tok]
         all_bio_x[~bio_mask] = self.biomarker_background[~bio_mask]
         all_x = np.concatenate([x, all_bio_x])
+        all_t = np.concatenate([t, all_bio_t])
+        all_m = np.concatenate([np.ones_like(x, dtype=all_m.dtype), all_bio_m])
 
         return (
             (all_x,),
@@ -215,13 +226,16 @@ def multimodal_shap_forward(
     all_x_lst: list[np.ndarray],
     all_t_lst: list[np.ndarray],
     all_m_lst: list[np.ndarray],
+    biomarker_features: dict[Modality, list],
     model,
 ):
     x_lst, t_lst = list(), list()
     biomarker, bio_t_lst, bio_m_lst = defaultdict(list), list(), list()
 
     for all_x, all_t, all_m in zip(all_x_lst, all_t_lst, all_m_lst):
-        x, t, bio_x_dict, bio_t, bio_m = from_shap_array((all_x, all_t, all_m))
+        x, t, bio_x_dict, bio_t, bio_m = from_shap_array(
+            (all_x, all_t, all_m), biomarker_features=biomarker_features
+        )
         x_lst.append(x)
         t_lst.append(t)
         for modality in bio_x_dict.keys():
@@ -243,5 +257,6 @@ def multimodal_shap_forward(
 
     outputs, _, _ = model.forward(idx, age, biomarker, mod_age, mod_idx)
     logits = outputs["logits"][:, -1, :]
+    logits[:, model.config.ignore_tokens] = -torch.inf
 
     return logits.detach().cpu().numpy()
