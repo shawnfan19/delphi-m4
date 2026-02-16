@@ -587,31 +587,3 @@ def generate(
     gen_cnt = (idx > 0).sum(dim=1).detach().cpu().numpy()
 
     return idx, age, logits, {"n_prompt": pmt_cnt, "n_gen": gen_cnt}
-
-
-@torch.no_grad
-def shap_forward(
-    idx: list[np.ndarray],
-    age: list[np.ndarray],
-    model: torch.nn.Module,
-    doi: list[int],
-):
-    x_lst, t_lst = list(), list()
-    for x, t in zip(idx, age):
-        x_lst.append(x)
-        t_lst.append(t)
-    x = collate_batch(x_lst)
-    t = collate_batch(t_lst)
-    device = next(model.parameters()).device
-    x = torch.tensor(x).to(device).long()
-    t = torch.tensor(t).to(device)
-
-    outputs, _, _ = model.forward(x, t)
-    # for compatibility with legacy model definition
-    if isinstance(outputs, torch.Tensor):
-        logits = outputs
-    else:
-        logits = outputs["logits"]
-    doi_logits = logits[:, -1, doi].detach().cpu().numpy()
-
-    return doi_logits

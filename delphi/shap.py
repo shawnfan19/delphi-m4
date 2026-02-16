@@ -52,6 +52,34 @@ class ShapMasker(shap.maskers.Masker):  # type: ignore
         return ((x,), (t,))
 
 
+@torch.no_grad
+def shap_forward(
+    idx: list[np.ndarray],
+    age: list[np.ndarray],
+    model: torch.nn.Module,
+    doi: list[int],
+):
+    x_lst, t_lst = list(), list()
+    for x, t in zip(idx, age):
+        x_lst.append(x)
+        t_lst.append(t)
+    x = collate_batch(x_lst)
+    t = collate_batch(t_lst)
+    device = next(model.parameters()).device
+    x = torch.tensor(x).to(device).long()
+    t = torch.tensor(t).to(device)
+
+    outputs, _, _ = model.forward(x, t)
+    # for compatibility with legacy model definition
+    if isinstance(outputs, torch.Tensor):
+        logits = outputs
+    else:
+        logits = outputs["logits"]
+    doi_logits = logits[:, -1, doi].detach().cpu().numpy()
+
+    return doi_logits
+
+
 MultimodalOut = tuple[
     np.ndarray, np.ndarray, dict[Modality, list[np.ndarray]], np.ndarray, np.ndarray
 ]
@@ -183,7 +211,7 @@ class MultimodalShapMasker(shap.maskers.Masker):  # type: ignore
 
 
 @torch.no_grad
-def shap_forward(
+def multimodal_shap_forward(
     all_x_lst: list[np.ndarray],
     all_t_lst: list[np.ndarray],
     all_m_lst: list[np.ndarray],
