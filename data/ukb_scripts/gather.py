@@ -25,7 +25,7 @@ with open("dictionary/panel.yaml", "r") as f:
 # %%
 all_fids = list()
 for params in biomarkers.values():
-    all_fids.extend(params["fids"])
+    all_fids.extend(list(params["fids"].keys()))
 start = time.time()
 preload = load_fids(all_fids)
 end = time.time()
@@ -33,7 +33,9 @@ print(f"preloading took {(end-start) / 60.0}min")
 
 # %%
 for biomarker, params in biomarkers.items():
-    biomarker_df = load_biomarker_df(fids=params["fids"], visits=params["visits"], preload=preload)
+    biomarker_df = load_biomarker_df(
+        fids=list(params["fids"].keys()), visits=params["visits"], preload=preload
+    )
     if biomarker == "diet":
         biomarker_df = biomarker_df.replace(
             {
@@ -42,4 +44,10 @@ for biomarker, params in biomarkers.items():
                 -10: 0,  # less than one
             }
         )
-    build_biomarker(biomarker_df=biomarker_df, odir=odir / biomarker)
+    build_biomarker(
+        biomarker_df=biomarker_df,
+        features=list(params["fids"].values()),
+        odir=odir / biomarker,
+    )
+
+# %%

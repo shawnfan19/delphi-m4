@@ -142,6 +142,7 @@ def build_expansion_pack(
 
 def build_biomarker(
     biomarker_df: pd.DataFrame,
+    features: list,
     odir: str | Path,
     data_dtype=np.float32,
 ):
@@ -150,7 +151,6 @@ def build_biomarker(
     os.makedirs(odir, exist_ok=True)
     print(f"{odir}")
 
-    features = biomarker_df.columns.tolist()
     print(f"\t - features: {features}")
     with open(odir / "features.yaml", "w") as f:
         yaml.dump(
