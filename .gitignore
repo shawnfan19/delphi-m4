@@ -16,7 +16,6 @@ data/horizon_call
 data/.gitattributes
 .ipynb_checkpoints
 logs
-submit/dkfz/exp/*.yaml
 notebook
 .env
 .envrc
@@ -25,3 +24,5 @@ slurm
 scratch
 submit
 pyrightconfig.json
+*.tar.gz
+*.bin
