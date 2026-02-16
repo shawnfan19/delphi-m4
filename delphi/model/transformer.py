@@ -8,8 +8,8 @@ from torch.nn import functional as F
 from delphi.model.utils import (
     causal_attention_mask,
     exponential_nll,
-    nll_gompertz,
     nll_hawkes,
+    nll_hawkes_weibull,
     nll_homogeneous_cluster_poisson,
     nll_homogeneous_poisson,
     sample_competing_exponentials,
@@ -165,6 +165,38 @@ class ParametricHead(nn.Module):
         }
 
 
+class HawkesWeibullHead(nn.Module):
+
+    def __init__(self, n_embd: int, vocab_size: int):
+        super().__init__()
+        # Global Weibull baseline params (per event type)
+        self.log_k = nn.Parameter(torch.zeros(vocab_size))
+        self.log_lam = nn.Parameter(torch.zeros(vocab_size))
+        self.log_A = nn.Parameter(torch.zeros(vocab_size))
+
+        # Context-dependent excitation kernel params (from hidden state)
+        self.proj_alpha = nn.Linear(n_embd, vocab_size)
+        self.proj_beta = nn.Linear(n_embd, vocab_size)
+
+    def forward(self, x: torch.Tensor, age: torch.Tensor) -> dict[str, torch.Tensor]:
+        # Excitation params from transformer hidden state
+        alpha = F.softplus(self.proj_alpha(x))
+        beta = F.softplus(self.proj_beta(x)) + 0.1
+
+        # Weibull params (global, positive)
+        k = F.softplus(self.log_k) + 0.1
+        lam = F.softplus(self.log_lam) + 0.1
+        A = F.softplus(self.log_A)
+
+        return {
+            "alpha": alpha,
+            "beta": beta,
+            "weibull_k": k,
+            "weibull_lam": lam,
+            "weibull_A": A,
+        }
+
+
 @dataclass
 class Delphi2MConfig:
     # defaults to config of the OG delphi-2m ckpt
@@ -220,15 +252,20 @@ class Delphi2M(nn.Module):
             )
         )
 
-        parametric_losses = {"hawkes", "gompertz"}
+        parametric_losses = {"hawkes", "hawkes_weibull"}
 
         if not (config.loss in parametric_losses):
             self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
             if self.config.weight_tying:
                 self.transformer.wte.weight = self.lm_head.weight
 
-        if config.loss in parametric_losses:
+        if config.loss == "hawkes":
             self.param_head = ParametricHead(
+                n_embd=config.n_embd, vocab_size=config.vocab_size
+            )
+
+        if config.loss == "hawkes_weibull":
+            self.hawkes_weibull_head = HawkesWeibullHead(
                 n_embd=config.n_embd, vocab_size=config.vocab_size
             )
 
@@ -326,20 +363,23 @@ class Delphi2M(nn.Module):
                 age=age,
             )
             return {"loss_nll": nll, "loss_cluster": nll_cluster, "mask": ~cooccur}
-        elif self.config.loss == "hawkes":
-            nll = nll_hawkes(
+        elif self.config.loss == "hawkes_weibull":
+            nll = nll_hawkes_weibull(
                 alpha=outputs["alpha"],
                 beta=outputs["beta"],
+                weibull_k=outputs["weibull_k"],
+                weibull_lam=outputs["weibull_lam"],
+                weibull_A=outputs["weibull_A"],
                 age=age,
                 targets_age=targets_age,
                 targets=targets,
                 time_unit=self.config.time_unit,
             )
             return {"loss_nll": nll}
-        elif self.config.loss == "gompertz":
-            nll = nll_gompertz(
-                A=outputs["alpha"],
-                B=outputs["beta"],
+        elif self.config.loss == "hawkes":
+            nll = nll_hawkes(
+                alpha=outputs["alpha"],
+                beta=outputs["beta"],
                 age=age,
                 targets_age=targets_age,
                 targets=targets,
@@ -387,6 +427,10 @@ class Delphi2M(nn.Module):
 
         if hasattr(self, "param_head"):
             params = self.param_head(x)
+            outputs.update(params)
+
+        if hasattr(self, "hawkes_weibull_head"):
+            params = self.hawkes_weibull_head(x, age)
             outputs.update(params)
 
         if (targets is not None) and (targets_age is not None):

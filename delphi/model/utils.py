@@ -232,3 +232,103 @@ def nll_hawkes(
     part2 = -integral.sum(dim=-1)
 
     return -(part1 + part2)
+
+
+def nll_hawkes_weibull(
+    alpha: torch.Tensor,
+    beta: torch.Tensor,
+    weibull_k: torch.Tensor,
+    weibull_lam: torch.Tensor,
+    weibull_A: torch.Tensor,
+    age: torch.Tensor,
+    targets_age: torch.Tensor,
+    targets: torch.Tensor,
+    time_unit: float = 365.25,
+) -> torch.Tensor:
+    """
+    NLL for Hawkes + Weibull baseline intensity:
+        λ_v(t) = μ_v(t) + α_v · exp(-β_v · (t - t_i))
+
+    where μ_v(t) is the Weibull density baseline:
+        μ_v(t) = A_v · (k_v/λ_v) · (t/λ_v)^(k_v-1) · exp(-(t/λ_v)^k_v)
+
+    Args:
+        alpha: Excitation amplitude, shape (B, L, V), positive
+        beta: Decay rate, shape (B, L, V), positive
+        weibull_k: Weibull shape per event type, shape (V,), positive
+        weibull_lam: Weibull scale per event type, shape (V,), positive
+        weibull_A: Weibull amplitude per event type, shape (V,), positive
+        age: Interval start t_i in days, shape (B, L)
+        targets_age: Interval end t_{i+1} in days, shape (B, L)
+        targets: Event type indices, shape (B, L)
+        time_unit: Time normalization factor (days per unit)
+
+    Returns:
+        NLL tensor of shape (B, L)
+    """
+    eps = 1e-8
+
+    # Normalize times
+    t_i = age / time_unit
+    t_next = targets_age / time_unit
+    delta_t = t_next - t_i
+
+    # ================================================================
+    # Weibull baseline at target time: μ_v(t_{i+1})
+    # μ_v(t) = A · (k/λ) · (t/λ)^(k-1) · exp(-(t/λ)^k)
+    # Computed in log-space for stability
+    # ================================================================
+    # All Weibull params are (V,), broadcast over (B, L)
+    t_next_pos = torch.clamp(t_next, min=eps)  # (B, L)
+    log_t_over_lam = torch.log(t_next_pos).unsqueeze(-1) - torch.log(
+        weibull_lam
+    )  # (B, L, V)
+    t_over_lam_k = torch.exp(weibull_k * log_t_over_lam)  # (t/λ)^k in (B, L, V)
+
+    log_baseline = (
+        torch.log(weibull_A)
+        + torch.log(weibull_k)
+        - torch.log(weibull_lam)
+        + (weibull_k - 1) * log_t_over_lam
+        - t_over_lam_k
+    )  # (B, L, V)
+    baseline = torch.exp(log_baseline)  # μ_v(t_{i+1})
+
+    # ================================================================
+    # Part 1: log λ_k(t_{i+1}) = log(μ_k(t_{i+1}) + α_k · exp(-β_k · Δt))
+    # ================================================================
+    idx = targets.unsqueeze(-1)
+    alpha_k = torch.gather(alpha, dim=-1, index=idx).squeeze(-1)  # (B, L)
+    beta_k = torch.gather(beta, dim=-1, index=idx).squeeze(-1)  # (B, L)
+    baseline_k = torch.gather(baseline, dim=-1, index=idx).squeeze(-1)  # (B, L)
+
+    excitation_k = alpha_k * torch.exp(-beta_k * delta_t)  # (B, L)
+    part1 = torch.log(baseline_k + excitation_k + eps)
+
+    # ================================================================
+    # Part 2: -∫_{t_i}^{t_{i+1}} Σ_v μ_v(τ) dτ  (Weibull compensator)
+    # = -Σ_v A_v · [exp(-(t_i/λ_v)^k_v) - exp(-(t_{i+1}/λ_v)^k_v)]
+    # ================================================================
+    t_i_pos = torch.clamp(t_i, min=eps)
+    log_ti_over_lam = torch.log(t_i_pos).unsqueeze(-1) - torch.log(
+        weibull_lam
+    )  # (B, L, V)
+    ti_over_lam_k = torch.exp(weibull_k * log_ti_over_lam)  # (t_i/λ)^k
+
+    # t_over_lam_k is already (t_{i+1}/λ)^k from above
+    weibull_integral = weibull_A * (
+        torch.exp(-ti_over_lam_k) - torch.exp(-t_over_lam_k)
+    )
+    part2 = -weibull_integral.sum(dim=-1)  # (B, L)
+
+    # ================================================================
+    # Part 3: -∫_{t_i}^{t_{i+1}} Σ_v α_v · exp(-β_v · (τ-t_i)) dτ
+    # = -Σ_v (α_v/β_v) · [1 - exp(-β_v · Δt)]
+    # ================================================================
+    delta_t_exp = delta_t.unsqueeze(-1)  # (B, L, 1)
+    excitation_integral = (alpha / (beta + eps)) * (
+        1.0 - torch.exp(-beta * delta_t_exp)
+    )
+    part3 = -excitation_integral.sum(dim=-1)  # (B, L)
+
+    return -(part1 + part2 + part3)
