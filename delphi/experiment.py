@@ -1,4 +1,6 @@
 import os
+import pprint
+import sys
 from collections import defaultdict
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass, field
@@ -8,7 +10,6 @@ from typing import Any, Iterable, Iterator, Optional
 import numpy as np
 import torch
 import torch.distributed as dist
-import yaml
 from omegaconf import OmegaConf
 
 from delphi import distributed
@@ -62,7 +63,7 @@ def eval_iter(total_size: int, batch_size: int) -> Iterator[np.ndarray]:
 
 @dataclass
 class TrainBaseConfig:
-    ckpt_dir: str = "."
+    ckpt_dir: str = "debug"
     eval_interval: int = 2000
     eval_iters: int = 200
     eval_only: bool = False  # if True, script exits right after the first eval
@@ -270,14 +271,53 @@ class BaseTrainer:
                 break
 
 
+@dataclass
+class GenerateConfig:
+    ckpt: str = "delphi-2m-og/ckpt.pt"
+    prompt_age: None | int = None
+    prompt_lifestyle: bool = True
+    interval: float = 1.0
+    batch_size: int = 512
+    subsample: None | int = None
+    n_repeats: int = 1
+    stop_at_block_size: bool = True
+    max_new_tokens: int = 128
+    prompt_no_event: bool = False
+
+    @classmethod
+    def from_cli(cls):
+        """Parse from command line arguments"""
+        # Create structured config from dataclass defaults
+        schema = OmegaConf.structured(cls)
+        # Parse CLI args (format: key=value)
+        cli = OmegaConf.from_cli()
+        # Merge: CLI overrides defaults
+        merged = OmegaConf.merge(schema, cli)
+        # Convert back to dataclass instance
+        return OmegaConf.to_object(merged)
+
+    @classmethod
+    def auto(cls, **overrides):
+        """
+        Automatically choose:
+        - Interactive env → use defaults + overrides
+        - CLI → parse arguments
+        """
+        if "ipykernel" in sys.modules or "IPython" in sys.modules:
+            print("Running in interactive environment")
+            schema = OmegaConf.structured(cls)
+            override_conf = OmegaConf.create(overrides)
+            merged = OmegaConf.merge(schema, override_conf)
+            return OmegaConf.to_object(merged)
+        else:
+            return cls.from_cli()
+
+
 def load_ckpt(ckpt_path):
 
     ckpt_path = Path(ckpt_path)
-    train_cfg = OmegaConf.load(ckpt_path / "config.yaml")
-    ckpt_dict = torch.load(
-        ckpt_path / "ckpt.pt",
-        map_location=torch.device("cpu") if not torch.cuda.is_available() else None,
-    )
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    ckpt_dict = torch.load(ckpt_path, map_location=device)
     model_type = ckpt_dict["model_type"]
     if model_type == "delphi-2m":
         model_cfg_cls = Delphi2MConfig
@@ -288,12 +328,14 @@ def load_ckpt(ckpt_path):
     else:
         raise ValueError
 
+    pprint.pp(ckpt_dict["model_args"])
     model_cfg = model_cfg_cls(**ckpt_dict["model_args"])
     model = model_cls(model_cfg)  # type: ignore
-    model.load_state_dict(ckpt_dict["model"])
+    model.load_state_dict(ckpt_dict["model"], strict=False)
+    missing, unexpected = model.load_state_dict(ckpt_dict["model"], strict=False)
+    print("missing:", missing)
+    print("unexpected:", unexpected)
+    model.to(device)
     model = model.eval()
 
-    with open(ckpt_path / "tokenizer.yaml", "r") as f:
-        tokenizer = yaml.safe_load(f)
-
-    return model, train_cfg, tokenizer
+    return model, ckpt_dict
