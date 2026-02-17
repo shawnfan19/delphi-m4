@@ -160,6 +160,7 @@ class UKBDataset:
         else:
             self.crop_block_size = identity_transform
 
+        self.dx_token = None
         if break_clusters:
             if additional_dx_token:
                 self.dx_token = self.vocab_size
@@ -216,21 +217,21 @@ class UKBDataset:
         return x_pid[:-1], t_pid[:-1], x_pid[1:], t_pid[1:]
 
     def subset_participants_for_prompt(
-        self, prompt_age: None | float, must_have_lifestyle: bool = False
+        self, prompt_age: None | float, prompt_tokens: None | np.ndarray
     ):
         keep_lst = list()
         for i in range(self.participants.size):
             x_pid, t_pid, _, _ = self[i]
-            have_before = t_pid.min() <= prompt_age
-            have_after = t_pid.max() >= prompt_age
-            if must_have_lifestyle:
-                have_lifestyle = np.isin(
-                    x_pid[t_pid <= prompt_age], self.lifestyle_tokens
-                ).any()
-                if not have_lifestyle:
+            tokens = x_pid.copy()
+            age = t_pid.copy()
+            if prompt_age is not None:
+                if age.min() > prompt_age:
                     continue
-            if have_before and have_after:
-                keep_lst.append(i)
+                tokens = tokens[age <= prompt_age]
+            if prompt_tokens is not None:
+                if not np.isin(tokens, prompt_tokens).any():
+                    continue
+            keep_lst.append(i)
         print(f"{len(keep_lst)}/{self.participants.size} participants remaining")
         self.participants = self.participants[keep_lst]
 
