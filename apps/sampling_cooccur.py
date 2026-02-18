@@ -18,65 +18,29 @@ import os
 
 os.chdir("/hps/nobackup/birney/users/sfan/Delphi")
 
-import argparse
 import math
 import pprint
-import sys
-from collections import defaultdict
 from pathlib import Path
 
-import matplotlib.lines as mlines
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 import torch
-import yaml
 from tqdm import tqdm
 
 from delphi.data.ukb import UKBDataset, cut_prompt
 from delphi.data.utils import pack_clusters
 from delphi.env import DELPHI_CKPT_DIR
 from delphi.eval import ClusterStatsTracker, CooccurrenceTracker
-from delphi.experiment import eval_iter
-from delphi.model.transformer import Delphi2M, Delphi2MConfig, generate
+from delphi.experiment import GenerateConfig, eval_iter, load_ckpt
+from delphi.model.transformer import generate
 
 # %%
-parser = argparse.ArgumentParser()
-parser.add_argument("--ckpt", type=str, default="delphi-2m-og/ckpt.pt")
-parser.add_argument("--batch_size", type=int, default=128)
-parser.add_argument("--age", type=int, default=60)
-parser.add_argument("--subset", type=int)
-parser.add_argument("--stop_at_block_size", type=bool, default=True)
-parser.add_argument("--max_new_tokens", type=int, default=128)
-parser.add_argument("--prompt_no_event", type=bool, default=False)
-
-if "ipykernel" in sys.modules:
-    print(f"running in jupyter notebook")
-    args = parser.parse_args([])
-    args.ckpt = "cluster/dx_token/ckpt.pt"
-    args.batch_size = 512
-    args.age = None
-else:
-    args = parser.parse_args()
+args = GenerateConfig.auto(ckpt="cluster/dx_token/ckpt.pt")
 print("args:")
-pprint.pp(vars(args))
+pprint.pp(args)
 
 # %%
-ckpt = Path(DELPHI_CKPT_DIR) / args.ckpt
-ckpt_dict = torch.load(
-    ckpt,
-    map_location=torch.device("cpu") if not torch.cuda.is_available() else None,
-)
-
-# %%
-model = Delphi2M(Delphi2MConfig(**ckpt_dict["model_args"]))
-pprint.pp(ckpt_dict["model_args"])
-missing, unexpected = model.load_state_dict(ckpt_dict["model"], strict=False)
-print("missing:", missing)
-print("unexpected:", unexpected)
-device = "cuda" if torch.cuda.is_available() else "cpu"
-model.to(device)
-model.eval()
+model, ckpt_dict = load_ckpt(Path(DELPHI_CKPT_DIR) / args.ckpt)
 
 # %%
 data_args = ckpt_dict["data_args"].copy()
@@ -90,10 +54,9 @@ pprint.pp(data_args)
 
 # %%
 ds = UKBDataset(**data_args)
-if args.age is not None:
-    ds.subset_participants_for_prompt(prompt_age=args.age * 365.25)
-else:
-    ds.subset_by_tokens(tokens=ds.lifestyle_tokens)
+prompt_age = args.prompt_age * 365.25 if args.prompt_age is not None else None
+prompt_tokens = ds.lifestyle_tokens if args.prompt_lifestyle else None
+ds.subset_participants_for_prompt(prompt_age=prompt_age, prompt_tokens=prompt_tokens)
 
 # %%
 ds.dx_token
@@ -107,12 +70,16 @@ whitelist
 
 
 # %%
+if data_args["additional_dx_token"]:
+    model.config.self_terminate_except.append(ds.dx_token)
+model.config.self_terminate_except
 
 # %%
-if args.subset is None:
+if args.subsample is None:
     total = len(ds)
 else:
-    total = args.subset
+    total = args.subsample
+device = "cuda" if torch.cuda.is_available else "cpu"
 it = eval_iter(total_size=total, batch_size=args.batch_size)
 pbar = tqdm(it, total=math.ceil(total / args.batch_size), leave=False)
 gt_tracker = CooccurrenceTracker(vocab_size=model.config.vocab_size)
@@ -129,8 +96,8 @@ for batch_idx in pbar:
     pmt_idx, pmt_age, cutoff = cut_prompt(
         X0,
         T0,
-        prompt_age=args.age * 365.25 if args.age is not None else None,
-        prompt_token=torch.Tensor(ds.lifestyle_tokens),
+        prompt_age=prompt_age,
+        prompt_token=torch.Tensor(prompt_tokens) if prompt_tokens is not None else None,
         append_no_event=args.prompt_no_event,
     )
     cutoff = cutoff.detach().cpu().numpy()
@@ -145,14 +112,11 @@ for batch_idx in pbar:
     gt_stats.step(tokens=X1_np, timesteps=T1_np)
 
     pmt_idx, pmt_age = pmt_idx.to(device), pmt_age.to(device)
-    # cutoff = cutoff.to(device)
-    tokens, timesteps, logits, gen_stats = generate(
+    tokens, timesteps, gen_stats = generate(
         model=model,
         idx=pmt_idx,
         age=pmt_age,
         max_age=T1.max(dim=1)[0].to(device),
-        no_repeat=True,
-        no_repeat_except=torch.Tensor([1, ds.dx_token]),
         max_new_tokens=args.max_new_tokens,
         termination_tokens=[1269],
         stop_at_block_size=args.stop_at_block_size,

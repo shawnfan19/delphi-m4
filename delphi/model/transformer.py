@@ -259,6 +259,8 @@ class Delphi2MConfig:
     aux_head: str = "linear"
     ce_beta: float = 1.0
     dt_beta: float = 1.0
+    self_terminate: bool = True
+    self_terminate_except: None | list = field(default_factory=lambda: [1])
 
     def __post_init__(self):
         if "cluster" in self.loss:
@@ -527,12 +529,26 @@ class Delphi2M(nn.Module):
         return outputs, loss, att
 
     @torch.no_grad()
-    def sample_next(self, outputs: dict[str, torch.Tensor]):
+    def sample_next(self, outputs: dict[str, torch.Tensor], idx: torch.Tensor):
         if self.config.loss in {"default", "homo_poisson"}:
             logits = outputs["logits"][:, -1, :]
+            logits = self_terminate_single(
+                idx=idx,
+                logits=logits,
+                terminate_except=torch.tensor(self.config.self_terminate_except).to(
+                    idx.device
+                ),
+            )
             idx_next, time_til_next = sample_competing_exponentials(logits=logits)
         elif self.config.loss == "homo_cluster_poisson":
             logits = outputs["logits"][:, -1, :]
+            logits = self_terminate_single(
+                idx=idx,
+                logits=logits,
+                terminate_except=torch.tensor(self.config.self_terminate_except).to(
+                    idx.device
+                ),
+            )
             idx_next, time_til_next = sample_homo_cluster_poisson(
                 logits=logits, thresh_logits=outputs["aux_rates"][:, -1]
             )
@@ -549,8 +565,6 @@ def generate(
     termination_tokens: list | torch.Tensor,
     max_new_tokens: None | int = 100,
     max_age: float | torch.Tensor = 85 * 365.25,
-    no_repeat: bool = True,
-    no_repeat_except: None | torch.Tensor = None,
     stop_at_block_size: bool = True,
     exclude_pad: bool = True,
 ):
@@ -561,8 +575,6 @@ def generate(
 
     if max_new_tokens is None:
         max_new_tokens = 128
-    if no_repeat_except is None:
-        no_repeat_except = torch.tensor([1])
 
     if isinstance(max_age, torch.Tensor):
         assert len(max_age.shape) == 1
@@ -587,25 +599,8 @@ def generate(
     pmt_cnt = (idx > 0).sum(dim=1).detach().cpu().numpy()
     for _ in range(max_new_tokens):
         outputs, _, _ = model(cur_idx, cur_age)
-        if isinstance(outputs, torch.Tensor):
-            # for backwards compatibility with legacy model definition
-            logits = outputs
-        else:
-            assert isinstance(outputs, dict)
-            logits = outputs["logits"]
-        logits = logits[:, -1, :]
-        logits[:, ignore_tokens] = -torch.inf
 
-        if no_repeat:
-            fill = cur_idx.clone()
-            fill[torch.isin(fill, no_repeat_except.to(fill.device))] = 0
-            logits = logits.scatter_(1, fill, -torch.inf)
-
-        if hasattr(model, "sample_next"):
-            idx_next, time_til_next = model.sample_next(outputs=outputs)
-        else:
-            # fallback
-            idx_next, time_til_next = sample_competing_exponentials(logits=logits)
+        idx_next, time_til_next = model.sample_next(outputs=outputs, idx=cur_idx)
         age_next = cur_age[..., [-1]] + time_til_next
         age_next[time_til_next == -1e4] = -1e4
 
@@ -672,22 +667,6 @@ def generate(
     margin = torch.min(torch.sum(idx == 0, dim=1)).item()
     idx, age = idx[:, margin:], age[:, margin:]
 
-    outputs, _, _ = model(idx, age)
-    if isinstance(outputs, torch.Tensor):
-        logits = outputs
-    else:
-        logits = outputs["logits"]
-
-    if no_repeat:
-        fill = idx + 0
-        fill[torch.isin(fill, no_repeat_except.to(fill.device))] = 0
-        logits = torch.stack(
-            [
-                logits[:, j].scatter_(1, fill[:, : j + 1], -torch.inf)
-                for j in range(fill.shape[1])
-            ]
-        ).transpose(0, 1)
-
     gen_cnt = (idx > 0).sum(dim=1).detach().cpu().numpy()
 
-    return idx, age, logits, {"n_prompt": pmt_cnt, "n_gen": gen_cnt}
+    return idx, age, {"n_prompt": pmt_cnt, "n_gen": gen_cnt}

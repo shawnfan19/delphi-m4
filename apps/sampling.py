@@ -22,6 +22,7 @@ from delphi.eval import (
 )
 from delphi.experiment import GenerateConfig, eval_iter, load_ckpt
 from delphi.model.transformer import generate
+from delphi.model.utils import self_terminate
 
 # -
 
@@ -39,6 +40,7 @@ class TaskConfig(GenerateConfig):
 
 args = TaskConfig.auto(
     ckpt="cluster/2026-02-02-115354/ckpt.pt",
+    batch_size=256,
     n_repeats=1,
 )
 pprint.pp(args)
@@ -105,18 +107,25 @@ for batch_idx in pbar:
 
     pmt_idx = torch.repeat_interleave(pmt_idx, args.n_repeats, dim=0)
     pmt_age = torch.repeat_interleave(pmt_age, args.n_repeats, dim=0)
-    # max_age = T1.max(dim=1)[0].to(device)
-    # max_age = max_age.repeat_interleave(args.n_repeats)
     max_age = 85 * 365.25
-    tokens, timestep, logits, gen_stats = generate(
+    tokens, timestep, gen_stats = generate(
         model=model,
         idx=pmt_idx,
         age=pmt_age,
         max_age=max_age,
-        no_repeat=True,
         max_new_tokens=args.max_new_tokens,
         termination_tokens=[1269],
         stop_at_block_size=args.stop_at_block_size,
+    )
+
+    output, _, _ = model.forward(tokens, timestep)
+    logits = output["logits"]
+    logits = self_terminate(
+        tokens,
+        logits,
+        terminate_except=torch.tensor(model.config.self_terminate_except).to(
+            tokens.device
+        ),
     )
 
     n_gen = gen_stats["n_gen"].mean() - gen_stats["n_prompt"].mean()
@@ -180,7 +189,6 @@ for i, horizon in enumerate(time_horizon):
         ctl_prob = prob_by_horizon[horizon][is_ctl, token]
         dis_prob = prob_by_horizon[horizon][is_dis, token]
         prob_aucs[horizon].append(mann_whitney_auc(ctl_prob, dis_prob))
-# -
 
 
 # +

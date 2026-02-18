@@ -61,6 +61,41 @@ def multi_hot(
     return hot_targets, cooccur
 
 
+def self_terminate_single(
+    idx: torch.Tensor, logits: torch.Tensor, terminate_except: torch.Tensor
+):
+    fill = idx.clone()
+    fill[torch.isin(fill, terminate_except.to(fill.device))] = 0
+
+    batch_size = fill.shape[0]
+    vocab_size = logits.shape[-1]
+
+    # Scatter directly into [batch, vocab]
+    mask = torch.zeros(batch_size, vocab_size, dtype=torch.bool, device=fill.device)
+    mask.scatter_(1, fill, True)
+
+    return logits.masked_fill(mask, float("-inf"))
+
+
+def self_terminate(
+    idx: torch.Tensor, logits: torch.Tensor, terminate_except: torch.Tensor
+):
+    fill = idx.clone()
+    fill[torch.isin(fill, terminate_except.to(fill.device))] = 0
+
+    batch_size, seq_len = fill.shape
+    vocab_size = logits.shape[-1]
+
+    # One-hot encode: [batch, seq, vocab]
+    one_hot = torch.zeros(batch_size, seq_len, vocab_size, device=fill.device)
+    one_hot.scatter_(2, fill.unsqueeze(-1), 1.0)
+
+    # Cumsum: mask[b, j, v] = True if token v appeared in positions 0..j
+    mask = one_hot.cumsum(dim=1) > 0
+
+    return logits.masked_fill(mask, float("-inf"))
+
+
 def exponential_nll(
     delta_t: torch.Tensor,
     log_lambda: torch.Tensor,
