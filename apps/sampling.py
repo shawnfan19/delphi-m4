@@ -1,14 +1,8 @@
-import os
-
-os.chdir("/hps/nobackup/birney/users/sfan/Delphi")
-
-import argparse
+# +
 import math
 import pprint
-
-# +
-import sys
 from collections import defaultdict
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import matplotlib.lines as mlines
@@ -16,10 +10,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
-import yaml
 from tqdm import tqdm
 
-from delphi.data.ukb import UKBDataset, cut_batch_for_prompt
+from delphi.data.ukb import UKBDataset, cut_prompt
 from delphi.env import DELPHI_CKPT_DIR
 from delphi.eval import (
     EventTimeCollator,
@@ -27,65 +20,50 @@ from delphi.eval import (
     SamplingProbCollator,
     mann_whitney_auc,
 )
-from delphi.experiment import eval_iter
-from delphi.model.transformer import Delphi2M, Delphi2MConfig, generate
+from delphi.experiment import GenerateConfig, eval_iter, load_ckpt
+from delphi.model.transformer import generate
 
-# +
-parser = argparse.ArgumentParser()
-parser.add_argument("--ckpt", type=str, default="delphi-2m-og/ckpt.pt")
-parser.add_argument("--age", type=int, default=60)
-parser.add_argument("--interval", type=float, default=1.0)
-parser.add_argument("--batch_size", type=int, default=128)
-parser.add_argument("--subsample", type=int, default=None)
-parser.add_argument("--n_repeats", type=int, default=1)
-parser.add_argument("--stop_at_block_size", type=bool, default=True)
-parser.add_argument("--max_new_tokens", type=int, default=128)
-parser.add_argument("--prompt_no_event", type=bool, default=True)
-parser.add_argument("--must_have_lifestyle", type=bool, default=False)
-
-if "ipykernel" in sys.modules:
-    print(f"running in jupyter notebook")
-    args = parser.parse_args([])
-    # args.ckpt = "delphi-2m-ablation/delphi-2m-long-ctx/ckpt.pt"
-    args.stop_at_block_size = True
-    args.prompt_no_event = True
-    args.n_repeats = 1
-    args.interval = 365.25
-else:
-    args = parser.parse_args()
-
-print("args:")
-pprint.pp(vars(args))
 # -
-time_horizon = np.array([1, 3, 5, 10, 15]) * 365.25
-start_age = args.age * 365.25
-time_intervals = np.arange(0, 81 * 365.25, args.interval)
 
-# +
-ckpt = Path(DELPHI_CKPT_DIR) / args.ckpt
-ckpt_dict = torch.load(
-    ckpt,
-    map_location=torch.device("cpu") if not torch.cuda.is_available() else None,
+
+@dataclass
+class TaskConfig(GenerateConfig):
+    prompt_age: int = 60
+    prompt_no_event: bool = True
+
+    time_horizon: list[int] = field(default_factory=lambda: [1, 3, 5, 10, 15])
+    km_interval: float = 365.25
+    km_start: int = 0
+    km_end: int = 81
+
+
+args = TaskConfig.auto(
+    ckpt="cluster/2026-02-02-115354/ckpt.pt",
+    n_repeats=1,
 )
-model = Delphi2M(Delphi2MConfig(**ckpt_dict["model_args"]))
-pprint.pp(ckpt_dict["model_args"])
-model.load_state_dict(ckpt_dict["model"])
+pprint.pp(args)
+
+time_horizon = np.array(args.time_horizon) * 365.25
+start_age = args.prompt_age * 365.25
+time_intervals = np.arange(args.km_start, args.km_end * 365.25, args.km_interval)
+print(start_age)
+print(time_horizon)
+print(time_intervals)
+
+model, ckpt_dict = load_ckpt(Path(DELPHI_CKPT_DIR) / args.ckpt)
+
 device = "cuda" if torch.cuda.is_available() else "cpu"
-model.to(device)
-model.eval()
-
-exclude_lifestyle = ckpt_dict["config"].get("exclude_lifestyle", False)
-no_event_mode = ckpt_dict["config"].get("no_event_mode", "legacy-random")
-# -
-ds = UKBDataset(
-    data_dir="ukb_real_data",
-    subject_list="participants/val_fold.bin",
-    perturb=False,
-    no_event_mode=no_event_mode,
-    exclude=exclude_lifestyle,
-    block_size=model.config.block_size,
+data_args = ckpt_dict["data_args"].copy()
+data_args["subject_list"] = "participants/val_fold.bin"
+data_args["perturb"] = False
+data_args["deterministic"] = True
+data_args["additional_dx_token"] = ckpt_dict["data_args"].get(
+    "additional_dx_token", False
 )
-ds.subset_participants_for_prompt(prompt_age=args.age * 365.25)
+pprint.pp(data_args)
+
+ds = UKBDataset(**data_args)
+ds.subset_participants_for_prompt(prompt_age=start_age, prompt_tokens=None)
 
 
 # +
@@ -113,8 +91,12 @@ for batch_idx in pbar:
 
     X0, T0, X1, T1 = ds.get_batch(batch_idx)
     event_time_collator.step(X1, T1)
-    pmt_idx, pmt_age = cut_batch_for_prompt(
-        X0, T0, prompt_age=args.age * 365.25, append_no_event=args.prompt_no_event
+    pmt_idx, pmt_age, _ = cut_prompt(
+        X0,
+        T0,
+        prompt_age=start_age,
+        prompt_token=None,
+        append_no_event=args.prompt_no_event,
     )
     pmt_idx, pmt_age = pmt_idx.to(device), pmt_age.to(device)
 
@@ -123,20 +105,22 @@ for batch_idx in pbar:
 
     pmt_idx = torch.repeat_interleave(pmt_idx, args.n_repeats, dim=0)
     pmt_age = torch.repeat_interleave(pmt_age, args.n_repeats, dim=0)
-    tokens, timestep, logits = generate(
+    # max_age = T1.max(dim=1)[0].to(device)
+    # max_age = max_age.repeat_interleave(args.n_repeats)
+    max_age = 85 * 365.25
+    tokens, timestep, logits, gen_stats = generate(
         model=model,
         idx=pmt_idx,
         age=pmt_age,
-        max_age=85 * 365.25,
+        max_age=max_age,
         no_repeat=True,
         max_new_tokens=args.max_new_tokens,
         termination_tokens=[1269],
         stop_at_block_size=args.stop_at_block_size,
     )
 
-    pbar.set_postfix(
-        {"prompt block size": pmt_idx.shape[1], "total block size": tokens.shape[1]}
-    )
+    n_gen = gen_stats["n_gen"].mean() - gen_stats["n_prompt"].mean()
+    pbar.set_postfix({"n_gen": n_gen})
 
     risk_collator.step(tokens, timestep, logits)
     prob_collator.step(tokens, timestep)
@@ -147,12 +131,6 @@ km_risk = risk_collator.finalize()
 # -
 
 
-risk_collator.time_intervals[1:], risk_collator.time_horizon[
-    0
-] + risk_collator.start_age
-
-km_risk[365.25][:, -1]
-
 logits_at_prompt = np.concatenate(logits_at_prompt, axis=0)
 base_incidence = dict()
 for horizon in time_horizon:
@@ -161,12 +139,11 @@ for horizon in time_horizon:
 occur = dict()
 for horizon in time_horizon:
 
-    start = args.age * 365.25
-    end = start + horizon
+    end = start_age + horizon
 
     _occur = np.zeros((len(ds), ds.vocab_size))
-    _occur[np.logical_and(occur_time > start, occur_time <= end)] = 1
-    _occur[occur_time <= start] = float("nan")
+    _occur[np.logical_and(occur_time > start_age, occur_time <= end)] = 1
+    _occur[occur_time <= start_age] = float("nan")
 
     ended_early = exit_time < end
     ended_early = ended_early[:, None]
@@ -184,8 +161,7 @@ ctl_ct, dis_ct = defaultdict(list), defaultdict(list)
 
 for i, horizon in enumerate(time_horizon):
 
-    start = args.age * 365.25
-    end = start + horizon
+    end = start_age + horizon
 
     for token in tqdm(range(ds.vocab_size)):
         is_ctl = occur[horizon][:, token] == 0
@@ -204,9 +180,14 @@ for i, horizon in enumerate(time_horizon):
         ctl_prob = prob_by_horizon[horizon][is_ctl, token]
         dis_prob = prob_by_horizon[horizon][is_dis, token]
         prob_aucs[horizon].append(mann_whitney_auc(ctl_prob, dis_prob))
+# -
 
 
 # +
+ckpt = Path(DELPHI_CKPT_DIR) / args.ckpt
+odir = ckpt.parent
+
+
 def remove_nan_for_violin(aucs: dict):
     nan_free_aucs = list()
     for key, vals in aucs.items():
@@ -226,7 +207,7 @@ ax.set_xticks(np.arange(len(base_aucs)) + 1, time_horizon / 365.25)
 ax.set_xlabel("time horizon of prediction (year)")
 ax.set_title(f"{args.n_repeats} repetitions")
 ax.set_ylabel("Mann-Whitney AUC")
-plt.savefig(ckpt.parent / f"sampling_auc_nreps{args.n_repeats}.png", dpi=300)
+plt.savefig(odir / f"sampling_auc_nreps{args.n_repeats}.png", dpi=300)
 
 
 # +
@@ -302,7 +283,7 @@ plot_calibration(
     occur,
     title="disease rates at age 60",
 )
-plt.savefig(ckpt.parent / f"baseline_calibrate{suffix}.png", dpi=300)
+plt.savefig(odir / f"baseline_calibrate{suffix}.png", dpi=300)
 
 plot_calibration(
     doi,
@@ -312,9 +293,29 @@ plot_calibration(
     occur,
     title="k / N sampled incidence",
 )
-plt.savefig(ckpt.parent / f"simulate_calibrate{suffix}.png", dpi=300)
+plt.savefig(odir / f"simulate_calibrate{suffix}.png", dpi=300)
 
 plot_calibration(
     doi, doi_titles, time_horizon, km_risk, occur, title="calculated risks"
 )
-plt.savefig(ckpt.parent / f"integrate_calibrate{suffix}.png", dpi=300)
+plt.savefig(odir / f"integrate_calibrate{suffix}.png", dpi=300)
+
+
+k = 365.25 * 1
+tok = 1188
+pred = km_risk[k][:, tok]
+obs = occur[k][:, tok]
+print((obs == 1).sum(), np.isnan(pred[obs == 1]).sum())
+# binned_average(pred=pred, obs=obs)
+bins = 10 ** np.arange(-6.0, 1.5, 0.5)
+for b in range(1, len(bins)):
+    bin_mask = np.logical_and(pred > bins[b - 1], pred <= bins[b])
+    print(
+        bins[b - 1],
+        bins[b],
+        bin_mask.sum(),
+        np.nanmean(pred[bin_mask]),
+        np.nanmean(obs[bin_mask]),
+    )
+
+(pred == 1).sum()
