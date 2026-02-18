@@ -12,6 +12,7 @@ from delphi.model.utils import (
     nll_hawkes_weibull,
     nll_homogeneous_cluster_poisson,
     nll_homogeneous_poisson,
+    nll_weibull,
     sample_competing_exponentials,
     sample_homo_cluster_poisson,
     untie_idx,
@@ -197,6 +198,25 @@ class HawkesWeibullHead(nn.Module):
         }
 
 
+class WeibullHead(nn.Module):
+
+    def __init__(self, n_embd: int, vocab_size: int):
+        super().__init__()
+        self.proj_A = nn.Linear(n_embd, vocab_size)
+        self.proj_k = nn.Linear(n_embd, vocab_size)
+        self.proj_lam = nn.Linear(n_embd, vocab_size)
+
+    def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
+        A = F.softplus(self.proj_A(x))
+        k = F.softplus(self.proj_k(x)) + 0.1
+        lam = F.softplus(self.proj_lam(x)) + 0.1
+        return {
+            "weibull_A": A,
+            "weibull_k": k,
+            "weibull_lam": lam,
+        }
+
+
 @dataclass
 class Delphi2MConfig:
     # defaults to config of the OG delphi-2m ckpt
@@ -252,7 +272,7 @@ class Delphi2M(nn.Module):
             )
         )
 
-        parametric_losses = {"hawkes", "hawkes_weibull"}
+        parametric_losses = {"hawkes", "hawkes_weibull", "weibull"}
 
         if not (config.loss in parametric_losses):
             self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
@@ -266,6 +286,11 @@ class Delphi2M(nn.Module):
 
         if config.loss == "hawkes_weibull":
             self.hawkes_weibull_head = HawkesWeibullHead(
+                n_embd=config.n_embd, vocab_size=config.vocab_size
+            )
+
+        if config.loss == "weibull":
+            self.weibull_head = WeibullHead(
                 n_embd=config.n_embd, vocab_size=config.vocab_size
             )
 
@@ -376,6 +401,17 @@ class Delphi2M(nn.Module):
                 time_unit=self.config.time_unit,
             )
             return {"loss_nll": nll}
+        elif self.config.loss == "weibull":
+            nll = nll_weibull(
+                weibull_A=outputs["weibull_A"],
+                weibull_k=outputs["weibull_k"],
+                weibull_lam=outputs["weibull_lam"],
+                age=age,
+                targets_age=targets_age,
+                targets=targets,
+                time_unit=self.config.time_unit,
+            )
+            return {"loss_nll": nll}
         elif self.config.loss == "hawkes":
             nll = nll_hawkes(
                 alpha=outputs["alpha"],
@@ -431,6 +467,10 @@ class Delphi2M(nn.Module):
 
         if hasattr(self, "hawkes_weibull_head"):
             params = self.hawkes_weibull_head(x, age)
+            outputs.update(params)
+
+        if hasattr(self, "weibull_head"):
+            params = self.weibull_head(x)
             outputs.update(params)
 
         if (targets is not None) and (targets_age is not None):
