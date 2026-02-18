@@ -301,6 +301,67 @@ def nll_weibull(
     return -(part1 + part2)
 
 
+def nll_weibull_lite(
+    weibull_k: torch.Tensor,
+    weibull_lam: torch.Tensor,
+    age: torch.Tensor,
+    targets_age: torch.Tensor,
+    targets: torch.Tensor,
+    time_unit: float = 365.25,
+) -> torch.Tensor:
+    """
+    NLL for pure Weibull PDF kernel (no amplitude parameter):
+        λ_v(Δt) = (k_v/λ_v) · (Δt/λ_v)^(k_v-1) · exp(-(Δt/λ_v)^k_v)
+
+    Equivalent to nll_weibull with A=1 for all event types.
+
+    Args:
+        weibull_k: Shape parameter, shape (B, L, V), positive
+        weibull_lam: Scale parameter, shape (B, L, V), positive
+        age: Interval start t_i in days, shape (B, L)
+        targets_age: Interval end t_{i+1} in days, shape (B, L)
+        targets: Event type indices, shape (B, L)
+        time_unit: Time normalization factor (days per unit)
+
+    Returns:
+        NLL tensor of shape (B, L)
+    """
+    eps = 1e-8
+
+    delta_t = (targets_age - age) / time_unit  # (B, L)
+    delta_t = torch.clamp(delta_t, min=eps)
+
+    # ================================================================
+    # Part 1: log λ_k(Δt) for the observed target event
+    # = log(k_k) - log(λ_k) + (k_k-1)·log(Δt/λ_k) - (Δt/λ_k)^k_k
+    # ================================================================
+    idx = targets.unsqueeze(-1)  # (B, L, 1)
+    k_k = torch.gather(weibull_k, dim=-1, index=idx).squeeze(-1)  # (B, L)
+    lam_k = torch.gather(weibull_lam, dim=-1, index=idx).squeeze(-1)  # (B, L)
+
+    log_dt_over_lam_k = torch.log(delta_t) - torch.log(lam_k)  # (B, L)
+    dt_over_lam_k_pow_k = torch.exp(k_k * log_dt_over_lam_k)  # (Δt/λ_k)^k_k
+
+    part1 = (
+        torch.log(k_k + eps)
+        - torch.log(lam_k + eps)
+        + (k_k - 1) * log_dt_over_lam_k
+        - dt_over_lam_k_pow_k
+    )  # (B, L)
+
+    # ================================================================
+    # Part 2: -∫_0^Δt Σ_v λ_v(τ) dτ = -Σ_v [1 - exp(-(Δt/λ_v)^k_v)]
+    # ================================================================
+    delta_t_exp = delta_t.unsqueeze(-1)  # (B, L, 1)
+    log_dt_over_lam = torch.log(delta_t_exp) - torch.log(weibull_lam)  # (B, L, V)
+    dt_over_lam_pow_k = torch.exp(weibull_k * log_dt_over_lam)  # (Δt/λ_v)^k_v
+
+    compensator = 1.0 - torch.exp(-dt_over_lam_pow_k)  # (B, L, V)
+    part2 = -compensator.sum(dim=-1)  # (B, L)
+
+    return -(part1 + part2)
+
+
 def nll_hawkes_weibull(
     alpha: torch.Tensor,
     beta: torch.Tensor,
