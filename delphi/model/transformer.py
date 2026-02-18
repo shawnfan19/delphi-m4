@@ -237,11 +237,6 @@ class WeibullLiteHead(nn.Module):
 @dataclass
 class Delphi2MConfig:
     # defaults to config of the OG delphi-2m ckpt
-    # additional flags:
-    # – ce_beta
-    # - dt_beta
-    # - mask_no_event_attention
-    # - no_event_rate
     block_size: None | int = 48
     vocab_size: int = 1270
     n_layer: int = 12
@@ -532,10 +527,12 @@ class Delphi2M(nn.Module):
         return outputs, loss, att
 
     @torch.no_grad()
-    def sample_next(self, logits: torch.Tensor, outputs: dict[str, torch.Tensor]):
+    def sample_next(self, outputs: dict[str, torch.Tensor]):
         if self.config.loss in {"default", "homo_poisson"}:
+            logits = outputs["logits"][:, -1, :]
             idx_next, time_til_next = sample_competing_exponentials(logits=logits)
         elif self.config.loss == "homo_cluster_poisson":
+            logits = outputs["logits"][:, -1, :]
             idx_next, time_til_next = sample_homo_cluster_poisson(
                 logits=logits, thresh_logits=outputs["aux_rates"][:, -1]
             )
@@ -554,7 +551,6 @@ def generate(
     max_age: float | torch.Tensor = 85 * 365.25,
     no_repeat: bool = True,
     no_repeat_except: None | torch.Tensor = None,
-    top_k: None | int = None,
     stop_at_block_size: bool = True,
     exclude_pad: bool = True,
 ):
@@ -600,17 +596,13 @@ def generate(
         logits = logits[:, -1, :]
         logits[:, ignore_tokens] = -torch.inf
 
-        if top_k is not None:
-            v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-            logits[logits < v[:, [-1]]] = -torch.inf
-
         if no_repeat:
             fill = cur_idx.clone()
             fill[torch.isin(fill, no_repeat_except.to(fill.device))] = 0
             logits = logits.scatter_(1, fill, -torch.inf)
 
         if hasattr(model, "sample_next"):
-            idx_next, time_til_next = model.sample_next(logits=logits, outputs=outputs)
+            idx_next, time_til_next = model.sample_next(outputs=outputs)
         else:
             # fallback
             idx_next, time_til_next = sample_competing_exponentials(logits=logits)
