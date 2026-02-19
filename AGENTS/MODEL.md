@@ -51,15 +51,14 @@ The model uses different heads depending on loss type:
 # For intensity-based losses (default, homo_poisson, homo_cluster_poisson)
 self.lm_head = nn.Linear(config.n_embd, config.vocab_size)  # outputs log-intensities
 
-# For parametric losses (hawkes)
-self.param_head = ParametricHead(n_embd, vocab_size)  # outputs α, β from hidden state
-
-# For hawkes_weibull loss
-self.hawkes_weibull_head = HawkesWeibullHead(n_embd, vocab_size)  # outputs α, β + global Weibull params
+# For parametric losses (hawkes, hawkes_weibull, weibull)
+self.param_head = ParametricHead(n_embd, vocab_size)  # outputs distribution params
 
 # For cluster losses (homo_cluster_poisson)
 self.aux_head = nn.Linear(config.n_embd, 1)  # outputs auxiliary rate
 ```
+
+All parametric losses (`hawkes`, `hawkes_weibull`, `weibull`) share the unified `self.param_head` attribute — the head class varies by loss type.
 
 ### ParametricHead
 
@@ -443,6 +442,65 @@ model = Delphi2M(config)
 
 **Sampling not yet implemented**: `sample_next` raises `NotImplementedError` for this loss. When implementing, note that sampling from the sum of a Weibull baseline and exponential kernel requires either thinning (rejection sampling) or numerical inversion of the compensator — there is no simple inverse CDF.
 
+### `weibull`
+
+The kernel is the **pure Weibull PDF** parameterised by shape $k$ and scale $\lambda$:
+
+$$\lambda_v(\Delta t) = \frac{k_v}{\lambda_v}\left(\frac{\Delta t}{\lambda_v}\right)^{k_v-1} \exp\left(-\left(\frac{\Delta t}{\lambda_v}\right)^{k_v}\right)$$
+
+Where $\Delta t = t - t_i$ is the time since the previous event (not absolute age).
+
+Unlike `hawkes_weibull` where the Weibull operates on absolute age, here it operates on **inter-event time**. This means:
+- **$k < 1$**: intensity peaks immediately after the event and decays (heavy-tailed, slower than exponential)
+- **$k = 1$**: recovers the exponential kernel (equivalent to Hawkes with $\beta = 1/\lambda$)
+- **$k > 1$**: intensity peaks *after a delay* then decays — captures mid/long-range triggering that exponential kernels cannot express
+
+Since the Weibull PDF integrates to 1 over $[0, \infty)$, the compensator has a simple interpretation: the expected number of triggered events of each type is at most 1.
+
+#### Head
+
+Both parameters are **context-dependent** (linear projections of the transformer hidden state):
+
+```python
+class WeibullHead(nn.Module):
+    def __init__(self, n_embd: int, vocab_size: int):
+        super().__init__()
+        self.proj_k = nn.Linear(n_embd, vocab_size)
+        self.proj_lam = nn.Linear(n_embd, vocab_size)
+
+    def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
+        k = F.softplus(self.proj_k(x)) + 0.1      # (B, L, V)
+        lam = F.softplus(self.proj_lam(x)) + 0.1  # (B, L, V)
+        return {"weibull_k": k, "weibull_lam": lam}
+```
+
+#### Compensator (Closed-Form)
+
+$$\int_0^{\Delta t} \lambda_v(\tau) \, d\tau = 1 - \exp\left(-\left(\frac{\Delta t}{\lambda_v}\right)^{k_v}\right)$$
+
+#### NLL Derivation
+
+**Part 1 — event log-likelihood** (computed in log-space for stability):
+$$\log \lambda_k(\Delta t) = \log k_k - \log \lambda_k + (k_k - 1) \log(\Delta t / \lambda_k) - (\Delta t / \lambda_k)^{k_k}$$
+
+**Part 2 — compensator** (survival penalty):
+$$\sum_v \left[1 - \exp\left(-\left(\frac{\Delta t}{\lambda_v}\right)^{k_v}\right)\right]$$
+
+**Full NLL:**
+$$-\ell = -\log k_k + \log \lambda_k - (k_k - 1)\log(\Delta t/\lambda_k) + (\Delta t/\lambda_k)^{k_k} + \sum_v\left[1 - \exp\left(-(\Delta t/\lambda_v)^{k_v}\right)\right]$$
+
+#### Usage
+
+```python
+config = Delphi2MConfig(
+    loss="weibull",
+    time_unit=365.25,  # normalize to years
+)
+model = Delphi2M(config)
+```
+
+**Sampling not yet implemented**: `sample_next` raises `NotImplementedError`.
+
 ---
 
 ## Helper Functions
@@ -487,6 +545,38 @@ def multi_hot(
     ...
 ```
 
+### `self_terminate_single` and `self_terminate`: No-Repeat Masking
+
+Two utilities in `delphi/model/utils.py` suppress already-seen tokens in logits:
+
+```python
+def self_terminate_single(
+    idx: torch.Tensor,           # (B, L) full sequence
+    logits: torch.Tensor,        # (B, V) logits at the last position
+    terminate_except: torch.Tensor,  # token IDs exempt from suppression (e.g. no-event)
+) -> torch.Tensor:
+    """
+    Sets logits to -inf for tokens already present in idx (except exempt ones).
+    Used inside sample_next() for single-step generation.
+    Returns: masked logits (B, V)
+    """
+```
+
+```python
+def self_terminate(
+    idx: torch.Tensor,           # (B, L) full sequence
+    logits: torch.Tensor,        # (B, L, V) logits at all positions
+    terminate_except: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Causal variant: at position j, suppresses tokens that appeared in positions 0..j.
+    Used after generate() to clean up logits for the full completed trajectory.
+    Returns: masked logits (B, L, V)
+    """
+```
+
+The distinction: `self_terminate_single` operates on the last-position logits `(B, V)` and is called inside `sample_next` during generation. `self_terminate` operates on all-position logits `(B, L, V)` and is called in post-generation analysis (e.g. `apps/sampling.py`) to obtain causally-masked logits for the full trajectory.
+
 ---
 
 ## Sampling Interface
@@ -497,8 +587,8 @@ Each loss must implement sampling for generation:
 @torch.no_grad()
 def sample_next(
     self,
-    logits: torch.Tensor,
     outputs: dict[str, torch.Tensor],
+    idx: torch.Tensor,              # (B, L) full current sequence (for self-termination)
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Returns:
@@ -506,6 +596,8 @@ def sample_next(
         time_til_next: (B, N) time until next event(s)
     """
 ```
+
+`sample_next` is responsible for **self-termination** — masking already-seen tokens before sampling. It reads `self.config.self_terminate_except` (list of tokens exempt from suppression, e.g. `[1]` for no-event). The utility `self_terminate_single(idx, logits, terminate_except)` from `delphi/model/utils.py` handles this masking at the last sequence position.
 
 ### Existing Samplers
 
@@ -532,6 +624,8 @@ def sample_competing_exponentials(
 ### Losses without samplers
 
 `hawkes` and `hawkes_weibull` do not have sampling implementations. `sample_next` raises `NotImplementedError` for these losses.
+
+`weibull` also does not yet have a sampler implemented (`NotImplementedError`).
 
 ---
 
@@ -578,6 +672,12 @@ class Delphi2MConfig:
     your_loss_param: float = 1.0  # add any loss-specific hyperparameters
 ```
 
+Existing self-termination fields (already in config, no need to add):
+```python
+self_terminate: bool = True                          # enable no-repeat suppression in sample_next
+self_terminate_except: None | list = field(default_factory=lambda: [1])  # tokens exempt (no-event by default)
+```
+
 ### 3. Add Head(s) in `__init__` (if needed)
 
 ```python
@@ -585,7 +685,7 @@ def __init__(self, config: Delphi2MConfig):
     ...
 
     # If your loss is parametric (not intensity-based)
-    parametric_losses = {"hawkes", "hawkes_weibull", "your_loss"}  # add to set
+    parametric_losses = {"hawkes", "hawkes_weibull", "weibull", "your_loss"}  # add to set
 
     # If your loss needs auxiliary outputs
     if "your_loss" in config.loss:
@@ -620,15 +720,23 @@ def loss(self, outputs, targets, age, targets_age):
 ### 6. Add Sampling Method
 
 ```python
-def sample_next(self, logits, outputs):
+def sample_next(self, outputs: dict, idx: torch.Tensor):
     ...
     elif self.config.loss == "your_loss":
+        logits = outputs["logits"][:, -1, :]
+        logits = self_terminate_single(
+            idx=idx,
+            logits=logits,
+            terminate_except=torch.tensor(self.config.self_terminate_except).to(idx.device),
+        )
         idx_next, time_til_next = sample_your_loss(
             your_param=outputs["your_param"],
             ...
         )
     return idx_next, time_til_next
 ```
+
+Remember: `sample_next` now receives the **full current sequence** (`idx`) and is responsible for suppressing already-seen tokens via `self_terminate_single`. `generate()` no longer applies any logit masking externally.
 
 ---
 

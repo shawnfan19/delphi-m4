@@ -89,7 +89,7 @@ Key arguments:
 
 ### Only works for intensity-based losses
 
-The script uses raw log-intensities (`logits`) as the discrimination score. This means it only works for models with intensity-based losses (`default`, `homo_poisson`, `homo_cluster_poisson`) that produce logits. Models with parametric losses (`hawkes`, `hawkes_weibull`) output distribution parameters (α, β) instead of logits, and this script does not handle them. Extending it would require computing the instantaneous intensity λ from the model's parametric outputs.
+The script uses raw log-intensities (`logits`) as the discrimination score. This means it only works for models with intensity-based losses (`default`, `homo_poisson`, `homo_cluster_poisson`) that produce logits. Models with parametric losses (`hawkes`, `hawkes_weibull`, `weibull`) output distribution parameters instead of logits, and this script does not handle them. Extending it would require computing the instantaneous intensity λ from the model's parametric outputs.
 
 ### Binned age stratification introduces variance
 

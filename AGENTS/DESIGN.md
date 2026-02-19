@@ -82,9 +82,9 @@ One way to interpret this: the scattered disease tokens represent the **latent c
 
 ### Context
 
-The `hawkes_weibull` loss (see [MODEL.md](MODEL.md)) was designed to obviate the need for no-event tokens by providing an explicit age-dependent Weibull baseline intensity. To compare it fairly against the `hawkes` loss (which relies on no-event tokens), we exclude no-event target positions when computing NLL (see [EVAL_NLL.md](EVAL_NLL.md)).
+The `hawkes_weibull` loss (see [MODEL.md](MODEL.md)) was designed to obviate the need for no-event tokens by providing an explicit age-dependent Weibull baseline intensity. The `weibull` loss takes a different approach: it replaces the exponential excitation kernel entirely with a Weibull density kernel that can flexibly capture short, mid, and long-range temporal behavior — potentially eliminating the need for no-event tokens without requiring a separate baseline. To compare these models fairly against the `hawkes` loss (which relies on no-event tokens), we exclude no-event target positions when computing NLL (see [EVAL_NLL.md](EVAL_NLL.md)).
 
-However, empirically the `hawkes` model with no-event tokens still achieves slightly lower NLL on real-event targets than `hawkes_weibull` without no-event tokens. This is not solely a matter of model capacity — there is a structural advantage from no-event tokens on the **input side**.
+However, empirically the `hawkes` model with no-event tokens still achieves slightly lower NLL on real-event targets than `hawkes_weibull` without no-event tokens. This is not solely a matter of model capacity — there is a structural advantage from no-event tokens on the **input side**. The same input-side considerations apply to `weibull` models trained without no-event tokens.
 
 ### The Input-Side Advantage
 
