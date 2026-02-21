@@ -16,7 +16,7 @@ from delphi.model.utils import (
     sample_competing_exponentials,
     sample_homo_cluster_poisson,
     self_terminate_single,
-    untie_idx,
+    untie,
 )
 
 
@@ -156,7 +156,7 @@ class ParametricHead(nn.Module):
 
         # param_a = F.softplus(self.proj_a(x)) + 1e-6
         # param_b = F.softplus(self.proj_b(x))
-        param_alpha = F.softplus(self.proj_alpha(x))
+        param_alpha = F.softplus(self.proj_alpha(x)) + 0.1
         param_beta = F.softplus(self.proj_beta(x)) + 0.1
 
         return {
@@ -330,16 +330,11 @@ class Delphi2M(nn.Module):
         targets_age: torch.Tensor,
     ):
 
+        if self.config.mask_ties:
+            outputs, age = untie(outputs, age, targets_age)
+
         if self.config.loss == "default":
             logits = outputs["logits"]
-
-            if self.config.mask_ties:
-                corr_idx = untie_idx(age, targets_age)
-                age = torch.take_along_dim(input=age, indices=corr_idx, dim=1)
-                logits = torch.take_along_dim(
-                    input=logits, indices=corr_idx.unsqueeze(-1), dim=1
-                )
-
             loss_ce = F.cross_entropy(
                 # (b, l, n_vocab) -> (b, n_vocab, l)
                 logits.permute(0, 2, 1),
@@ -357,14 +352,6 @@ class Delphi2M(nn.Module):
             return {"loss_ce": loss_ce, "loss_dt": loss_dt}
         elif self.config.loss == "homo_poisson":
             logits = outputs["logits"]
-
-            if self.config.mask_ties:
-                corr_idx = untie_idx(age, targets_age)
-                age = torch.take_along_dim(input=age, indices=corr_idx, dim=1)
-                logits = torch.take_along_dim(
-                    input=logits, indices=corr_idx.unsqueeze(-1), dim=1
-                )
-
             dt = targets_age - age
             dt = torch.clamp(dt, min=0)
             dt /= self.config.time_unit
@@ -442,8 +429,11 @@ class Delphi2M(nn.Module):
         x = self.transformer.ln_f(x)
         att = torch.stack(att)
 
+        misc = dict()
+        misc["attn_mask"] = attn_mask
+        misc["attn"] = att
+
         outputs = dict()
-        outputs["attn_mask"] = attn_mask
 
         if hasattr(self, "lm_head"):
             logits = self.lm_head(x)
@@ -479,7 +469,7 @@ class Delphi2M(nn.Module):
         else:
             loss = None
 
-        return outputs, loss, att
+        return outputs, loss, misc
 
     @torch.no_grad()
     def sample_next(self, outputs: dict[str, torch.Tensor], idx: torch.Tensor):

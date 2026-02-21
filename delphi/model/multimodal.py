@@ -12,8 +12,8 @@ from delphi.model.transformer import (
     LayerNorm,
     causal_attention_mask,
     exponential_nll,
-    untie_idx,
 )
+from delphi.model.utils import untie_idx
 from delphi.multimodal import Modality, module_name
 
 tensor_dict = dict[str, torch.Tensor]

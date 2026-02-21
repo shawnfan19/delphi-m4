@@ -33,6 +33,23 @@ def untie_idx(age: torch.Tensor, targets_age: torch.Tensor):
     return corr_idx
 
 
+def untie(
+    outputs: dict[str, torch.Tensor], age: torch.Tensor, targets_age: torch.Tensor
+):
+    corr_idx = untie_idx(age, targets_age)
+    age = torch.take_along_dim(input=age, indices=corr_idx, dim=1)
+    for key, tensor in outputs.items():
+        if tensor.dim() <= 1:
+            continue
+
+        if tensor.dim() > 2:
+            indices = corr_idx.unsqueeze(-1)
+        else:
+            indices = corr_idx
+        outputs[key] = torch.take_along_dim(input=outputs[key], indices=indices, dim=1)
+    return outputs, age
+
+
 def multi_hot(
     targets: torch.Tensor, targets_age: torch.Tensor, vocab_size: int
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -319,7 +336,7 @@ def nll_weibull(
     # Part 2: -∫_0^Δt Σ_v λ_v(τ) dτ = -Σ_v [1 - exp(-(Δt/λ_v)^k_v)]
     # ================================================================
     delta_t_exp = delta_t.unsqueeze(-1)  # (B, L, 1)
-    log_dt_over_lam = torch.log(delta_t_exp) - torch.log(weibull_lam)  # (B, L, V)
+    log_dt_over_lam = torch.log(delta_t_exp) - torch.log(weibull_lam + eps)  # (B, L, V)
     dt_over_lam_pow_k = torch.exp(weibull_k * log_dt_over_lam)  # (Δt/λ_v)^k_v
 
     compensator = 1.0 - torch.exp(-dt_over_lam_pow_k)  # (B, L, V)
