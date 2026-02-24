@@ -24,6 +24,50 @@ def causal_attention_mask(
     return attn_mask.unsqueeze(1)
 
 
+def incremental_attention_mask(
+    new_pad: torch.Tensor,
+    past_pad: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Build attention mask for incremental (KV-cached) forward pass.
+
+    Args:
+        new_pad:  (B, T_new) bool — non-padding positions among new tokens
+        past_pad: (B, T_cached) bool — non-padding positions in the KV cache
+
+    Returns:
+        (B, 1, T_new, T_cached + T_new) float mask
+    """
+    B, T_new = new_pad.shape
+    T_cached = past_pad.shape[1]
+    device = new_pad.device
+
+    # Cached columns [0..T_cached): each new query attends to all non-padding
+    # cached positions (age ordering is guaranteed by construction).
+    # Shape: (B, T_new, T_cached)
+    # Note: unlike causal_attention_mask (time-based), padding new queries
+    # (age = -1e4) are not blocked from attending to valid cached positions —
+    # the time gate (k_time <= q_time) would normally prevent this since real
+    # ages exceed -1e4. The difference is harmless: outputs at padding positions
+    # are never consumed during generation.
+    cached_block = past_pad.float().view(B, 1, T_cached).expand(B, T_new, T_cached)
+
+    new_block = (
+        torch.ones(T_new, T_new, device=device)
+        .view(1, T_new, T_new)
+        .expand(B, T_new, T_new)
+    )
+
+    # Apply key padding for new tokens, then force diagonal to 1
+    new_block = new_block * new_pad.float().view(B, 1, T_new)
+    diag_indices = torch.arange(T_new, device=device)
+    new_block[:, diag_indices, diag_indices] = 1.0
+
+    # Concatenate along key dimension: (B, T_new, T_cached + T_new)
+    attn_mask = torch.cat([cached_block.contiguous(), new_block], dim=2)
+    return attn_mask.unsqueeze(1)  # (B, 1, T_new, T_cached + T_new)
+
+
 def untie_idx(age: torch.Tensor, targets_age: torch.Tensor):
     dt = targets_age - age
     is_tie = dt == 0

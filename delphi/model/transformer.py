@@ -9,6 +9,7 @@ from delphi.model.tpp import HawkesHead, nll_hawkes
 from delphi.model.utils import (
     causal_attention_mask,
     exponential_nll,
+    incremental_attention_mask,
     nll_homogeneous_cluster_poisson,
     nll_homogeneous_poisson,
     sample_competing_exponentials,
@@ -75,7 +76,7 @@ class CausalSelfAttention(nn.Module):
         self.n_embd = config.n_embd
         self.dropout = config.dropout
 
-    def forward(self, x, attn_mask):
+    def forward(self, x, attn_mask, past_kv=None):
         B, T, C = x.size()
         # batch size, sequence length, embedding dimensionality (n_embd)
 
@@ -91,21 +92,24 @@ class CausalSelfAttention(nn.Module):
             1, 2
         )  # (B, nh, T, hs)
 
-        # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
+        if past_kv is not None:
+            k = torch.cat([past_kv[0], k], dim=2)  # (B, nh, T_total, hs)
+            v = torch.cat([past_kv[1], v], dim=2)  # (B, nh, T_total, hs)
+
+        # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T_total) -> (B, nh, T, T_total)
         # manual implementation of attention
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-        # att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
         att = att.masked_fill(attn_mask == 0, float("-inf"))
         att = F.softmax(att, dim=-1)
         att = self.attn_dropout(att)
-        y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+        y = att @ v  # (B, nh, T, T_total) x (B, nh, T_total, hs) -> (B, nh, T, hs)
         y = (
             y.transpose(1, 2).contiguous().view(B, T, C)
         )  # re-assemble all head outputs side by side
 
         # output projection
         y = self.resid_dropout(self.c_proj(y))
-        return y, att
+        return y, att, (k, v)
 
 
 class MLP(nn.Module):
@@ -134,11 +138,11 @@ class Block(nn.Module):
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
 
-    def forward(self, x, attn_mask):
-        y, att = self.attn(self.ln_1(x), attn_mask)
+    def forward(self, x, attn_mask, past_kv=None):
+        y, att, new_kv = self.attn(self.ln_1(x), attn_mask, past_kv=past_kv)
         x = x + y
         x = x + self.mlp(self.ln_2(x))
-        return x, att
+        return x, att, new_kv
 
 
 @dataclass
@@ -307,7 +311,9 @@ class Delphi2M(nn.Module):
         else:
             raise NotImplementedError
 
-    def forward(self, idx, age, targets=None, targets_age=None):
+    def forward(
+        self, idx, age, targets=None, targets_age=None, past_kvs=None, past_pad=None
+    ):
         tok_emb = self.transformer.wte(idx)
         age_emb = self.transformer.wae(age.unsqueeze(-1))
         x = self.transformer.token_drop(tok_emb) * (1 - self.config.token_dropout)
@@ -318,21 +324,28 @@ class Delphi2M(nn.Module):
         if self.config.mask_no_event_attention:
             pad = idx > 1
 
-        if self.config.attn_mask == "triangular":
+        if past_kvs is not None:
+            attn_mask = incremental_attention_mask(new_pad=pad, past_pad=past_pad)
+        elif self.config.attn_mask == "triangular":
             attn_mask = causal_attention_mask(pad=pad)
         else:
             attn_mask = causal_attention_mask(pad=pad, timestep=age)
 
         att = []
-        for block in self.transformer.h:
-            x, a = block(x, attn_mask)
+        new_kvs = []
+        for i, block in enumerate(self.transformer.h):
+            past_kv = past_kvs[i] if past_kvs is not None else None
+            x, a, new_kv = block(x, attn_mask, past_kv=past_kv)
             att.append(a)
+            new_kvs.append(new_kv)
         x = self.transformer.ln_f(x)
         att = torch.stack(att)
 
         misc = dict()
         misc["attn_mask"] = attn_mask
         misc["attn"] = att
+        misc["past_kvs"] = new_kvs
+        misc["cur_pad"] = pad
 
         outputs = dict()
 
@@ -415,6 +428,7 @@ def generate(
     max_age: float | torch.Tensor = 85 * 365.25,
     stop_at_block_size: bool = True,
     exclude_pad: bool = True,
+    cached: bool = True,
 ):
 
     termination_tokens = torch.tensor(
@@ -446,8 +460,26 @@ def generate(
 
     pmt_cnt = (idx > 0).sum(dim=1)
     gen_cnt = torch.zeros_like(pmt_cnt)
+
+    cache_kvs = None  # list of (k, v) per layer; None triggers full pass
+    cache_pad = None  # (B_active, T_cached) bool
+
     while len(active_indices) > 0:
-        outputs, _, _ = model(cur_idx, cur_age)
+        if not cached or cache_kvs is None:
+            outputs, _, misc = model(cur_idx, cur_age)
+        else:
+            T_cached = cache_kvs[0][0].shape[2]
+            new_idx = cur_idx[:, T_cached:]
+            new_age = cur_age[:, T_cached:]
+            outputs, _, misc = model(
+                new_idx, new_age, past_kvs=cache_kvs, past_pad=cache_pad
+            )
+            cache_pad = torch.cat([cache_pad, misc["cur_pad"]], dim=1)
+
+        if cached:
+            cache_kvs = misc["past_kvs"]
+            if cache_pad is None:
+                cache_pad = misc["cur_pad"]
 
         idx_next, time_til_next = model.sample_next(outputs=outputs, idx=cur_idx)
         age_next = cur_age[..., [-1]] + time_til_next
@@ -484,6 +516,9 @@ def generate(
             cur_idx = cur_idx[~should_stop]
             cur_age = cur_age[~should_stop]
             active_indices = active_indices[~should_stop]
+            if cached and cache_kvs is not None:
+                cache_kvs = [(k[~should_stop], v[~should_stop]) for k, v in cache_kvs]
+                cache_pad = cache_pad[~should_stop]
 
         if len(active_indices) == 0:
             break

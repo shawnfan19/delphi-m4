@@ -87,11 +87,9 @@ for batch_idx in pbar:
         idx=pmt_idx,
         age=pmt_age,
         max_age=T1.max(dim=1)[0].to(pmt_idx.device),
-        # no_repeat=True,
-        # no_repeat_except=torch.Tensor([1, ds.dx_token]),
-        max_new_tokens=args.max_new_tokens,
         termination_tokens=[1269],
         stop_at_block_size=True,
+        cached=True,
     )
     idx = idx.detach().cpu().numpy()
     age = age.detach().cpu().numpy()

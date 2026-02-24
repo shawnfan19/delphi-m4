@@ -35,7 +35,7 @@ from delphi.experiment import GenerateConfig, eval_iter, load_ckpt
 from delphi.model.transformer import generate
 
 # %%
-args = GenerateConfig.auto(ckpt="cluster/homo_cluster_poisson/ckpt.pt")
+args = GenerateConfig.auto(ckpt="cluster/dx_token/ckpt.pt")
 print("args:")
 pprint.pp(args)
 
@@ -119,8 +119,8 @@ for batch_idx in pbar:
         max_age=T1.max(dim=1)[0].to(device),
         max_new_tokens=args.max_new_tokens,
         termination_tokens=[1269],
-        stop_at_block_size=args.stop_at_block_size,
         exclude_pad=True,
+        cached=True,
     )
 
     tokens = tokens.detach().cpu().numpy()
