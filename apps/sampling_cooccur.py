@@ -35,7 +35,7 @@ from delphi.experiment import GenerateConfig, eval_iter, load_ckpt
 from delphi.model.transformer import generate
 
 # %%
-args = GenerateConfig.auto(ckpt="cluster/dx_token/ckpt.pt")
+args = GenerateConfig.auto(ckpt="cluster/homo_cluster_poisson/ckpt.pt")
 print("args:")
 pprint.pp(args)
 
@@ -134,9 +134,9 @@ for batch_idx in pbar:
     tracker.step(tokens=tokens, timesteps=timesteps)
     stats.step(tokens=tokens, timesteps=timesteps)
 
-    n_gen = gen_stats["n_gen"].mean() - gen_stats["n_prompt"].mean()
-    assert n_gen > 0, n_gen
-    pbar.set_postfix({"n_gen": n_gen})
+    pbar.set_postfix(
+        {"n_gen": gen_stats["n_gen"].mean(), "n_pmt": gen_stats["n_prompt"].mean()}
+    )
 
 # %%
 gt_heatmap = gt_tracker.finalize()

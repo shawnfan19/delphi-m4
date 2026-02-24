@@ -411,7 +411,7 @@ def generate(
     idx: torch.Tensor,
     age: torch.Tensor,
     termination_tokens: list | torch.Tensor,
-    max_new_tokens: None | int = 100,
+    max_new_tokens: None | int | float = None,
     max_age: float | torch.Tensor = 85 * 365.25,
     stop_at_block_size: bool = True,
     exclude_pad: bool = True,
@@ -422,7 +422,7 @@ def generate(
     )
 
     if max_new_tokens is None:
-        max_new_tokens = 128
+        max_new_tokens = float("inf")
 
     if isinstance(max_age, torch.Tensor):
         assert len(max_age.shape) == 1
@@ -444,21 +444,18 @@ def generate(
     ):
         ignore_tokens += model.config.ignore_tokens
 
-    pmt_cnt = (idx > 0).sum(dim=1).detach().cpu().numpy()
-    for _ in range(max_new_tokens):
+    pmt_cnt = (idx > 0).sum(dim=1)
+    gen_cnt = torch.zeros_like(pmt_cnt)
+    while len(active_indices) > 0:
         outputs, _, _ = model(cur_idx, cur_age)
 
         idx_next, time_til_next = model.sample_next(outputs=outputs, idx=cur_idx)
         age_next = cur_age[..., [-1]] + time_til_next
         age_next[time_til_next == -1e4] = -1e4
 
+        gen_cnt[active_indices] += (idx_next > 0).sum(dim=1)
         cur_idx = torch.cat((cur_idx, idx_next), dim=1)
         cur_age = torch.cat((cur_age, age_next), dim=1)
-        sort_by_age = torch.argsort(cur_age, dim=1)
-        cur_age = torch.take_along_dim(cur_age, sort_by_age, dim=1)
-        cur_idx = torch.take_along_dim(cur_idx, sort_by_age, dim=1)
-        margin = torch.min(torch.sum(cur_idx == 0, dim=1)).item()
-        cur_idx, cur_age = cur_idx[:, margin:], cur_age[:, margin:]
 
         terminated = torch.isin(idx_next, termination_tokens).any(-1)
         aged_out = (age_next > max_age[active_indices]).any(-1)
@@ -473,7 +470,8 @@ def generate(
             reached_block = block_size >= model.config.block_size
         else:
             reached_block = torch.zeros_like(terminated)
-        should_stop = terminated | aged_out | reached_block
+        maxed_out = gen_cnt[active_indices] >= max_new_tokens
+        should_stop = terminated | aged_out | reached_block | maxed_out
 
         if should_stop.any():
             # identify indices relative to the current active batch
@@ -489,11 +487,6 @@ def generate(
 
         if len(active_indices) == 0:
             break
-
-    # collect stragglers (reached max_new_tokens without terminating)
-    for local_i, global_i in enumerate(active_indices):
-        completed_idx[global_i.item()] = cur_idx[local_i]
-        completed_age[global_i.item()] = cur_age[local_i]
 
     max_len = max(t.numel() for t in completed_idx.values())
     final_idx = torch.full((batch_size, max_len), 0, dtype=idx.dtype, device=idx.device)
@@ -515,6 +508,11 @@ def generate(
     margin = torch.min(torch.sum(idx == 0, dim=1)).item()
     idx, age = idx[:, margin:], age[:, margin:]
 
-    gen_cnt = (idx > 0).sum(dim=1).detach().cpu().numpy()
-
-    return idx, age, {"n_prompt": pmt_cnt, "n_gen": gen_cnt}
+    return (
+        idx,
+        age,
+        {
+            "n_prompt": pmt_cnt.detach().cpu().numpy(),
+            "n_gen": gen_cnt.detach().cpu().numpy(),
+        },
+    )

@@ -246,6 +246,10 @@ def sample_homo_cluster_poisson(
 
         time_til_next = t_nod_next.expand(-1, int(max_n)).clone()
         time_til_next[next_token == 0] = -1e4
+
+        sort_by_age = torch.argsort(time_til_next, dim=1)
+        next_token = torch.take_along_dim(next_token, sort_by_age, dim=1)
+        time_til_next = torch.take_along_dim(time_til_next, sort_by_age, dim=1)
     else:
         next_token = torch.ones(batch_size, 1, device=device).long()
         time_til_next = t_nod_next.expand(-1, 1).clone()
