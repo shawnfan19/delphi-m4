@@ -5,14 +5,12 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
+from delphi.model.tpp import HawkesHead, nll_hawkes
 from delphi.model.utils import (
     causal_attention_mask,
     exponential_nll,
-    nll_hawkes,
-    nll_hawkes_weibull,
     nll_homogeneous_cluster_poisson,
     nll_homogeneous_poisson,
-    nll_weibull,
     sample_competing_exponentials,
     sample_homo_cluster_poisson,
     self_terminate_single,
@@ -143,78 +141,6 @@ class Block(nn.Module):
         return x, att
 
 
-class ParametricHead(nn.Module):
-
-    def __init__(self, n_embd, vocab_size):
-        super().__init__()
-        # self.proj_a = nn.Linear(n_embd, vocab_size)
-        # self.proj_b = nn.Linear(n_embd, vocab_size)
-        self.proj_alpha = nn.Linear(n_embd, vocab_size)
-        self.proj_beta = nn.Linear(n_embd, vocab_size)
-
-    def forward(self, x):
-
-        # param_a = F.softplus(self.proj_a(x)) + 1e-6
-        # param_b = F.softplus(self.proj_b(x))
-        param_alpha = F.softplus(self.proj_alpha(x)) + 0.1
-        param_beta = F.softplus(self.proj_beta(x)) + 0.1
-
-        return {
-            # "A": param_a,
-            # "B": param_b,
-            "alpha": param_alpha,
-            "beta": param_beta,
-        }
-
-
-class HawkesWeibullHead(nn.Module):
-
-    def __init__(self, n_embd: int, vocab_size: int):
-        super().__init__()
-        # Global Weibull baseline params (per event type)
-        self.log_k = nn.Parameter(torch.zeros(vocab_size))
-        self.log_lam = nn.Parameter(torch.zeros(vocab_size))
-        self.log_A = nn.Parameter(torch.zeros(vocab_size))
-
-        # Context-dependent excitation kernel params (from hidden state)
-        self.proj_alpha = nn.Linear(n_embd, vocab_size)
-        self.proj_beta = nn.Linear(n_embd, vocab_size)
-
-    def forward(self, x: torch.Tensor, age: torch.Tensor) -> dict[str, torch.Tensor]:
-        # Excitation params from transformer hidden state
-        alpha = F.softplus(self.proj_alpha(x))
-        beta = F.softplus(self.proj_beta(x)) + 0.1
-
-        # Weibull params (global, positive)
-        k = F.softplus(self.log_k) + 0.1
-        lam = F.softplus(self.log_lam) + 0.1
-        A = F.softplus(self.log_A)
-
-        return {
-            "alpha": alpha,
-            "beta": beta,
-            "weibull_k": k,
-            "weibull_lam": lam,
-            "weibull_A": A,
-        }
-
-
-class WeibullHead(nn.Module):
-
-    def __init__(self, n_embd: int, vocab_size: int):
-        super().__init__()
-        self.proj_k = nn.Linear(n_embd, vocab_size)
-        self.proj_lam = nn.Linear(n_embd, vocab_size)
-
-    def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
-        k = F.softplus(self.proj_k(x)) + 0.1
-        lam = F.softplus(self.proj_lam(x)) + 0.1
-        return {
-            "weibull_k": k,
-            "weibull_lam": lam,
-        }
-
-
 @dataclass
 class Delphi2MConfig:
     # defaults to config of the OG delphi-2m ckpt
@@ -267,25 +193,13 @@ class Delphi2M(nn.Module):
             )
         )
 
-        parametric_losses = {"hawkes", "hawkes_weibull", "weibull"}
-
-        if not (config.loss in parametric_losses):
+        if config.loss in {"default", "homo_poisson", "homo_cluster_poisson"}:
             self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
             if self.config.weight_tying:
                 self.transformer.wte.weight = self.lm_head.weight
 
         if config.loss == "hawkes":
-            self.param_head = ParametricHead(
-                n_embd=config.n_embd, vocab_size=config.vocab_size
-            )
-
-        if config.loss == "hawkes_weibull":
-            self.param_head = HawkesWeibullHead(
-                n_embd=config.n_embd, vocab_size=config.vocab_size
-            )
-
-        if config.loss == "weibull":
-            self.param_head = WeibullHead(
+            self.param_head = HawkesHead(
                 n_embd=config.n_embd, vocab_size=config.vocab_size
             )
 
@@ -325,13 +239,20 @@ class Delphi2M(nn.Module):
     def loss(
         self,
         outputs: dict[str, torch.Tensor],
+        idx: torch.Tensor,
         targets: torch.Tensor,
         age: torch.Tensor,
         targets_age: torch.Tensor,
     ):
+        terminate_except = torch.tensor(
+            self.config.self_terminate_except, device=idx.device
+        )
 
         if self.config.mask_ties:
             outputs, age = untie(outputs, age, targets_age)
+
+        targets_age = targets_age / self.config.time_unit
+        age = age / self.config.time_unit
 
         if self.config.loss == "default":
             logits = outputs["logits"]
@@ -351,12 +272,14 @@ class Delphi2M(nn.Module):
 
             return {"loss_ce": loss_ce, "loss_dt": loss_dt}
         elif self.config.loss == "homo_poisson":
-            logits = outputs["logits"]
-            dt = targets_age - age
-            dt = torch.clamp(dt, min=0)
-            dt /= self.config.time_unit
             nll = nll_homogeneous_poisson(
-                log_intensity=logits, targets=targets, delta_t=dt
+                log_intensity=outputs["logits"],
+                targets=targets,
+                idx=idx,
+                targets_age=targets_age,
+                age=age,
+                terminate=self.config.self_terminate,
+                terminate_except=terminate_except,
             )
 
             return {"loss_nll": nll}
@@ -370,37 +293,15 @@ class Delphi2M(nn.Module):
                 age=age,
             )
             return {"loss_nll": nll, "loss_cluster": nll_cluster, "mask": ~cooccur}
-        elif self.config.loss == "hawkes_weibull":
-            nll = nll_hawkes_weibull(
-                alpha=outputs["alpha"],
-                beta=outputs["beta"],
-                weibull_k=outputs["weibull_k"],
-                weibull_lam=outputs["weibull_lam"],
-                weibull_A=outputs["weibull_A"],
-                age=age,
-                targets_age=targets_age,
-                targets=targets,
-                time_unit=self.config.time_unit,
-            )
-            return {"loss_nll": nll}
-        elif self.config.loss == "weibull":
-            nll = nll_weibull(
-                weibull_k=outputs["weibull_k"],
-                weibull_lam=outputs["weibull_lam"],
-                age=age,
-                targets_age=targets_age,
-                targets=targets,
-                time_unit=self.config.time_unit,
-            )
-            return {"loss_nll": nll}
         elif self.config.loss == "hawkes":
             nll = nll_hawkes(
+                mu=outputs["mu"],
                 alpha=outputs["alpha"],
                 beta=outputs["beta"],
                 age=age,
+                idx=idx,
                 targets_age=targets_age,
                 targets=targets,
-                time_unit=self.config.time_unit,
             )
             return {"loss_nll": nll}
         else:
@@ -458,7 +359,11 @@ class Delphi2M(nn.Module):
             for k in ignored_tokens:
                 is_valid_target *= targets != k
             loss = self.loss(
-                outputs=outputs, targets=targets, age=age, targets_age=targets_age
+                outputs=outputs,
+                idx=idx,
+                targets=targets,
+                age=age,
+                targets_age=targets_age,
             )
             loss_mask = is_valid_target
             if "mask" in loss:
