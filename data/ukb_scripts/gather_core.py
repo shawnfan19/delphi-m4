@@ -106,9 +106,15 @@ fid2icd = fid2icd.to_dict()
 
 
 # %%
-fields_to_get = [eid_f, sex_f, year_f, month_f, assessment_f, bmi_f, smoking_f, alcohol_f] + cancer_codes['type'] + cancer_codes['date'] + fo_fields + [death_f]
-df = main_entity.retrieve_fields(fields=fields_to_get, engine=engine)
+fields_to_get = [eid_f, sex_f, year_f, month_f, assessment_f, bmi_f, smoking_f, alcohol_f] + cancer_codes['type'] + cancer_codes['date'] + fo_fields
+df_main = main_entity.retrieve_fields(fields=fields_to_get, engine=engine)
 
+# %%
+# handle death separately
+df_death = dataset['death'].retrieve_fields(fields=[eid_f, death_f], engine=engine)
+# deduplicate by taking first occurrence
+df_death = df_death.groupBy("eid").agg(F.min(death_f.name).alias("death_date"))
+df = df_main.join(df_death, on="eid", how="left")
 
 # %%
 df = df.withColumn(
@@ -148,6 +154,16 @@ df = df.withColumn(
     .otherwise("alcohol_low")
 )
 
+# %%
+# truncate cancer codes to 3 digits before stacking
+for type_f in cancer_codes["type"]:
+    df = df.withColumn(
+        type_f.name,
+        F.when(
+            F.col(type_f.name).rlike("^[A-Z]\d{3}$"),
+            F.regexp_extract(F.col(type_f.name), r"([A-Z]\d{2})", 1)
+        ).otherwise(F.col(type_f.name))
+    )
 
 # %%
 stack_args = list()
@@ -166,7 +182,7 @@ for type_f, date_f in zip(cancer_codes["type"], cancer_codes["date"]):
     stack_args.append(type_f.name)
     stack_args.append(date_f.name)
 stack_args.append(F.lit("death"))
-stack_args.append(death_f.name)
+stack_args.append("death_date")
 
 
 # %%
@@ -194,14 +210,8 @@ df_long = df_long.filter(~F.col('date').isin(exclude_date_literals))
 # still ~200 entires would have negative age; not sure why but remove 
 df_long = df_long.where(F.col("age") >= 0)
 
-df_long = df_long.withColumn(
-    "token",
-    F.when(
-        F.col("token").rlike("^[A-Z]\d{3}$"),
-        F.regexp_extract("token", r"([A-Z]\d{2})", 1)
-    ).otherwise(F.col("token"))
-)
-
+# %%
+df_long = df_long.dropDuplicates(["eid", "token"])
 
 # %%
 map_df = tokenizer.reset_index()

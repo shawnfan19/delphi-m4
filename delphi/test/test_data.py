@@ -52,6 +52,21 @@ def positive_timesteps(time_steps: np.ndarray) -> bool:
     return np.all(time_steps >= 0).astype(bool)
 
 
+def no_duplicate_tokens(p2i: pd.DataFrame, tokens: np.ndarray) -> bool:
+    
+    for start_pos, seq_len in zip(p2i["start_pos"], p2i["seq_len"]):
+        x = tokens[start_pos:start_pos + seq_len]
+        x_uniq, ct = np.unique(x, return_counts=True)
+        if len(x_uniq) != len(x):
+            # print(x_uniq[ct>1])
+            # return False
+            raise AssertionError(
+                f"Duplicates: {x_uniq[ct>1]}"
+            )
+    
+    return True
+
+
 def test_data(dataset_dir, all_participants):
 
     assert required_files_exist(dataset_dir)
@@ -75,6 +90,7 @@ def test_data(dataset_dir, all_participants):
     assert no_duplicate_start_pos(p2i=p2i)
     assert total_seq_len_add_up(p2i=p2i, tokens=tokens)
     assert no_nan_tokens(tokens=tokens)
+    assert no_duplicate_tokens(p2i=p2i, tokens=tokens)
     assert no_nan_time_steps(time_steps=time_steps)
     assert positive_timesteps(time_steps=time_steps)
     assert tokenizer_contiguous(tokenizer=tokenizer)
