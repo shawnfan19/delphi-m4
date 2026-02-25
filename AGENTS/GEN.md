@@ -160,5 +160,5 @@ The sentinel value `time_til_next == -1e4` marks "dummy" slots in multi-token ou
 - **Beam search / best-of-N**: `generate()` is purely stochastic — it samples from the model distribution. Ranking or filtering multiple trajectories must be done at the call site.
 - **Input conditioning beyond prompts**: Any patient covariates (sex, genotype, etc.) must be encoded into the prompt sequence before calling `generate()`.
 - **Logit masking / no-repeat**: Fully delegated to `model.sample_next()`. `generate()` passes `idx` (the current full sequence) to `sample_next` for this purpose.
-- **Parametric losses**: `generate()` calls `model.sample_next()`, which currently raises `NotImplementedError` for `hawkes`, `hawkes_weibull`, and `weibull`. Implementing sampling for these losses requires extending `sample_next()`, not `generate()` itself.
+- **Parametric losses**: `generate()` calls `model.sample_next()`, which currently raises `NotImplementedError` for `hawkes` and `hawkes_weibull`. `weibull` sampling is now implemented via `sample_tpp` / `thinning_sample` in `delphi/model/utils.py`. Implementing sampling for the remaining losses requires extending `sample_next()`, not `generate()` itself.
 - **Returning logits**: Callers that need logits over the generated trajectory must run a separate `model.forward()` call after `generate()` returns.

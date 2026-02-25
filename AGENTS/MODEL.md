@@ -505,17 +505,19 @@ model = Delphi2M(config)
 
 ## Helper Functions
 
-### `untie_idx`: Handling Tied Events
+### `untie_idx` and `untie`: Handling Tied Events
 
-When multiple events share the same timestamp (delta_t = 0), this maps later positions back to the first position in the tie:
+In EHR data, multiple events can share the same timestamp (e.g. several diagnoses recorded on the same visit). At position `i` in a tied cluster, `targets_age[i] == age[i]`, giving `delta_t = 0`. This causes two problems:
+- **For intensity models**: Δt = 0 events have logits produced by an earlier position in the cluster, not a fresh prediction after the event.
+- **For parametric models (Weibull)**: Δt = 0 cannot be evaluated (log(0) or PDF(0) = 0).
+
+`untie_idx` computes the remapping — for tied positions it returns the index of the first position in the tie group:
 
 ```python
 def untie_idx(age: torch.Tensor, targets_age: torch.Tensor) -> torch.Tensor:
     """
-    Returns index tensor that maps tied positions to the first position of the tie.
-
-    Example: if positions [3,4,5] have delta_t=0, returns indices where
-    positions 4,5 map to 3, so all use logits from position 3.
+    Returns (B, L) index tensor that maps each position to itself, except
+    tied positions (delta_t == 0) which map back to the first position of the tie.
     """
     dt = targets_age - age
     is_tie = dt == 0
@@ -525,7 +527,70 @@ def untie_idx(age: torch.Tensor, targets_age: torch.Tensor) -> torch.Tensor:
     return corr_idx
 ```
 
-**Usage**: Apply with `torch.take_along_dim` to realign logits/age to handle ties.
+`untie` applies this remapping to the full `outputs` dict and `age` tensor in one call:
+
+```python
+def untie(
+    outputs: dict[str, torch.Tensor],
+    age: torch.Tensor,
+    targets_age: torch.Tensor,
+) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
+    """
+    Remaps outputs and age so that all tied positions use the outputs/age of
+    the first position in their tie group.
+    Handles 2-D (B, L) and 3-D (B, L, V) output tensors; skips ≤1-D tensors.
+    """
+```
+
+**Implicit assumptions**:
+
+1. **Sequences are time-sorted** — `cummax` propagates the last non-tied index
+   forward. If events are out of chronological order, the remapping silently points
+   to the wrong position. The dataset and `generate()` both enforce sorted order.
+
+2. **Padding sentinel is exactly `-1e4`** — `is_tie[age == -1e4] = False` is
+   hardcoded. If the padding convention changes, padding positions that happen to
+   have coincident `age` and `targets_age` would be misidentified as ties.
+
+3. **Every cluster is preceded by at least one non-tied position** — when
+   `is_tie=True`, `untie_idx` temporarily sets that position's index to 0 before
+   the `cummax`. If the cluster starts at position 0 itself, those positions remain
+   mapped to index 0 (themselves), which still has Δt=0. In practice, sequences
+   always begin with padding positions (excluded by the `-1e4` guard), so a
+   non-tied real-event position always precedes any cluster.
+
+4. **All tensors in `outputs` are at most 3-D** — for `dim > 2`, `untie` uses
+   `corr_idx.unsqueeze(-1)` as the index for `take_along_dim`. A 4-D tensor (e.g.
+   `attn_mask`) would silently receive wrong indices. This is safe today because
+   `attn_mask` is stored in `misc`, not `outputs`.
+
+5. **`targets_age[i]` is the immediately-following event's timestamp** — tie
+   detection uses `targets_age - age == 0`. If `targets_age` contains anything
+   other than the next event's timestamp (e.g. an arbitrary evaluation horizon),
+   the tie criterion is meaningless. This is guaranteed by the data loading
+   convention (`x0, t0, x1, t1 = ds.get_batch(...)` where `t1` is the shifted
+   `t0`).
+
+**`mask_ties` config field** — controls whether untying is applied during training:
+
+```python
+@dataclass
+class Delphi2MConfig:
+    mask_ties: bool = True   # default ON
+    ...
+```
+
+When `mask_ties=True`, `model.loss()` calls `untie(outputs, age, targets_age)` before computing the NLL. This means all events in a simultaneous cluster are evaluated against the model predictions *before* any of them were observed, keeping `delta_t > 0`.
+
+**Comparability caveat**: Models trained with different `mask_ties` settings are **not directly comparable**. `mask_ties=False` was used by mistake when training early `weibull`/`hawkes` models — those models saw Δt=0 positions during training, which for Weibull yields PDF(0)=0 → log(0)=−∞ and corrupts the NLL. It is not a meaningful design choice; the correct setting for all non-cluster losses is `mask_ties=True`.
+
+When computing likelihoods outside `model.loss()` (e.g. in eval scripts), mirror the training behaviour:
+```python
+if model.config.mask_ties:
+    outputs, t0 = untie(outputs, t0, t1)
+```
+
+**Constraint**: `mask_ties=False` is required for `homo_cluster_poisson` (enforced in `__post_init__`), which has its own cluster handling via `multi_hot`.
 
 ### `multi_hot`: Cluster Encoding
 
@@ -543,6 +608,54 @@ def multi_hot(
         cooccur: (B, L) boolean mask, True for cluster-continuation positions
     """
     ...
+```
+
+### `find_nearest_pred`: Nearest-Previous-Timestep Lookup
+
+Used to align model outputs (defined at event positions) with arbitrary evaluation timesteps:
+
+```python
+def find_nearest_pred(
+    timesteps: torch.Tensor,              # (B, L) event timestamps in days
+    target_timesteps: float | torch.Tensor,  # scalar, (B,), or (B, T)
+) -> torch.Tensor:                         # (B, T) indices into seq dim
+    """
+    For each target timestep, returns the index of the latest event that
+    occurred strictly before it (i.e., the nearest previous event).
+
+    Supports scalar, 1-D (B,), and 2-D (B, T) target_timesteps via broadcasting.
+    Future/current positions (time_since <= 0) are masked to infinity before argmin.
+    """
+```
+
+**Usage**: pass the returned indices to `torch.gather` or `torch.take_along_dim` to select the model's predictions at the appropriate position for each evaluation time.
+
+### Weibull Utility Functions
+
+Low-level building blocks used by the `weibull` / `hawkes_weibull` losses and the `TPP` evaluation class:
+
+```python
+def weibull_cdf(lam, k, t):
+    """CDF of Weibull(lam, k) at time t: 1 - exp(-(t/lam)^k)"""
+
+def weibull_integral(lam, k, start, end):
+    """Definite integral of Weibull PDF from start to end (= CDF(end) - CDF(start))"""
+
+def weibull_pdf(lam, k, dt, sum=True):
+    """
+    Weibull PDF: (k/lam)·(dt/lam)^(k-1)·exp(-(dt/lam)^k)
+    If sum=True, sums over the last (vocab) dimension and returns (B, L).
+    If sum=False, returns per-event-type values (B, L, V).
+    """
+
+def weibull_mode(lam, k):
+    """
+    Mode of Weibull(lam, k): lam·((k-1)/k)^(1/k) for k > 1, else 0.
+    Returns shape matching lam/k.
+    """
+
+def weibull_max(lam, k):
+    """Peak PDF value: weibull_pdf evaluated at the mode. Used as lam_max for thinning."""
 ```
 
 ### `self_terminate_single` and `self_terminate`: No-Repeat Masking
@@ -621,11 +734,55 @@ def sample_competing_exponentials(
     return t_next[1][:, None], t_next[0][:, None]
 ```
 
+### `sample_tpp` and `thinning_sample`: Thinning-Based Sampling
+
+```python
+def sample_tpp(
+    outputs: dict[str, torch.Tensor],
+    kernel: str,  # e.g. "weibull"
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Samples next inter-event time and event type from a TPP via Lewis-Shedler thinning.
+
+    Currently supports kernel="weibull":
+      - Reads weibull_lam and weibull_k from outputs[:, -1, :]
+      - Computes lam_max = weibull_max(lam, k) (PDF at the mode, a valid upper bound)
+      - Calls thinning_sample to get dt
+      - Selects event type via torch.multinomial weighted by per-type PDF at dt
+
+    Returns: (next_idx, dt) each (B, 1)
+    """
+```
+
+```python
+def thinning_sample(
+    lam_max: torch.Tensor,   # (B,) upper bound on total intensity
+    lam_func,                # callable: (n_active,) -> (n_active,) total intensity
+    max_steps: int = 1000,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """
+    Lewis-Shedler thinning algorithm for non-homogeneous TPPs.
+
+    Proposes candidate inter-event times from Exp(lam_max) and accepts each
+    with probability lam_func(t) / lam_max. Uses the same active-batch management
+    as generate(): accepted sequences are removed from the active set, so lam_func
+    is called on a shrinking sub-batch at each iteration.
+
+    Raises RuntimeError if any sequence fails to accept within max_steps steps.
+
+    Returns:
+        dt:      (B,) sampled inter-event times
+        metrics: {"n_steps": (B,), "accept_rate": (B,)}
+    """
+```
+
+**Requirement for `lam_func`**: must accept a variable-length 1-D tensor of elapsed times and return total intensities of the same shape. It will be called with the currently active sub-batch only.
+
 ### Losses without samplers
 
 `hawkes` and `hawkes_weibull` do not have sampling implementations. `sample_next` raises `NotImplementedError` for these losses.
 
-`weibull` also does not yet have a sampler implemented (`NotImplementedError`).
+`weibull` now has sampling implemented via `sample_tpp` / `thinning_sample` — `sample_next` calls `sample_tpp(outputs, kernel="weibull")` for this loss.
 
 ---
 
@@ -804,8 +961,87 @@ def nll_your_loss(
 
 ---
 
+---
+
+## TPP Evaluation Class (`delphi/model/tpp.py`)
+
+`TPP` is a thin evaluation wrapper that encapsulates intensity and survival computations for post-hoc analysis (e.g. AUC, calibration, likelihood decomposition). It is **not** used during training — its role is to provide a unified interface over the different loss kernels when computing pointwise or integrated quantities over arbitrary evaluation timesteps.
+
+```python
+class TPP:
+    def __init__(self, loss: str, time_unit: float):
+        self.loss = loss          # "default", "homo_poisson", or "weibull"
+        self.time_unit = time_unit
+```
+
+### Methods
+
+#### `intensity(outputs, eval_timesteps, timesteps)`
+
+Returns the instantaneous intensity for each event type at the requested evaluation times.
+
+```python
+def intensity(
+    self,
+    outputs: dict[str, torch.Tensor],   # forward pass outputs (logits / weibull params)
+    eval_timesteps: torch.Tensor,        # (B, L) times to evaluate intensity at (days)
+    timesteps: torch.Tensor,             # (B, L) event timestamps (days, = age in model)
+) -> torch.Tensor:                       # (B, L, V) intensity per event type
+```
+
+- `"default"` / `"homo_poisson"`: returns `exp(logits)` (constant between events)
+- `"weibull"`: returns `weibull_pdf(lam, k, dt=eval_timesteps - timesteps, sum=False)`
+
+Times are normalised by `self.time_unit` before computation.
+
+#### `survival_prob(outputs, timesteps, start_age, end_age)`
+
+Returns the survival probability (probability of no event of any type) over an interval:
+
+```python
+def survival_prob(
+    self,
+    outputs: dict[str, torch.Tensor],
+    timesteps: torch.Tensor,             # (B, L) last event time (days)
+    start_age: float | torch.Tensor,     # interval start (days)
+    end_age: float | torch.Tensor,       # interval end (days)
+) -> torch.Tensor:                       # (B, L, V) per-type survival probabilities
+```
+
+Returns `exp(-∫ λ_v(τ) dτ)` from `start_age` to `end_age`:
+- `"default"` / `"homo_poisson"`: `exp(-λ_v · (end - start))`
+- `"weibull"`: uses `weibull_integral(lam, k, start=start-timesteps, end=end-timesteps)`
+
+#### `ll_time(outputs, eval_timesteps, timesteps)`
+
+Joint time log-likelihood at `eval_timesteps`:
+
+```python
+ll_time = intensity * survival_prob(start_age=timesteps, end_age=eval_timesteps)
+```
+
+This is the time density $f(t) = \lambda(t) \cdot S(t_{\text{prev}}, t)$ — the probability that the *next* event fires at exactly `eval_timesteps`.
+
+#### `ll_mark_conditional(outputs, timesteps, eval_timesteps, marks)`
+
+Log conditional probability of the mark (event type) given the event time:
+
+```python
+log p(mark | time) = log(λ_mark(t) / Σ_v λ_v(t))
+```
+
+`marks` is an integer tensor of shape `(B, L, 1)` indexing into the vocab dimension.
+
+### Design Notes
+
+- All methods accept the full sequence tensors from a forward pass; callers are responsible for selecting the relevant positions (e.g. via `find_nearest_pred`).
+- `tpp.py` imports `find_nearest_pred`, `weibull_pdf`, and `weibull_integral` from `delphi/model/utils.py`. `find_nearest_pred` is available but currently commented out in the implementation — it would be used to automatically select the correct model output position for each evaluation timestep.
+
+---
+
 ## File Locations
 
 - **Model**: `delphi/model/transformer.py`
 - **Config**: `Delphi2MConfig` in same file
-- **Loss functions**: `delphi/model/utils.py`
+- **Loss functions & utilities**: `delphi/model/utils.py`
+- **TPP evaluation class**: `delphi/model/tpp.py`
