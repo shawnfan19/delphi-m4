@@ -8,16 +8,14 @@ from functools import partial
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import shap
-import yaml
 from tqdm import trange
 
 from delphi.data.ukb import MultimodalUKBDataset
 from delphi.env import DELPHI_CKPT_DIR
 from delphi.experiment import load_ckpt
 from delphi.multimodal import Modality
-from delphi.shap import MultimodalShapMasker, multimodal_shap_forward, to_shap_array
+from delphi.shap import MultimodalShapMasker, multimodal_shap_forward
 
 # +
 parser = argparse.ArgumentParser()
@@ -51,13 +49,6 @@ data_args["must_have_biomarkers"] = data_args["biomarkers"]
 pprint.pp(data_args)
 
 ds = MultimodalUKBDataset(**data_args)
-# select participants based on biomarker values
-# dynamically truncate tokens after biomarker occurrence
-
-
-biomarker_features = dict()
-for k, biomarker in ds.mod_ds.items():
-    biomarker_features[k] = biomarker.features
 
 
 # +
@@ -67,41 +58,24 @@ if args.subsample is None:
 else:
     total = args.subsample
 
+masker = MultimodalShapMasker()
+
 for i in trange(total, leave=False):
     x, t, bio_dict, bio_t, bio_m, _, _ = ds[i]
     pid = ds.participants[i]
 
-    sample, _, _ = to_shap_array(
-        (x, t, bio_dict, bio_t, bio_m),
-        detokenizer=ds.detokenizer,
-        biomarker_features=biomarker_features,
-    )
-    all_x, all_t, all_m = sample
+    out = (x, t, bio_dict, bio_t, bio_m)
+    meas_features = [Modality(int(mval)).name for mval in bio_m]
+    meas_timesteps = [float(ts) for ts in bio_t]
 
-    masker = MultimodalShapMasker(biomarker_features=biomarker_features)
-    sizes = masker._measurement_sizes(sample)
-    bio_m_flat = all_m[all_m != 1]
-    bio_t_flat = all_t[all_m != 1]
-    meas_features, meas_timesteps = [], []
-    offset = 0
-    for size in sizes:
-        modval = int(bio_m_flat[offset])
-        t_meas = float(bio_t_flat[offset])
-        # meas_features.append(f"{Modality(modval).name}@{t_meas:.0f}")
-        meas_features.append(f"{Modality(modval).name}")
-        meas_timesteps.append(t_meas)
-        offset += size
-
-    shap_model = partial(
-        multimodal_shap_forward, biomarker_features=biomarker_features, model=model
-    )
+    shap_model = partial(multimodal_shap_forward, out=out, model=model)
     explainer = shap.Explainer(
         shap_model,
         masker,
         feature_names=np.array([meas_features]),
         output_names=list(ckpt_dict["tokenizer"].keys()),
     )
-    shap_values = explainer([sample])
+    shap_values = explainer([bio_t])
 
     shap_pickle[int(pid)] = {
         "shap": shap_values.values[0].astype(np.float16),  # (n_measurements, vocab)
@@ -110,8 +84,6 @@ for i in trange(total, leave=False):
     }
 # -
 
-
-meas_features
 
 shap_pickle["tokenizer"] = ds.tokenizer
 
