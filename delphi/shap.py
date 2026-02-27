@@ -182,17 +182,25 @@ class MultimodalShapMasker(shap.maskers.Masker):  # type: ignore
     def __init__(
         self,
         biomarker_background: np.ndarray,
+        biomarker_only: bool = False,
     ):
         self.base_masker = ShapMasker()
         self.biomarker_background = biomarker_background
+        self.biomarker_only = biomarker_only
 
         self.immutable_outputs = True
         self.fixed_background = False
 
     def shape(self, s: ShapArray):
+        if self.biomarker_only:
+            all_x, all_t, all_m = s
+            return (1, int((all_m != 1).sum()))
         return (1, len(s[0]))
 
     def mask_shapes(self, s: ShapArray):
+        if self.biomarker_only:
+            all_x, all_t, all_m = s
+            return [(int((all_m != 1).sum()),)]
         return [(len(s[0]),)]
 
     def __call__(self, mask, s: ShapArray):
@@ -205,10 +213,14 @@ class MultimodalShapMasker(shap.maskers.Masker):  # type: ignore
         all_bio_x = all_x[~is_tok]
         all_bio_t = all_t[~is_tok]
         all_bio_m = all_m[~is_tok]
-        tok_mask = mask[is_tok]
-        ((x,), (t,)) = self.base_masker(mask=tok_mask, s=(x, t))
 
-        bio_mask = mask[~is_tok]
+        if self.biomarker_only:
+            bio_mask = mask  # mask is already sized for biomarkers only
+        else:
+            tok_mask = mask[is_tok]
+            ((x,), (t,)) = self.base_masker(mask=tok_mask, s=(x, t))
+            bio_mask = mask[~is_tok]
+
         all_bio_x[~bio_mask] = self.biomarker_background[~bio_mask]
         all_x = np.concatenate([x, all_bio_x])
         all_t = np.concatenate([t, all_bio_t])
