@@ -25,13 +25,15 @@ parser.add_argument("--ckpt", type=str, default="delphi-m4/delphi-m4/ckpt.pt")
 parser.add_argument("--immediate", action="store_true")
 parser.add_argument("--fname", type=str)
 parser.add_argument("--subsample", type=int)
+parser.add_argument("--biomarker-only", action="store_true")
 
 if "ipykernel" in sys.modules:
     print(f"running in jupyter notebook")
     args = parser.parse_args([])
-    args.ckpt = "bug/blood/ckpt.pt"
+    args.ckpt = "delphi-m4/blood/ckpt.pt"
     args.immediate = True
-    args.subsample = 1000
+    # args.subsample = 1000
+    args.biomarker_only = True
 else:
     args = parser.parse_args()
 
@@ -41,12 +43,14 @@ pprint.pp(vars(args))
 
 ckpt = Path(DELPHI_CKPT_DIR) / args.ckpt
 model, ckpt_dict = load_ckpt(ckpt)
+
+
 data_args = ckpt_dict["data_args"].copy()
 data_args["subject_list"] = "participants/val_fold.bin"
 data_args["stats_subject_list"] = ckpt_dict["data_args"]["subject_list"]
 data_args["deterministic"] = True
+data_args["must_have_biomarkers"] = data_args["biomarkers"]
 pprint.pp(data_args)
-
 
 ds = MultimodalUKBDataset(**data_args)
 # select participants based on biomarker values
@@ -80,7 +84,7 @@ for i in trange(total, leave=False):
     all_x, all_t, all_m = sample
     no_event = np.array(["no_event" in feature for feature in features]).astype(bool)
 
-    masker = MultimodalShapMasker(bio_bg)
+    masker = MultimodalShapMasker(bio_bg, biomarker_only=args.biomarker_only)
     shap_model = partial(
         multimodal_shap_forward, biomarker_features=biomarker_features, model=model
     )
@@ -92,13 +96,24 @@ for i in trange(total, leave=False):
     )
     shap_values = explainer([sample])
 
-    shap_pickle[int(pid)] = {
-        "shap": shap_values.values[0, ~no_event, :].astype(np.float16),
-        "features": np.array(features)[~no_event].tolist(),
-        "timesteps": all_t[~no_event].astype(np.float16),
-    }
+    if args.biomarker_only:
+        is_bio = all_m != 1
+        shap_pickle[int(pid)] = {
+            "shap": shap_values.values[0].astype(np.float16),  # already n_bio × vocab
+            "features": np.array(features)[is_bio].tolist(),
+            "timesteps": all_t[is_bio].astype(np.float16),
+        }
+    else:
+        shap_pickle[int(pid)] = {
+            "shap": shap_values.values[0, ~no_event, :].astype(np.float16),
+            "features": np.array(features)[~no_event].tolist(),
+            "timesteps": all_t[~no_event].astype(np.float16),
+        }
 # -
+
+
 shap_pickle["tokenizer"] = ds.tokenizer
 
-with gzip.open(ckpt.parent / f"shap.pickle.gz", "wb") as f:
+fname = "shap_bio.pickle.gz" if args.biomarker_only else "shap.pickle.gz"
+with gzip.open(ckpt.parent / fname, "wb") as f:
     pickle.dump(shap_pickle, f)
