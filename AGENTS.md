@@ -33,6 +33,9 @@ Detailed technical documentation for each subsystem lives in `AGENTS/`. Read the
 | [AGENTS/EVAL_NLL.md](AGENTS/EVAL_NLL.md) | NLL evaluation task — negative log-likelihood on validation set | `apps/eval_nll.py` |
 | [AGENTS/SHAP.md](AGENTS/SHAP.md) | SHAP analysis pipeline, `ShapArray` adapter, explainer integration | `delphi/shap.py`, `apps/run_shap*.py`, `apps/vis_shap.py` |
 | [AGENTS/UKB.md](AGENTS/UKB.md) | `UKBDataset` constructor arguments, preprocessing toggles, data transforms | `delphi/data/ukb.py` |
+| [AGENTS/DATA_MULTIMODAL.md](AGENTS/DATA_MULTIMODAL.md) | `MultimodalUKBDataset` batch format, `bio_x_dict` row-indexing invariant, fused sequence sort semantics | Any eval script using multimodal batches, `delphi/data/ukb.py` multimodal paths |
+| [AGENTS/EVAL_TPP.md](AGENTS/EVAL_TPP.md) | TPP log-likelihood decomposition into time and mark components, `mask_ties` comparability requirement | `apps/eval_tpp.py` |
+| [AGENTS/GEN.md](AGENTS/GEN.md) | `generate()` design — active batch management, temporal sorting invariant, self-termination, multi-token sampling | `delphi/model/transformer.py` `generate()`, any script that calls `generate()` |
 
 ## Key Conventions
 

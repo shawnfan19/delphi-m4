@@ -44,7 +44,7 @@ all_m = [1, 1, 1, 2, 2, 2, 3, 3, 3]
 
 ---
 
-## to\_shap\_array(s, detokenizer, biomarker\_features, biomarker\_background)
+## to\_shap\_array(s, detokenizer, biomarker\_features, biomarker\_background=None)
 
 Converts per-participant data from `MultimodalUKBDataset.__getitem__` format to `ShapArray`.
 
@@ -53,17 +53,17 @@ Converts per-participant data from `MultimodalUKBDataset.__getitem__` format to 
 -   `s`: `MultimodalOut` tuple `(x, t, bio_x_dict, bio_t, bio_m)` — first 5 elements from `dataset[i]`
 -   `detokenizer`: `dict[int, str]` mapping token IDs to names (from `dataset.detokenizer`)
 -   `biomarker_features`: `dict[Modality, list[str]]` mapping modality to list of feature names
--   `biomarker_background`: `dict[Modality, np.ndarray]` mapping modality to background values (typically training cohort means)
+-   `biomarker_background`: `dict[Modality, np.ndarray] | None` — optional background values (training cohort means). Pass `None` (default) when using `MultimodalShapMasker` (missingness background).
 
 
 ### Returns
 
 Tuple of `(shap_array, features, bio_bg)`:
 -   `shap_array`: `ShapArray` tuple `(all_x, all_t, all_m)`
--   `features`: `list[str]` of feature names, position-aligned with `shap_array`
+-   `features`: `list[str]` of feature names, position-aligned with `shap_array` (scalar-level)
     -   Token features: `["diabetes", "stroke", ...]`
     -   Biomarker features: `["PRS.feature1", "PRS.feature2", ..., "WBC.feature1", ...]`
--   `bio_bg`: `np.ndarray` of background values for biomarker features (for SHAP baseline)
+-   `bio_bg`: `np.ndarray` of background values (empty array when `biomarker_background=None`)
 
 
 ### Ordering
@@ -89,7 +89,7 @@ Reconstructs `MultimodalOut` from `ShapArray`. Inverse of `to_shap_array`.
 
 ## ShapMasker
 
-Masker for discrete token sequences. Used internally by `MultimodalShapMasker`.
+Masker for discrete token sequences (non-multimodal models).
 
 ### Token IDs
 - `0`: padding
@@ -115,31 +115,42 @@ After masking, tokens are sorted by timestamp. Dropped tokens (with `t=-1e4`) so
 
 ## MultimodalShapMasker
 
-Combined masker for multimodal data (tokens + biomarkers). Wraps `ShapMasker` for token handling.
+Masker for measurement-level SHAP attribution with **missingness background**.
+
+Each SHAP feature corresponds to one **biomarker measurement** (modality × time-point). A masked measurement is fully absent from the model input (modality index set to 0, causing `from_shap_array` to skip it). Tokens are always passed through unchanged.
 
 ### Constructor
 ```python
-MultimodalShapMasker(biomarker_background: np.ndarray)
+MultimodalShapMasker(biomarker_features: dict[Modality, list])
 ```
 
--   `biomarker_background`: 1D array of background values for all biomarker features, position-aligned with the biomarker portion of `ShapArray`. Typically training cohort means (from `to_shap_array`'s `bio_bg` output).
+-   `biomarker_features`: mapping from modality to its list of scalar feature names. Used to determine the size (in scalars) of each measurement.
 
+### Methods
 
-### Masking Strategies
+#### `_measurement_sizes(s: ShapArray) -> list[int]`
+
+Returns `[feature_dim, feature_dim, ...]` — one entry per biomarker measurement in the flat bio-array, where `feature_dim = len(biomarker_features[modality])`. Used to expand the measurement-level mask to scalar-level.
+
+#### `shape(s)` / `mask_shapes(s)`
+
+Both return `(1, n_measurements)` where `n_measurements` is the total number of biomarker measurements for this participant (summed across all modalities).
+
+### Masking Strategy
 
 | Feature Type | Strategy |
 | --- | --- |
-| Tokens | Delegated to `ShapMasker` (drop/swap/replace) |
-| Biomarkers | **Substitute** with background mean |
+| Tokens | Always passed through unchanged |
+| Biomarker measurement | **Absent**: modality index set to 0 → `from_shap_array` skips it entirely |
 
-### **call**(mask, s)
+Baseline = all measurements absent (complete missingness). SHAP values measure each measurement's contribution relative to having no biomarker data at all.
+
+### `__call__(mask, s)`
 
 #### Arguments
 
--   `mask`: Boolean array where `True` = feature participates, `False` = feature is masked
-
+-   `mask`: Boolean array of shape `(n_measurements,)` where `True` = measurement present, `False` = measurement absent
 -   `s`: `ShapArray` tuple `(all_x, all_t, all_m)`
-
 
 #### Returns
 
@@ -179,45 +190,61 @@ Forward function for SHAP explainer. Converts masked `ShapArray` data back to mo
 # 1. Extract single participant data
 x, t, bio_dict, bio_t, bio_m, _, _ = ds[i]
 
-# 2. Convert to SHAP-compatible format
-sample, features, bio_bg = to_shap_array(
+# 2. Convert to SHAP-compatible flat format (no background needed)
+sample, _, _ = to_shap_array(
     (x, t, bio_dict, bio_t, bio_m),
     detokenizer=ds.detokenizer,
-    biomarker_features=biomarker_features,      # dict[Modality, list[str]]
-    biomarker_background=biomarker_background,  # dict[Modality, np.ndarray]
+    biomarker_features=biomarker_features,   # dict[Modality, list[str]]
 )
+all_x, all_t, all_m = sample
 
-# 3. Setup masker and explainer
-masker = MultimodalShapMasker(bio_bg)
-shap_model = partial(multimodal_shap_forward, model=model)
+# 3. Build measurement-level feature labels
+masker = MultimodalShapMasker(biomarker_features=biomarker_features)
+sizes = masker._measurement_sizes(sample)    # [feat_dim, feat_dim, ...]
+bio_m_flat = all_m[all_m != 1]
+bio_t_flat = all_t[all_m != 1]
+meas_features, meas_timesteps = [], []
+offset = 0
+for size in sizes:
+    modval = int(bio_m_flat[offset])
+    t_meas = float(bio_t_flat[offset])
+    meas_features.append(f"{Modality(modval).name}@{t_meas:.0f}")
+    meas_timesteps.append(t_meas)
+    offset += size
+
+# 4. Setup explainer
+shap_model = partial(multimodal_shap_forward, biomarker_features=biomarker_features, model=model)
 explainer = shap.Explainer(
     shap_model,
     masker,
-    feature_names=np.array([features]),
+    feature_names=np.array([meas_features]),   # measurement-level names
     output_names=list(tokenizer.keys()),
 )
 
-# 4. Compute SHAP values
+# 5. Compute SHAP values
 shap_values = explainer([sample])
-# shap_values.values: [1, num_features, vocab_size] — attribution per feature per output
-# shap_values.base_values: [1, vocab_size] — baseline prediction
-# shap_values.data: the input features
+# shap_values.values[0]: [n_measurements, vocab_size]
+# shap_values.base_values: [1, vocab_size] — baseline = all biomarkers absent
 ```
 
 ### Data Flow Diagram
 
 ```text
-ds[i] → MultimodalOut → to_shap_array() → ShapArray
+ds[i] → MultimodalOut → to_shap_array() → ShapArray (scalar-level flat arrays)
                                               ↓
-                            MultimodalShapMasker.__call__(mask, ShapArray)
+                         masker._measurement_sizes() → measurement-level feature labels
+                                              ↓
+                         MultimodalShapMasker.__call__(mask, ShapArray)
+                           (expands measurement mask → scalar mask via repeat)
                                               ↓
                                         masked ShapArray
                                               ↓
-                            multimodal_shap_forward() → from_shap_array()
+                         multimodal_shap_forward() → from_shap_array()
+                           (skips measurements where modval == 0)
                                               ↓
                                       model.forward()
                                               ↓
-                                    logits → SHAP values
+                              logits → SHAP values [n_measurements, vocab]
 ```
 
 
@@ -226,37 +253,41 @@ ds[i] → MultimodalOut → to_shap_array() → ShapArray
 Serialized SHAP analysis results for a cohort of participants.
 
 ### File Output
-- `shap.pickle.gz`: Gzip-compressed dictionary of per-participant SHAP results
+- `shap_missingness.pickle.gz`: Gzip-compressed dictionary of per-participant SHAP results (overridable with `--fname`)
 
 ### Schema
 
 ```python
-shap_pickle: dict[int, dict]
-# Key: participant ID (int)
-# Value: dict with keys:
-#   "shap": np.ndarray, shape [n_features, vocab_size], dtype float32
-#   "features": list[str], length n_features — feature names
-#   "timesteps": np.ndarray, shape [n_features], dtype float32 — timestamps in days
+shap_pickle: dict[int | str, ...]
+# Key: participant ID (int)  →  per-participant results
+# Key: "tokenizer"  →  the dataset tokenizer (name → int mapping)
 ```
 
-All arrays are position-aligned. The `no_event` token is excluded as it functions as padding/augmentation and carries no semantic meaning.
+Per-participant value:
+```python
+{
+    "shap":       np.ndarray,  # shape [n_measurements, vocab_size], dtype float16
+    "features":   list[str],   # length n_measurements — measurement labels
+    "timesteps":  np.ndarray,  # shape [n_measurements], dtype float16 — days
+}
+```
+
+All arrays are position-aligned. Features are at **measurement granularity** (one per modality × time-point), not scalar granularity.
 
 ### Field Descriptions
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `shap` | `np.ndarray [n_features, vocab_size]` | SHAP attribution values in logit-space. `shap[i, j]` = contribution of feature `i` to predicting output token `j`. |
-| `features` | `list[str]` | Feature names. Discrete tokens use model tokenizer names (e.g., `"diabetes"`). Biomarker features use `"{MODALITY}.{feature}"` format (e.g., `"WBC.rbc"`). |
-| `timesteps` | `np.ndarray [n_features]` | Timestamp (in days) when each feature occurred. |
+| `shap` | `np.ndarray [n_measurements, vocab_size]` | SHAP attribution in logit-space. `shap[i, j]` = contribution of measurement `i` to predicting token `j`. Baseline = all biomarkers absent. |
+| `features` | `list[str]` | Measurement labels in `"{MODALITY}@{timestep:.0f}"` format, e.g. `"WBC@2500"`, `"PRS@0"`. |
+| `timesteps` | `np.ndarray [n_measurements]` | Timestamp (in days) for each measurement. |
 
 ### Notes
 
--   `n_features` varies per participant (different sequence lengths, different biomarkers available)
-
+-   `n_measurements` varies per participant (different biomarkers available at different timepoints)
 -   SHAP values are in **logit-space** (attributions sum to difference in logits from baseline)
-
--   Features include discrete tokens (diseases, procedures, sex) and biomarker components
-
+-   Baseline = complete biomarker missingness (all measurements absent)
+-   Only biomarker measurements are SHAP features; discrete tokens are always present
 
 ### Example Usage
 
@@ -264,69 +295,35 @@ All arrays are position-aligned. The `no_event` token is excluded as it function
 import gzip
 import pickle
 
-# Load results
-with gzip.open("shap.pickle.gz", "rb") as f:
+with gzip.open("shap_missingness.pickle.gz", "rb") as f:
     shap_pickle = pickle.load(f)
 
-# Access participant results
+tokenizer = shap_pickle["tokenizer"]
+
 pid = 123456
 result = shap_pickle[pid]
-shap_values = result["shap"]        # [n_features, vocab_size]
-features = result["features"]        # list of strings
-timestamps = result["timesteps"]     # [n_features]
+shap_values = result["shap"]    # [n_measurements, vocab_size], float16
+features = result["features"]   # ["WBC@2500", "PRS@0", ...]
+timestamps = result["timesteps"]
 
-# Use case 1: Top contributors to a specific disease
+# Top biomarker measurements contributing to a specific disease
 outcome_idx = tokenizer["heart_failure"]
-contributions = shap_values[:, outcome_idx]
+contributions = shap_values[:, outcome_idx].astype(float)
 top_idx = np.argsort(np.abs(contributions))[::-1][:10]
-
 for idx in top_idx:
     print(f"{features[idx]} (day {timestamps[idx]:.0f}): {contributions[idx]:.4f}")
 
-# Use case 2: Track contribution of a feature type over time
-diabetes_mask = np.array([f == "diabetes" for f in features])
-diabetes_times = timestamps[diabetes_mask]
-diabetes_contrib = shap_values[diabetes_mask, outcome_idx]
-plt.scatter(diabetes_times, diabetes_contrib)
+# All WBC measurements across time
+wbc_mask = np.array([f.startswith("WBC@") for f in features])
+wbc_times = timestamps[wbc_mask]
+wbc_contrib = shap_values[wbc_mask, outcome_idx].astype(float)
+plt.scatter(wbc_times, wbc_contrib)
 plt.xlabel("Days"); plt.ylabel("SHAP value for heart_failure")
 ```
 
-### Creation Code
+### Creation Script
 
-```python
-shap_pickle = dict()
-for i in trange(len(ds)):
-    x, t, bio_dict, bio_t, bio_m, _, _ = ds[i]
-    pid = ds.participants[i]
-
-    sample, features, bio_bg = to_shap_array(
-        (x, t, bio_dict, bio_t, bio_m),
-        detokenizer=ds.detokenizer,
-        biomarker_features=biomarker_features,
-        biomarker_background=biomarker_background,
-    )
-    all_x, all_t, all_m = sample
-    no_event = np.array(["no_event" in f for f in features]).astype(bool)
-
-    masker = MultimodalShapMasker(bio_bg)
-    shap_model = partial(multimodal_shap_forward, model=model)
-    explainer = shap.Explainer(
-        shap_model,
-        masker,
-        feature_names=np.array([features]),
-        output_names=list(tokenizer.keys()),
-    )
-    shap_values = explainer([sample])
-
-    shap_pickle[int(pid)] = {
-        "shap": shap_values.values[0, ~no_event, :].astype(np.float32),
-        "features": np.array(features)[~no_event].tolist(),
-        "timesteps": all_t[~no_event].astype(np.float32),
-    }
-
-with gzip.open(ckpt.parent / "shap.pickle.gz", "wb") as f:
-    pickle.dump(shap_pickle, f)
-```
+`apps/run_shap_m4.py` — runs the full pipeline for a checkpoint and saves results.
 
 # SHAP Visualization Module Summary
 
