@@ -1,4 +1,0 @@
-seed: 42
-batch_size: 150
-n_samples: 30
-log_name: ${outcome}

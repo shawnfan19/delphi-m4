@@ -59,8 +59,11 @@ class TrainLogger:
             print("number of model parameters: %.2fM" % (n_params / 1e6,))
 
             if self.wandb:
+                import re
+
+                wandb_project = re.sub(r"[^a-zA-Z0-9_\-.]", "_", self.cfg.wandb_project)
                 wandb.init(
-                    project=self.cfg.wandb_project,
+                    project=wandb_project,
                     name=self.cfg.run_name,
                     config=exp_cfg,
                 )

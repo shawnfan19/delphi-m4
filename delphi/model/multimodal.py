@@ -374,7 +374,7 @@ class DelphiM4(torch.nn.Module):
         x = self.transformer.drop(x)
         att = []
         for block in self.transformer.h:
-            x, a = block(x, attn_mask)
+            x, a, _ = block(x, attn_mask)
             att.append(a)
         x = self.transformer.ln_f(x)
         att = torch.stack(att)

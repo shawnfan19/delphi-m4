@@ -1,5 +1,6 @@
 import os
 import pprint
+import random
 import sys
 from collections import defaultdict
 from contextlib import nullcontext
@@ -18,6 +19,36 @@ from delphi.log import TrainLogConfig, TrainLogger
 from delphi.model.multimodal import DelphiM4, DelphiM4Config
 from delphi.model.transformer import Delphi2M, Delphi2MConfig
 from delphi.optim import OptimConfig, configure_optimizers
+
+
+# Update this function whenever you have a library that needs to be seeded.
+def seed_everything(seed):
+    """Seed all random generators."""
+    random.seed(seed)
+
+    # For numpy:
+    # This is for legacy numpy:
+    np.random.seed(seed)
+    # New code should make a Generator out of the config.seed directly:
+    # https://numpy.org/doc/stable/reference/random/generated/numpy.random.seed.html
+
+    # For PyTorch:
+    torch.manual_seed(seed)
+
+    # if config.cuda_deterministic:
+    #     # Higher (e.g., on CUDA too) reproducibility with deterministic algorithms:
+    #     # https://pytorch.org/docs/stable/notes/randomness.html
+    #
+    #     # Not supported for all operations though:
+    #     # https://pytorch.org/docs/stable/generated/torch.use_deterministic_algorithms.html
+    #     if config.cuda_strong_deterministic:
+    #         torch.use_deterministic_algorithms(True)
+    #
+    #     #  A lighter version of the above otherwise as not all algorithms have a deterministic implementation
+    #     torch.backends.cudnn.deterministic = True
+    #
+    #     # torch.backends.cudnn.benchmark = False
+    #     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 
 def move_batch_to_device(args: Iterable, device: str):
