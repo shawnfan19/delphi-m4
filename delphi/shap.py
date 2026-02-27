@@ -103,7 +103,7 @@ def to_shap_array(
     s: MultimodalOut,
     detokenizer: dict,
     biomarker_features: dict[Modality, list],
-    biomarker_background: dict[Modality, np.ndarray],
+    biomarker_background: dict[Modality, np.ndarray] | None = None,
 ) -> tuple[ShapArray, list[str], np.ndarray]:
 
     all_x, all_t, all_m = list(), list(), list()
@@ -123,13 +123,14 @@ def to_shap_array(
     for modval in modvals:
         modality = Modality(modval)
         for _bio_x, _bio_t in zip(bio_x_dict[modality], bio_t[bio_m == modval]):
-            #! for each modality, assume no more than 1 measurement at each timestep
+            #! for each modality, assume no more than 1 measurement at the same timestep
             all_x.append(_bio_x)
             all_t.append(np.full_like(_bio_x, fill_value=_bio_t))
             all_m.append(np.full_like(_bio_x, fill_value=modval))
             _features = [f"{modality.name}.{f}" for f in biomarker_features[modality]]
             features.extend(_features)
-            bio_bg.append(biomarker_background[modality])
+            if biomarker_background is not None:
+                bio_bg.append(biomarker_background[modality])
     all_x = np.concatenate(all_x)
     all_t = np.concatenate(all_t)
     all_m = np.concatenate(all_m)
@@ -178,30 +179,38 @@ def from_shap_array(
 
 
 class MultimodalShapMasker(shap.maskers.Masker):  # type: ignore
+    """SHAP masker for measurement-level attribution with missingness background.
 
-    def __init__(
-        self,
-        biomarker_background: np.ndarray,
-        biomarker_only: bool = False,
-    ):
-        self.base_masker = ShapMasker()
-        self.biomarker_background = biomarker_background
-        self.biomarker_only = biomarker_only
+    Each SHAP feature is one biomarker measurement (modality × time-point).
+    A masked measurement is fully absent from the model input.
+    Tokens are always passed through unchanged.
+    """
 
+    def __init__(self, biomarker_features: dict[Modality, list]):
+        self.biomarker_features = biomarker_features
         self.immutable_outputs = True
         self.fixed_background = False
 
+    def _measurement_sizes(self, s: ShapArray) -> list[int]:
+        """Returns [feature_dim, ...] once per measurement, in flat bio-array order."""
+        all_x, all_t, all_m = s
+        all_bio_m = all_m[all_m != 1]
+        sizes = []
+        _, _idx = np.unique(all_bio_m, return_index=True)
+        for modval in all_bio_m[np.sort(_idx)]:
+            if modval <= 1:
+                continue
+            modality = Modality(modval)
+            feature_dim = len(self.biomarker_features[modality])
+            n_meas = int((all_bio_m == modval).sum()) // feature_dim
+            sizes.extend([feature_dim] * n_meas)
+        return sizes
+
     def shape(self, s: ShapArray):
-        if self.biomarker_only:
-            all_x, all_t, all_m = s
-            return (1, int((all_m != 1).sum()))
-        return (1, len(s[0]))
+        return (1, len(self._measurement_sizes(s)))
 
     def mask_shapes(self, s: ShapArray):
-        if self.biomarker_only:
-            all_x, all_t, all_m = s
-            return [(int((all_m != 1).sum()),)]
-        return [(len(s[0]),)]
+        return [(len(self._measurement_sizes(s)),)]
 
     def __call__(self, mask, s: ShapArray):
         mask = self._standardize_mask(mask, s)
@@ -214,22 +223,15 @@ class MultimodalShapMasker(shap.maskers.Masker):  # type: ignore
         all_bio_t = all_t[~is_tok]
         all_bio_m = all_m[~is_tok]
 
-        if self.biomarker_only:
-            bio_mask = mask  # mask is already sized for biomarkers only
-        else:
-            tok_mask = mask[is_tok]
-            ((x,), (t,)) = self.base_masker(mask=tok_mask, s=(x, t))
-            bio_mask = mask[~is_tok]
-
-        all_bio_x[~bio_mask] = self.biomarker_background[~bio_mask]
-        all_x = np.concatenate([x, all_bio_x])
-        all_t = np.concatenate([t, all_bio_t])
-        all_m = np.concatenate([np.ones_like(x, dtype=all_m.dtype), all_bio_m])
+        # expand measurement-level mask to scalar-level
+        scalar_mask = np.repeat(mask, self._measurement_sizes(s))
+        # masked measurements: set modval=0 so from_shap_array skips them
+        all_bio_m[~scalar_mask] = 0
 
         return (
-            (all_x,),
-            (all_t,),
-            (all_m,),
+            (np.concatenate([x, all_bio_x]),),
+            (np.concatenate([t, all_bio_t]),),
+            (np.concatenate([np.ones_like(x, dtype=all_m.dtype), all_bio_m]),),
         )
 
 
