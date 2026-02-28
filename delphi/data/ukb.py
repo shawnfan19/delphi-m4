@@ -14,6 +14,7 @@ from delphi.data.utils import (
     collate_batch,
     crop_contiguous,
     dissolve_clusters,
+    dropout_biomarkers,
     exclude_tokens,
     identity_transform,
     perturb_time,
@@ -423,6 +424,7 @@ class MultimodalUKBDataset:
         perturb_list: None | list = None,
         block_size: None | int = None,
         crop_mode: Literal["left", "right", "random"] = "left",
+        biomarker_dropout: None | float = None,
         seed: int = 42,
         deterministic: bool = False,
         memmap: bool = False,
@@ -451,6 +453,8 @@ class MultimodalUKBDataset:
                 "left": start from the beginning
                 "right": start from the end
                 "random": start from a random position in the middle
+            biomarker_dropout: if not None, each biomarker measurement is independently dropped
+                with this probability during __getitem__
             seed: random seed for reproducibility
             deterministic: if True, the same participant will always receive the same augmentations.
             memmap: whether to load data files in memmap mode
@@ -568,6 +572,14 @@ class MultimodalUKBDataset:
         else:
             self.crop_block_size = identity_transform
 
+        if biomarker_dropout is not None:
+            self.dropout_biomarkers = functools.partial(
+                dropout_biomarkers,
+                p=biomarker_dropout,
+            )
+        else:
+            self.dropout_biomarkers = identity_transform
+
     def __len__(self):
         return self.participants.size
 
@@ -636,6 +648,10 @@ class MultimodalUKBDataset:
             bio_m = np.concatenate(bio_m_lst)
 
             bio_t, bio_m = sort_by_time(bio_t, bio_m)
+
+        bio_x_dict, bio_t, bio_m = self.dropout_biomarkers(
+            bio_x_dict, bio_t, bio_m, rng=rng
+        )
 
         x0, x1 = x[:-1].copy(), x[1:].copy()
         t0, t1 = t[:-1].copy(), t[1:].copy()

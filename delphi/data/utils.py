@@ -282,6 +282,28 @@ def crop_contiguous_multimodal(
         return x[keep], biomarker_keep, t[keep], m[keep]
 
 
+def dropout_biomarkers(
+    bio_x_dict: dict,
+    bio_t: np.ndarray,
+    bio_m: np.ndarray,
+    rng: np.random.Generator,
+    p: float,
+) -> tuple[dict, np.ndarray, np.ndarray]:
+    if len(bio_t) == 0:
+        return bio_x_dict, bio_t, bio_m
+
+    keep = rng.random(size=len(bio_t)) >= p
+
+    new_bio_x_dict = {}
+    for modality, bio_x in bio_x_dict.items():
+        mod_keep = keep[bio_m == modality.value]
+        filtered = [x for x, k in zip(bio_x, mod_keep) if k]
+        if len(filtered) > 0:
+            new_bio_x_dict[modality] = filtered
+
+    return new_bio_x_dict, bio_t[keep], bio_m[keep]
+
+
 def sort_by_time(t: np.ndarray, *args: np.ndarray, stable: bool = False):
     s = np.argsort(t, stable=stable)
     t = t[s]
