@@ -25,8 +25,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from statsmodels.nonparametric.smoothers_lowess import lowess as sm_lowess
 
-from delphi.env import DELPHI_CKPT_DIR
+from delphi.data.ukb import Biomarker, MultimodalUKBDataset
+from delphi.env import DELPHI_CKPT_DIR, DELPHI_DATA_DIR
+from delphi.multimodal import Modality
 
 
 def load_shap_data(filepath: str) -> dict:
@@ -170,10 +173,13 @@ def plot_feature_to_diseases(
     disease_names: Optional[Dict[int, str]] = None,
     top_k: int = 15,
     contribution_direction: Literal["all", "positive", "negative"] = "all",
-    figsize: Tuple[int, int] = (14, 6),
+    figsize: Tuple[int, int] = (12, 8),
 ) -> pd.DataFrame:
     """
     Visualize which diseases a given feature contributes to the most.
+
+    Shows a single plot with median (circle) and mean (diamond) markers in
+    exponentiated space (rate multiplier), with IQR bars.
 
     Args:
         shap_data: Loaded SHAP data dictionary
@@ -227,7 +233,7 @@ def plot_feature_to_diseases(
     else:
         df_top["disease_name"] = df_top["disease_idx"].apply(lambda x: f"Disease {x}")
 
-    fig, axes = plt.subplots(1, 3, figsize=figsize)
+    fig, ax = plt.subplots(figsize=figsize)
 
     # Determine colors
     if default_color:
@@ -235,50 +241,50 @@ def plot_feature_to_diseases(
     else:
         colors = ["#d62728" if x > 0 else "#1f77b4" for x in df_top["median_shap"]]
 
-    # Plot 1: Mean absolute SHAP (importance magnitude)
-    ax1 = axes[0]
-    ax1.barh(range(len(df_top)), df_top["mean_abs_shap"], color=colors, alpha=0.8)
-    ax1.set_yticks(range(len(df_top)))
-    ax1.set_yticklabels(df_top["disease_name"])
-    ax1.set_xlabel("Mean |SHAP| (logit-space)")
-    ax1.set_title("Contribution Magnitude")
-    ax1.invert_yaxis()
-
-    # Plot 2: Directional mean SHAP with error bars
-    ax2 = axes[1]
-    ax2.barh(
-        range(len(df_top)),
-        df_top["mean_shap"],
-        xerr=df_top["std_shap"],
-        color=colors,
-        alpha=0.8,
-        capsize=3,
-    )
-    ax2.axvline(x=0, color="black", linestyle="--", linewidth=0.8)
-    ax2.set_yticks(range(len(df_top)))
-    ax2.set_yticklabels([])
-    ax2.set_xlabel("Mean SHAP ± SD (logit-space)")
-    ax2.set_title("Directional Contribution")
-    ax2.invert_yaxis()
-
-    # Plot 3: Median with IQR (distribution view)
-    ax3 = axes[2]
+    # Single plot: median & mean markers with IQR in exponentiated space.
+    # We use exp(mean_shap) rather than mean(exp(shap)) for the mean marker.
+    # Reason: exp is a convex function, so by Jensen's inequality
+    # mean(exp(shap)) >= exp(mean(shap)), and mean(exp(shap)) is more sensitive
+    # to outliers in the heavy-tailed exp space. exp(mean_shap) gives the
+    # fold-change at the average logit, which is more robust and directly
+    # comparable to exp(median_shap).
     for i, (_, row) in enumerate(df_top.iterrows()):
         color = colors[i]
-        ax3.plot(row["median_shap"], i, "o", color=color, markersize=8, zorder=3)
-        ax3.hlines(i, row["q25"], row["q75"], colors="gray", linewidth=2, zorder=2)
-    ax3.axvline(x=0, color="black", linestyle="--", linewidth=0.8)
-    ax3.set_yticks(range(len(df_top)))
-    ax3.set_yticklabels([])
-    ax3.set_xlabel("Median SHAP [IQR]")
-    ax3.set_title("Median with IQR")
-    ax3.invert_yaxis()
-
-    plt.suptitle(
+        exp_median = np.exp(row["median_shap"])
+        exp_mean = np.exp(row["mean_shap"])
+        exp_q25 = np.exp(row["q25"])
+        exp_q75 = np.exp(row["q75"])
+        ax.hlines(i, exp_q25, exp_q75, colors="gray", linewidth=2, zorder=2)
+        ax.plot(
+            exp_median,
+            i,
+            "o",
+            color=color,
+            markersize=8,
+            zorder=3,
+            label="Median" if i == 0 else None,
+        )
+        ax.plot(
+            exp_mean,
+            i,
+            "D",
+            color=color,
+            markersize=5,
+            zorder=4,
+            label="Mean" if i == 0 else None,
+        )
+    ax.axvline(x=1, color="black", linestyle="--", linewidth=0.8)
+    ax.set_xscale("log")
+    ax.set_yticks(range(len(df_top)))
+    ax.set_yticklabels(df_top["disease_name"])
+    ax.set_xlabel("Rate Multiplier (exp(SHAP))")
+    ax.set_title(
         f'Feature: "{feature_name}" → Which diseases?{direction_label}',
         fontsize=14,
-        y=1.02,
     )
+    ax.legend(loc="lower right")
+    ax.invert_yaxis()
+
     plt.tight_layout()
     plt.show()
 
@@ -286,189 +292,303 @@ def plot_feature_to_diseases(
 
 
 # =============================================================================
-# Task 2: For a given disease, which features are the most predictive?
+# SHAP Dependence Plot: feature value vs modality SHAP
 # =============================================================================
 
 
-def compute_disease_feature_importance(
-    shap_data: dict, disease_idx: int, min_samples: int = 1
-) -> pd.DataFrame:
-    """
-    Aggregate SHAP values for a given disease across all features and participants.
-
-    Args:
-        shap_data: Loaded SHAP data dictionary
-        disease_idx: Index of the disease to analyze
-        min_samples: Minimum number of occurrences for a feature to be included
-
-    Returns a DataFrame with one row per feature, containing aggregated SHAP statistics.
-    """
-    feature_shap_values = defaultdict(list)
-
-    for participant_id, data in shap_data.items():
-        shap_values = data["shap"]  # [n_features, vocab_size]
-        features = data["features"]
-
-        if disease_idx >= shap_values.shape[1]:
-            raise ValueError(f"Disease index {disease_idx} out of range")
-
-        disease_shap = shap_values[:, disease_idx]
-
-        for i, feat in enumerate(features):
-            feature_shap_values[feat].append(disease_shap[i])
-
-    records = []
-    features_excluded = 0
-
-    for feat, shap_vals in feature_shap_values.items():
-        if len(shap_vals) < min_samples:
-            features_excluded += 1
-            continue
-
-        shap_arr = np.array(shap_vals)
-        records.append(
-            {
-                "feature": feat,
-                "mean_shap": np.mean(shap_arr),
-                "median_shap": np.median(shap_arr),
-                "std_shap": np.std(shap_arr),
-                "mean_abs_shap": np.mean(np.abs(shap_arr)),
-                "q25": np.percentile(shap_arr, 25),
-                "q75": np.percentile(shap_arr, 75),
-                "n_samples": len(shap_arr),
-                "mean_odds_ratio": np.mean(np.exp(shap_arr)),
-                "median_odds_ratio": np.median(np.exp(shap_arr)),
-            }
-        )
-
-    if features_excluded > 0:
-        print(
-            f"Excluded {features_excluded} features with fewer than {min_samples} samples"
-        )
-
-    return pd.DataFrame(records).sort_values("mean_abs_shap", ascending=False)
-
-
-def plot_disease_predictive_features(
+def plot_shap_dependence(
     shap_data: dict,
+    modality: str,
     disease_idx: int,
     disease_name: Optional[str] = None,
-    top_k: int = 20,
-    min_samples: int = 10,
-    contribution_direction: Literal["all", "positive", "negative"] = "all",
-    figsize: Tuple[int, int] = (14, 8),
+    n_cols: int = 3,
+    figsize_per_subplot: Tuple[float, float] = (4, 3.5),
+    sample_size: Optional[int] = 2000,
+    lowess_frac: Optional[float] = None,
 ) -> pd.DataFrame:
     """
-    Visualize which features are most predictive of a given disease.
+    SHAP dependence plot for a modality's sub-features.
+
+    For each sub-feature in the modality's biomarker panel, plots the raw
+    feature value (x) against the modality-level SHAP value for the given
+    disease (y), with an optional LOWESS trend curve.
 
     Args:
         shap_data: Loaded SHAP data dictionary
-        disease_idx: Index of the disease to analyze
+        modality: Modality name (e.g., "LFT", "LIPID")
+        disease_idx: Target disease index
         disease_name: Optional display name for the disease
-        top_k: Number of top features to display
-        min_samples: Minimum samples for feature to be included
-        contribution_direction: Filter by contribution direction
-            - 'all': show all contributions (default)
-            - 'positive': show only risk-increasing contributions (median_shap > 0)
-            - 'negative': show only risk-decreasing contributions (median_shap < 0)
-        figsize: Figure size
+        n_cols: Number of columns in subplot grid
+        figsize_per_subplot: (width, height) per subplot panel
+        sample_size: Max scatter points (None for all); LOWESS uses full data
+        lowess_frac: LOWESS smoothing fraction (0-1), or None to disable
 
     Returns:
-        DataFrame with top feature importances (filtered and sorted)
+        DataFrame with pid, shap_value, and one column per sub-feature
     """
-    df = compute_disease_feature_importance(
-        shap_data, disease_idx, min_samples=min_samples
-    )
+    # 1. Extract per-participant SHAP values for this modality → disease
+    pid_shap = {}
+    for pid, data in shap_data.items():
+        features = data["features"]
+        shap_values = data["shap"]
+        for i, feat in enumerate(features):
+            if feat == modality:
+                pid_shap[pid] = float(shap_values[i, disease_idx])
+                break
 
-    # Apply direction filter
-    if contribution_direction == "positive":
-        df = df[df["median_shap"] > 0].copy()
-        direction_label = " (Risk-Increasing)"
-        default_color = "#d62728"  # red
-    elif contribution_direction == "negative":
-        df = df[df["median_shap"] < 0].copy()
-        direction_label = " (Risk-Decreasing)"
-        default_color = "#1f77b4"  # blue
-    else:
-        direction_label = ""
-        default_color = None
+    if not pid_shap:
+        print(f"Modality '{modality}' not found in SHAP data.")
+        return pd.DataFrame()
+
+    # 2. Load raw biomarker values
+    biomarker = Biomarker(
+        path=Path(DELPHI_DATA_DIR) / f"ukb_real_data/biomarkers/{modality.lower()}",
+        z_score=False,
+    )
+    shap_pids = np.array(list(pid_shap.keys()))
+    bio_data, bio_subs = biomarker.to_array(shap_pids)
+
+    # 3. Align: keep only participants present in both
+    bio_shap_values = np.array([pid_shap[pid] for pid in bio_subs])
+
+    # 4. Build DataFrame
+    df = pd.DataFrame({"pid": bio_subs, "shap_value": bio_shap_values})
+    for feat_name in biomarker.features:
+        col_idx = biomarker.feat2idx[feat_name]
+        df[feat_name] = bio_data[:, col_idx]
 
     if df.empty:
         print(
-            f"No features found with {contribution_direction} contributions for disease index {disease_idx}"
+            f"No overlapping participants between SHAP data and {modality} biomarker."
         )
         return pd.DataFrame()
 
-    # Re-sort after filtering and take top_k
-    df = df.sort_values("mean_abs_shap", ascending=False)
-    df_top = df.head(top_k).copy()
-
-    if len(df_top) < top_k:
-        print(
-            f"Note: Only {len(df_top)} features found with {contribution_direction} contributions (min_samples={min_samples})"
-        )
+    # 5. Plot
+    k = len(biomarker.features)
+    n_rows = int(np.ceil(k / n_cols))
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(figsize_per_subplot[0] * n_cols, figsize_per_subplot[1] * n_rows),
+        squeeze=False,
+    )
 
     display_name = disease_name if disease_name else f"Disease {disease_idx}"
 
-    fig, axes = plt.subplots(1, 3, figsize=figsize)
-
-    # Determine colors
-    if default_color:
-        colors = [default_color] * len(df_top)
+    # Subsample for scatter
+    if sample_size and len(df) > sample_size:
+        df_scatter = df.sample(n=sample_size, random_state=42)
     else:
-        colors = ["#d62728" if x > 0 else "#1f77b4" for x in df_top["median_shap"]]
+        df_scatter = df
 
-    # Plot 1: Mean absolute SHAP (importance magnitude)
-    ax1 = axes[0]
-    ax1.barh(range(len(df_top)), df_top["mean_abs_shap"], color=colors, alpha=0.8)
-    ax1.set_yticks(range(len(df_top)))
-    ax1.set_yticklabels(df_top["feature"])
-    ax1.set_xlabel("Mean |SHAP| (logit-space)")
-    ax1.set_title("Feature Importance")
-    ax1.invert_yaxis()
+    for idx, feat_name in enumerate(biomarker.features):
+        row, col = divmod(idx, n_cols)
+        ax = axes[row, col]
 
-    # Plot 2: Directional contribution
-    ax2 = axes[1]
-    ax2.barh(
-        range(len(df_top)),
-        df_top["mean_shap"],
-        xerr=df_top["std_shap"],
-        color=colors,
-        alpha=0.8,
-        capsize=3,
-    )
-    ax2.axvline(x=0, color="black", linestyle="--", linewidth=0.8)
-    ax2.set_yticks(range(len(df_top)))
-    ax2.set_yticklabels([])
-    ax2.set_xlabel("Mean SHAP ± SD")
-    ax2.set_title("Directional Effect")
-    ax2.invert_yaxis()
+        x_scatter = df_scatter[feat_name].values
+        y_scatter = np.exp(df_scatter["shap_value"].values)
+        ax.scatter(
+            x_scatter, y_scatter, alpha=0.3, s=10, c="steelblue", rasterized=True
+        )
 
-    # Plot 3: Median odds ratio (interpretable scale)
-    ax3 = axes[2]
-    for i, (_, row) in enumerate(df_top.iterrows()):
-        color = colors[i]
-        ax3.plot(row["median_odds_ratio"], i, "o", color=color, markersize=8, zorder=3)
-        q25_or = np.exp(row["q25"])
-        q75_or = np.exp(row["q75"])
-        ax3.hlines(i, q25_or, q75_or, colors="gray", linewidth=2, zorder=2)
-    ax3.axvline(x=1, color="black", linestyle="--", linewidth=0.8)
-    ax3.set_xscale("log")
-    ax3.set_yticks(range(len(df_top)))
-    ax3.set_yticklabels([])
-    ax3.set_xlabel("Median Odds Ratio [IQR]")
-    ax3.set_title("Risk Multiplier")
-    ax3.invert_yaxis()
+        x_full = df[feat_name].values
+        y_full = np.exp(df["shap_value"].values)
 
-    plt.suptitle(
-        f'Disease: "{display_name}" ← Which features predict it?{direction_label}',
+        # LOWESS on full data (optional)
+        if lowess_frac is not None:
+            sort_idx = np.argsort(x_full)
+            smoothed = sm_lowess(y_full[sort_idx], x_full[sort_idx], frac=lowess_frac)
+            ax.plot(smoothed[:, 0], smoothed[:, 1], "r-", linewidth=2)
+
+        ax.axvline(x=np.mean(x_full), color="gray", linestyle="--", linewidth=0.8)
+        ax.axhline(y=1, color="black", linestyle="--", linewidth=0.8)
+        ax.set_xlabel(feat_name)
+        if col == 0:
+            ax.set_ylabel("Odds ratio")
+
+    # Hide unused subplots
+    for idx in range(k, n_rows * n_cols):
+        row, col = divmod(idx, n_cols)
+        axes[row, col].set_visible(False)
+
+    fig.suptitle(
+        f'{modality} → "{display_name}": SHAP Dependence (n={len(df):,})',
         fontsize=14,
-        y=1.02,
     )
     plt.tight_layout()
     plt.show()
 
-    return df_top
+    return df
+
+
+def plot_shap_dependence_interactive(
+    df: pd.DataFrame,
+    modality: str,
+    disease_name: Optional[str] = None,
+    n_cols: int = 3,
+    sample_size: Optional[int] = 2000,
+    height_per_row: int = 350,
+    width_per_col: int = 400,
+):
+    """
+    Interactive (plotly) version of the SHAP dependence plot with hover PIDs.
+
+    Args:
+        df: DataFrame returned by plot_shap_dependence (pid, shap_value, features)
+        modality: Modality name for the title
+        disease_name: Optional display name for the disease
+        n_cols: Number of columns in subplot grid
+        sample_size: Max scatter points (None for all)
+        height_per_row: Pixel height per subplot row
+        width_per_col: Pixel width per subplot column
+    """
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    feat_cols = [c for c in df.columns if c not in ("pid", "shap_value")]
+    k = len(feat_cols)
+    n_rows = int(np.ceil(k / n_cols))
+
+    if sample_size and len(df) > sample_size:
+        df_plot = df.sample(n=sample_size, random_state=42)
+    else:
+        df_plot = df
+
+    # Exponentiate SHAP values to odds ratios
+    y_values = np.exp(df_plot["shap_value"])
+
+    fig = make_subplots(rows=n_rows, cols=n_cols, subplot_titles=feat_cols)
+
+    for idx, feat_name in enumerate(feat_cols):
+        row, col = divmod(idx, n_cols)
+        fig.add_trace(
+            go.Scatter(
+                x=df_plot[feat_name],
+                y=y_values,
+                mode="markers",
+                marker=dict(size=4, color="steelblue", opacity=0.3),
+                customdata=df_plot["pid"],
+                hovertemplate=(
+                    f"PID: %{{customdata}}<br>"
+                    f"{feat_name}: %{{x:.2f}}<br>"
+                    f"OR: %{{y:.4f}}<extra></extra>"
+                ),
+                showlegend=False,
+            ),
+            row=row + 1,
+            col=col + 1,
+        )
+        # Mean vertical line
+        feat_mean = df[feat_name].mean()
+        fig.add_vline(
+            x=feat_mean,
+            line_dash="dash",
+            line_color="gray",
+            line_width=0.8,
+            row=row + 1,
+            col=col + 1,
+        )
+        # y=1 reference (odds ratio = 1 means no effect)
+        fig.add_hline(
+            y=1,
+            line_dash="dash",
+            line_color="black",
+            line_width=0.8,
+            row=row + 1,
+            col=col + 1,
+        )
+
+    display_name = disease_name if disease_name else modality
+    fig.update_layout(
+        title=f'{modality} → "{display_name}": SHAP Dependence (n={len(df):,})',
+        height=height_per_row * n_rows,
+        width=width_per_col * n_cols,
+    )
+    fig.show(renderer="iframe")
+
+
+# =============================================================================
+# Participant timeline viewer
+# =============================================================================
+
+
+def visualize_participant(pid: int, ds: MultimodalUKBDataset):
+    """
+    Print a readable chronological timeline for a single participant.
+
+    Shows all token events (diagnoses, lifestyle, etc.) and biomarker
+    measurements with their values, sorted by age.
+
+    Args:
+        pid: Participant ID
+        ds: MultimodalUKBDataset instance (e.g. with val_fold subjects)
+    """
+    matches = np.where(ds.participants == pid)[0]
+    if len(matches) == 0:
+        print(f"PID {pid} not found in dataset ({len(ds.participants)} participants)")
+        return
+    idx = matches[0]
+
+    x0, t0, bio_x_dict, bio_t, bio_m, x1, t1 = ds[idx]
+    detok = ds.detokenizer
+
+    events = []
+
+    # Token events
+    for token_id, timestamp in zip(x0, t0):
+        name = detok.get(int(token_id), f"token_{token_id}")
+        events.append(
+            {
+                "time_days": float(timestamp),
+                "age_years": float(timestamp) / 365.25,
+                "type": "token",
+                "name": name,
+                "details": "",
+            }
+        )
+
+    # Biomarker events — track position per modality to index into bio_x_dict
+    mod_counters = {}
+    for timestamp, mod_val in zip(bio_t, bio_m):
+        mod = Modality(int(mod_val))
+        bio_arrays = bio_x_dict.get(mod)
+        if bio_arrays is None:
+            continue
+        count = mod_counters.get(mod, 0)
+        if count >= len(bio_arrays):
+            continue
+        feat_vec = bio_arrays[count]
+        mod_counters[mod] = count + 1
+
+        # Format feature values
+        feat_names = ds.mod_ds[mod].features
+        parts = [f"{fn}={feat_vec[i]:.2f}" for i, fn in enumerate(feat_names)]
+        details = ", ".join(parts)
+
+        events.append(
+            {
+                "time_days": float(timestamp),
+                "age_years": float(timestamp) / 365.25,
+                "type": "biomarker",
+                "name": mod.name,
+                "details": details,
+            }
+        )
+
+    # Sort by time
+    events.sort(key=lambda e: e["time_days"])
+
+    # Print
+    print(
+        f"Timeline for PID {pid}  ({len(x0)} tokens, {len(bio_t)} biomarker measurements)"
+    )
+    print("-" * 100)
+    print(f"{'Age (yrs)':>10}  {'Type':<10}  {'Name':<25}  Details")
+    print("-" * 100)
+    for e in events:
+        print(
+            f"{e['age_years']:>10.1f}  {e['type']:<10}  {e['name']:<25}  {e['details']}"
+        )
 
 
 # =============================================================================
@@ -490,6 +610,9 @@ def compute_feature_disease_temporal(
         shap_values = data["shap"]
         features = data["features"]
         timesteps = data["timesteps"]
+
+        timesteps = timesteps.max() - timesteps
+        # assert min(timesteps) >= 0, f"{min(timesteps)}"
 
         for i, feat in enumerate(features):
             if feat == feature_name:
@@ -754,7 +877,7 @@ def plot_feature_disease_heatmap(
 
 # %%
 shap_data, tokenizer = load_shap_data(
-    Path(DELPHI_CKPT_DIR) / "bug/blood/shap.pickle.gz"
+    Path(DELPHI_CKPT_DIR) / "interpret/blood_0.1/shap_missingness.pickle.gz"
 )
 
 # Get summary
@@ -773,53 +896,98 @@ for key, value in summary["min_samples_suggestions"].items():
 print("=" * 60)
 
 # %%
+participants = np.array(list(shap_data.keys()))
+participants.shape
 
 # %%
 detokenizer = {v: k for k, v in tokenizer.items()}
 
+
 # %%
-# Pick a feature from the data
-sample_feature = "LIPID.ldl_direct"
-# sample_feature = "c25_malignant_neoplasm_of_pancreas"
-print(f"Analyzing feature: '{sample_feature}'")
+def moi_pids(modality: str, feature: str, greater: bool, cutoff: float):
+
+    moi_ds = Biomarker(
+        path=Path(DELPHI_DATA_DIR) / f"ukb_real_data/biomarkers/{modality.lower()}",
+        z_score=True,
+    )
+    moi_data, moi_subs = moi_ds.to_transformed_array(participants)
+    feat_data = moi_data[:, moi_ds.feat2idx[feature]]
+
+    if greater:
+        mask = feat_data >= cutoff
+    else:
+        mask = feat_data < cutoff
+    select_pids = np.unique(moi_subs[mask])
+
+    return select_pids
+
+
+# %%
+
+# %%
+# # Pick a feature from the data
+# sample_feature = "LIPID.ldl_direct"
+# print(f"analyzing feature: '{sample_feature}'")
+
+# modality = "LIPID"
+# feature = "cholesterol"
+# modality = "LFT"
+# feature = "total_bilirubin"
+shap_feature = f"LFT"
+print(f"analyzing feature: '{shap_feature}'")
+cutoff = 1
+greater = cutoff > 0
+contribution_direction = "positive"
+
+if cutoff is not None:
+    select_pids = moi_pids(
+        modality=shap_feature, feature="total_bilirubin", greater=greater, cutoff=cutoff
+    )
+    shap_subset = {pid: shap_data[pid] for pid in select_pids}
+else:
+    shap_subset = shap_data
 
 df_feature = plot_feature_to_diseases(
-    shap_data,
-    feature_name=sample_feature,
+    shap_subset,
+    feature_name=shap_feature,
     disease_names=detokenizer,
     top_k=20,
-    contribution_direction="positive",
+    figsize=(12, 8),
+    contribution_direction=contribution_direction,
 )
 
 # %%
 
 # %%
-disease_idx = 1269  # Change to your disease of interest
-print(f"Analyzing disease index: {disease_idx}")
+disease_idx = 688
 
-df_disease = plot_disease_predictive_features(
-    shap_data,
-    disease_idx=disease_idx,
-    disease_name=None,
-    top_k=20,
-    min_samples=10,
-    contribution_direction="positive",
-)
+# df_dep = plot_shap_dependence(
+#     shap_data,
+#     modality=shap_feature,
+#     disease_idx=disease_idx,
+#     disease_name=detokenizer[disease_idx],
+# )
 
-# %%
-sample_feature = "LIPID.ldl_direct"
-disease_idx = 266
-
-df_temporal = plot_feature_disease_temporal(
-    shap_data,
-    feature_name=sample_feature,
-    disease_idx=disease_idx,
+plot_shap_dependence_interactive(
+    df_dep,
+    modality=shap_feature,
     disease_name=detokenizer[disease_idx],
-    time_unit="years",
-    n_bins=10,
-    sample_size=2000,
 )
-print(f"Temporal data points: {len(df_temporal):,}")
+
+# %%
+
+# %%
+val_ds = MultimodalUKBDataset(
+    subject_list="participants/val_fold.bin",
+    biomarkers=["lft"],
+    no_event_interval=None,
+    deterministic=True,
+    block_size=None,
+    z_score_biomarkers=False,
+)
+
+# %%
+visualize_participant(pid=5035238, ds=val_ds)
 
 # %%
 
