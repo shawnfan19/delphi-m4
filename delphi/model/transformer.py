@@ -40,7 +40,9 @@ class AgeEncoding(nn.Module):
             x: Tensor, shape ``[seq_len, batch_size, embedding_dim]``
         """
         time_years = x / self.norm_factor
-        y = torch.zeros(x.shape[0], x.shape[1], self.n_embd, device=x.device)
+        y = torch.zeros(
+            x.shape[0], x.shape[1], self.n_embd, device=x.device, dtype=x.dtype
+        )
         y[..., 0::2] = torch.sin(time_years * self.div_term)  # * (1-self.div_term)
         y[..., 1::2] = torch.cos(time_years * self.div_term)  # * (1-self.div_term)
         y = self.linear(y)

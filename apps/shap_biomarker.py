@@ -23,11 +23,13 @@ parser.add_argument("--ckpt", type=str, default="delphi-m4/delphi-m4/ckpt.pt")
 parser.add_argument("--immediate", action="store_true")
 parser.add_argument("--fname", type=str)
 parser.add_argument("--subsample", type=int)
+parser.add_argument("--batch_size", type=int, default=512)
+parser.add_argument("--half", action="store_true", help="Run model in float16")
 
 if "ipykernel" in sys.modules:
     print(f"running in jupyter notebook")
     args = parser.parse_args([])
-    args.ckpt = "delphi-m4/blood/ckpt.pt"
+    args.ckpt = "interpret/blood_0.1/ckpt.pt"
     args.immediate = True
     args.subsample = 1000
 else:
@@ -39,6 +41,8 @@ pprint.pp(vars(args))
 
 ckpt = Path(DELPHI_CKPT_DIR) / args.ckpt
 model, ckpt_dict = load_ckpt(ckpt)
+if args.half:
+    model.half()
 
 
 data_args = ckpt_dict["data_args"].copy()
@@ -75,7 +79,7 @@ for i in trange(total, leave=False):
         feature_names=np.array([meas_features]),
         output_names=list(ckpt_dict["tokenizer"].keys()),
     )
-    shap_values = explainer([bio_t])
+    shap_values = explainer([bio_t], batch_size=args.batch_size)
 
     shap_pickle[int(pid)] = {
         "shap": shap_values.values[0].astype(np.float16),  # (n_measurements, vocab)
@@ -87,6 +91,6 @@ for i in trange(total, leave=False):
 
 shap_pickle["tokenizer"] = ds.tokenizer
 
-fname = args.fname if args.fname else "shap_missingness.pickle.gz"
+fname = args.fname if args.fname else "shap_biomarkers.pickle.gz"
 with gzip.open(ckpt.parent / fname, "wb") as f:
     pickle.dump(shap_pickle, f)

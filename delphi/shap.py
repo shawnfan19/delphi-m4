@@ -156,17 +156,20 @@ def multimodal_shap_forward(
         bio_m_lst.append(new_bio_m)
 
     device = next(model.parameters()).device
+    dtype = next(model.parameters()).dtype
     idx = collate_batch(x_lst)
     idx = torch.tensor(idx, dtype=torch.long).to(device)
     age = collate_batch(t_lst, fill_value=-1e4)
-    age = torch.tensor(age, dtype=torch.float32).to(device)
+    age = torch.tensor(age, dtype=dtype).to(device)
 
     bio_x_batch = {}
     for mod, arrays in batched_bio_x.items():
-        bio_x_batch[mod] = torch.from_numpy(np.stack(arrays)).to(device)  # type: ignore
+        bio_x_batch[mod] = torch.from_numpy(np.stack(arrays)).to(
+            dtype=dtype, device=device
+        )
 
     mod_age = collate_batch(bio_t_lst, fill_value=-1e4)
-    mod_age = torch.tensor(mod_age, dtype=torch.float32).to(device)
+    mod_age = torch.tensor(mod_age, dtype=dtype).to(device)
     mod_idx = collate_batch(bio_m_lst)
     mod_idx = torch.tensor(mod_idx, dtype=torch.long).to(device)
 
