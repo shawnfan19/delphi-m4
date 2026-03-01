@@ -25,6 +25,7 @@ class Modality(Enum):
     TELOMERE = 21
     ABDO_FAT_CROSS = 22
     ABDO_FAT_LONG = 23
+    NMR = 24
 
 
 def module_name(modality: Modality) -> str:

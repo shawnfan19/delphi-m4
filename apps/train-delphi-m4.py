@@ -4,32 +4,36 @@ from omegaconf import OmegaConf
 
 from delphi import distributed
 from delphi.data.ukb import MultimodalUKBDataset
-from delphi.experiment import BaseTrainer, TrainBaseConfig
+from delphi.experiment import BaseTrainer, TrainBaseConfig, seed_everything
 from delphi.log import TrainLogConfig
 from delphi.model.multimodal import DelphiM4, DelphiM4Config
+from delphi.multimodal import module_name
 
 
 @dataclass
 class TrainConfig(TrainBaseConfig):
-    ckpt_dir: str = "delphi-m4"
+    ckpt_dir: str = "debug"
     batch_size: int = 128
     seed: int = 42
     deterministic: bool = False
     train_subject_list: str = "participants/train_fold.bin"
     val_subject_list: str = "participants/val_fold.bin"
     model: DelphiM4Config = field(
-        default_factory=lambda: DelphiM4Config(block_size=256)
+        default_factory=lambda: DelphiM4Config(block_size=None)
     )
-    biomarkers: None | dict[str, int] = None
+    biomarkers: None | list[str] = None
     first_time_only: bool = False
     must_have: bool = False
     expansion_packs: None | list[str] = None
+    biomarker_dropout: None | float = None
     log: TrainLogConfig = field(default_factory=lambda: TrainLogConfig())
 
 
 def train(cfg: TrainConfig):
 
-    biomarkers = list(cfg.biomarkers.keys()) if cfg.biomarkers is not None else None
+    seed_everything(cfg.seed)
+
+    biomarkers = cfg.biomarkers
     data_args = {
         "expansion_packs": cfg.expansion_packs,
         "block_size": cfg.model.block_size,
@@ -42,6 +46,7 @@ def train(cfg: TrainConfig):
     train_ds = MultimodalUKBDataset(
         subject_list=cfg.train_subject_list,
         biomarkers=biomarkers,
+        biomarker_dropout=cfg.biomarker_dropout,
         **data_args,
     )
     val_ds = MultimodalUKBDataset(
@@ -56,10 +61,14 @@ def train(cfg: TrainConfig):
         set(cfg.model.ignore_tokens).union(train_ds.expansion_tokens)
     )
     if cfg.biomarkers is not None:
-        for biomarker, n_features in cfg.biomarkers.items():
+        for modality, ds in train_ds.mod_ds.items():
+            biomarker = module_name(modality)
+            projector = "linear"
+            if biomarker == "nmr":
+                projector = "mlp"
             cfg.model.biomarkers[biomarker] = {
-                "projector": "linear",
-                "input_size": n_features,
+                "projector": projector,
+                "input_size": ds.n_features,
             }
     model = DelphiM4(cfg.model)
 

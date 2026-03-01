@@ -53,8 +53,10 @@ class BiomarkerEmbedding(nn.Module):
             self.projector = nn.Linear(input_size, n_embed, bias=bias)
         elif projector == "mlp":
             layers = []
-            assert n_layers is not None, "n_layers must be specified for mlp projector"
-            assert n_hidden is not None, "n_hidden must be specified for mlp projector"
+            if n_layers is None:
+                n_layers = 2
+            if n_hidden is None:
+                n_hidden = 32
             for i in range(n_layers):
                 in_size = input_size if i == 0 else n_hidden
                 out_size = n_embed if i == n_layers - 1 else n_hidden
@@ -74,7 +76,6 @@ class DelphiEmbedding(nn.Module):
     def __init__(self, config) -> None:
         super().__init__()
         self.config = config
-        assert config.vocab_size is not None
         self.token_embedding = nn.Embedding(
             config.vocab_size, config.n_embd, padding_idx=0
         )
