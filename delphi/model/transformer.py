@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-from delphi.model.tpp import HawkesHead, nll_hawkes
+from delphi.model.tpp import HawkesHead, NeuralTPPHead, nll_hawkes
 from delphi.model.utils import (
     causal_attention_mask,
     exponential_nll,
@@ -174,6 +174,7 @@ class Delphi2MConfig:
     dt_beta: float = 1.0
     self_terminate: bool = True
     self_terminate_except: None | list = field(default_factory=lambda: [1])
+    n_integrate_grid: int = 20  # number of grid points for neural_tpp compensator
 
     def __post_init__(self):
         if "cluster" in self.loss:
@@ -207,6 +208,17 @@ class Delphi2M(nn.Module):
         if config.loss == "hawkes":
             self.param_head = HawkesHead(
                 n_embd=config.n_embd, vocab_size=config.vocab_size
+            )
+
+        if config.loss == "neural_tpp":
+            self.neural_tpp_head = NeuralTPPHead(
+                n_embd=config.n_embd,
+                vocab_size=config.vocab_size,
+                time_encoder=AgeEncoding(n_embd=config.n_embd),
+                n_integrate_grid=config.n_integrate_grid,
+                self_terminate=config.self_terminate,
+                self_terminate_except=config.self_terminate_except,
+                time_unit=config.time_unit,
             )
 
         if "cluster" in config.loss:
@@ -257,8 +269,10 @@ class Delphi2M(nn.Module):
         if self.config.mask_ties:
             outputs, age = untie(outputs, age, targets_age)
 
-        targets_age = targets_age / self.config.time_unit
-        age = age / self.config.time_unit
+        # neural_tpp receives raw days and normalizes internally
+        if self.config.loss != "neural_tpp":
+            targets_age = targets_age / self.config.time_unit
+            age = age / self.config.time_unit
 
         if self.config.loss == "default":
             logits = outputs["logits"]
@@ -308,6 +322,15 @@ class Delphi2M(nn.Module):
                 idx=idx,
                 targets_age=targets_age,
                 targets=targets,
+            )
+            return {"loss_nll": nll}
+        elif self.config.loss == "neural_tpp":
+            nll = self.neural_tpp_head.nll(
+                h=outputs["h"],
+                targets=targets,
+                age=age,
+                targets_age=targets_age,
+                idx=idx,
             )
             return {"loss_nll": nll}
         else:
@@ -364,6 +387,9 @@ class Delphi2M(nn.Module):
         if hasattr(self, "param_head"):
             params = self.param_head(x)
             outputs.update(params)
+
+        if hasattr(self, "neural_tpp_head"):
+            outputs["h"] = x
 
         if (targets is not None) and (targets_age is not None):
 
