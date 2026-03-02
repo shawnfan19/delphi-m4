@@ -135,20 +135,25 @@ event_sex = is_female[event_p_idx]  # (E,) bool
 
 print(f"Total events across all diseases: {len(event_p_idx)}")
 
-# Convert to numpy for the Phase 2 inner loop
-onset_times_np = onset_times.numpy()  # (N, V)
-event_p_idx_np = event_p_idx.numpy()  # (E,)
+# Numpy arrays needed only for post-processing
 event_d_idx_np = event_d_idx.numpy()  # (E,)
-event_case_scores_np = event_case_scores.numpy()  # (E,)
-event_query_times_np = event_query_times.numpy()  # (E,)
-event_actual_times_np = event_actual_times.numpy()  # (E,)
 event_sex_np = event_sex.numpy()  # (E,) bool
+
+# Move event arrays and onset_times to GPU once for Phase 2
+chunk_size = 8192
+onset_times_gpu = onset_times.to(device)  # (N, V)
+event_query_times_t = event_query_times.to(device)  # (E,)
+event_actual_times_t = event_actual_times.to(device)  # (E,)
+event_case_scores_t = event_case_scores.to(device)  # (E,)
+event_d_idx_t = event_d_idx.to(device)  # (E,) long
+event_p_idx_t = event_p_idx.to(device)  # (E,) long
 
 
 # +
-# Phase 2: for every (participant, event) pair, check concordance
-concordant = np.zeros(len(event_p_idx_np), dtype=np.float64)
-total_pairs = np.zeros(len(event_p_idx_np), dtype=np.float64)
+# Phase 2: for every (participant, event) pair, check concordance — fully on GPU
+E_total = len(event_p_idx)
+concordant = np.zeros(E_total, dtype=np.float64)
+total_pairs = np.zeros(E_total, dtype=np.float64)
 
 participant_offset = 0
 
@@ -166,36 +171,58 @@ with torch.no_grad():
 
         # No correct_time_offset: raw t0 and logits for searchsorted lookup
         out_dict, _, _ = model(*batch_input)
-        logits = out_dict["logits"].half()
+        logits = out_dict["logits"].half()  # (B, L, V)
 
-        t0_np = t0.cpu().float().numpy()  # (B, L)
-        logits_np = logits.cpu().float().numpy()  # (B, L, V)
-        B, L, V = logits_np.shape
+        t0_f = t0.float()  # (B, L) float32 required by searchsorted
+        B, L, V = logits.shape
+        j_globals = torch.arange(B, device=device) + participant_offset  # (B,)
 
-        for j in range(B):
-            j_global = participant_offset + j
-            t_j = t0_np[j]  # (L,) sorted ascending
+        for e_start in range(0, E_total, chunk_size):
+            e_end = min(e_start + chunk_size, E_total)
+            E_c = e_end - e_start
 
-            # Locate each event's query horizon in participant j's timeline
-            idx = np.searchsorted(t_j, event_query_times_np, side="right") - 1  # (E,)
-            idx_clipped = np.clip(idx, 0, L - 1)
-            t_at_idx = t_j[idx_clipped]  # (E,)
+            t_q = event_query_times_t[e_start:e_end]  # (E_c,)
+            t_act = event_actual_times_t[e_start:e_end]  # (E_c,)
+            d_idx = event_d_idx_t[e_start:e_end]  # (E_c,)
+            p_idx = event_p_idx_t[e_start:e_end]  # (E_c,)
+            c_sc = event_case_scores_t[e_start:e_end]  # (E_c,)
 
-            # Exclude out-of-range positions and padding (padding timestamps are -1e4)
-            valid = (idx >= 0) & (t_at_idx > 0)
+            # Batched searchsorted: (B, L) sorted × (B, E_c) queries → (B, E_c) indices
+            idx_mat = (
+                torch.searchsorted(
+                    t0_f.contiguous(), t_q.unsqueeze(0).expand(B, -1), right=True
+                )
+                - 1
+            )  # (B, E_c)
+            idx_c = idx_mat.clamp(0, L - 1)
 
-            # At-risk: j had not yet developed disease d when the case event occurred
-            j_onset = onset_times_np[j_global, event_d_idx_np]  # (E,)
-            valid &= np.isnan(j_onset) | (j_onset > event_actual_times_np)
+            # Timestamps and logit scores at each found position
+            t_at = t0_f.gather(1, idx_c)  # (B, E_c)
+            flat_b = (
+                torch.arange(B, device=device).unsqueeze(1).expand(-1, E_c).reshape(-1)
+            )
+            scores = logits[
+                flat_b,
+                idx_c.reshape(-1),
+                d_idx.unsqueeze(0).expand(B, -1).reshape(-1),
+            ].reshape(
+                B, E_c
+            )  # (B, E_c) half
 
+            # Validity: within timeline and not padding (padding ≈ -1e4)
+            valid = (idx_mat >= 0) & (t_at > 0)
+            # At-risk: j had not yet developed disease d at the case's event time
+            j_onset = onset_times_gpu[
+                j_globals.unsqueeze(1), d_idx.unsqueeze(0).expand(B, -1)
+            ]  # (B, E_c)
+            valid &= j_onset.isnan() | (j_onset > t_act.unsqueeze(0))
             # Do not compare a case to itself
-            valid &= j_global != event_p_idx_np
+            valid &= j_globals.unsqueeze(1) != p_idx.unsqueeze(0)
 
-            # j's predicted score for each disease at the event's query time
-            scores_j = logits_np[j, idx_clipped, event_d_idx_np]  # (E,)
-
-            concordant += valid & (scores_j < event_case_scores_np)
-            total_pairs += valid
+            concordant[e_start:e_end] += (
+                (valid & (scores.float() < c_sc.unsqueeze(0))).sum(0).cpu().numpy()
+            )
+            total_pairs[e_start:e_end] += valid.sum(0).cpu().numpy()
 
         participant_offset += B
 
