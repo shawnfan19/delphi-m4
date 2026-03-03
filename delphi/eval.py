@@ -360,7 +360,7 @@ def corrective_indices(T0: torch.Tensor, T1: torch.Tensor, offset: float):
     assert T0.shape == T1.shape  # (m, n)
     T0_expanded = T0.unsqueeze(1)  # (m, 1, n)
     T1_expanded = T1.unsqueeze(-1)  # (m, n, 1)
-    C = (T0_expanded <= (T1_expanded - offset)).sum(dim=2) - 1
+    C = (T0_expanded < (T1_expanded - offset)).sum(dim=2) - 1
 
     return C.long()
 
