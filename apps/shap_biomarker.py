@@ -70,7 +70,7 @@ for i in trange(total, leave=False):
 
     out = (x, t, bio_dict, bio_t, bio_m)
     meas_features = [Modality(int(mval)).name for mval in bio_m]
-    meas_timesteps = [float(ts) for ts in bio_t]
+    meas_timesteps = [float(t[-1]) - float(ts) for ts in bio_t]
 
     shap_model = partial(multimodal_shap_forward, out=out, model=model)
     explainer = shap.Explainer(
