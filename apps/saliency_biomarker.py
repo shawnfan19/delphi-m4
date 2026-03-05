@@ -20,7 +20,6 @@ from delphi.multimodal import Modality
 # +
 parser = argparse.ArgumentParser()
 parser.add_argument("--ckpt", type=str, default="delphi-m4/delphi-m4/ckpt.pt")
-parser.add_argument("--batch_size", type=int, default=64)
 parser.add_argument("--modality", type=str, help="Biomarker modality, e.g. LIPID")
 parser.add_argument(
     "--abs", action="store_true", help="Store absolute value of gradients"
@@ -32,6 +31,7 @@ if "ipykernel" in sys.modules:
     args = parser.parse_args([])
     args.ckpt = "delphi-m4/blood/ckpt.pt"
     args.modality = "LIPID"
+    args.subsample = 1000
 else:
     args = parser.parse_args()
 
@@ -50,6 +50,7 @@ data_args["subject_list"] = "participants/val_fold.bin"
 data_args["stats_subject_list"] = ckpt_dict["data_args"]["subject_list"]
 data_args["deterministic"] = True
 data_args["must_have_biomarkers"] = data_args["biomarkers"]
+data_args["biomarker_dropout"] = False
 pprint.pp(data_args)
 
 ds = MultimodalUKBDataset(**data_args)
@@ -60,6 +61,7 @@ detokenizer = {v: k for k, v in tokenizer.items()}
 model_targets = model.targets.to(device)
 model_targets = model_targets[model_targets != 1]
 target_names = [detokenizer[int(tid)] for tid in model_targets]
+target_idx = model_targets.cpu().tolist()
 
 feature_names = ds.mod_ds[modality].features  # list[str], length n_features
 print(
@@ -70,10 +72,12 @@ print(
 # -
 
 
-def _sal_forward(bio_x, *, model, x0, t0, bio_x_rest, bio_T, bio_M, x1, t1, modality):
+def _sal_forward(
+    bio_x, *, model, x0, t0, bio_x_rest, bio_T, bio_M, x1, t1, modality, target_idx
+):
     bio_x_dict = {**bio_x_rest, modality: bio_x}
     out, _, _ = model(x0, t0, bio_x_dict, bio_T, bio_M, x1, t1)
-    return out["logits"][:, -1, :]  # (B, V_model)
+    return out["logits"][:, -1, target_idx]  # (B, n_targets)
 
 
 # +
@@ -81,15 +85,16 @@ results = {}
 n = len(ds) if args.subsample is None else args.subsample
 
 for batch_idx in tqdm(
-    eval_iter(total_size=n, batch_size=args.batch_size),
-    total=math.ceil(n / args.batch_size),
+    eval_iter(total_size=n, batch_size=1),
+    total=math.ceil(n / 1),
 ):
     batch = ds.get_batch(batch_idx)
     batch = move_batch_to_device(batch, device)
     x0, t0, bio_X_dict, bio_T, bio_M, x1, t1 = batch
     pids = ds.participants[batch_idx]
 
-    bio_x = bio_X_dict[modality].float().detach().requires_grad_(True)
+    n_meas = (bio_M[0] == modality.value).sum().item()
+    bio_x = bio_X_dict[modality].float().detach()  # (n_meas, n_features)
 
     forward_func = partial(
         _sal_forward,
@@ -102,40 +107,40 @@ for batch_idx in tqdm(
         x1=x1,
         t1=t1,
         modality=modality,
+        target_idx=target_idx,
     )
 
+    with torch.no_grad():
+        out, _, _ = model(x0, t0, bio_X_dict, bio_T, bio_M, x1, t1)
+        timestamp = out["age"][:, -1]  # (B,) — age at last target position
+
     with torch.enable_grad():
-        logits_last = forward_func(bio_x)  # (B, V_model) — one forward pass
-
-    # One backward pass per target disease; retain graph for all but the last
-    grads = []  # list of (B, n_features) CPU tensors
-    for k, tid in enumerate(model_targets):
-        retain = k < len(model_targets) - 1
-        g = torch.autograd.grad(
-            logits_last[:, int(tid)].sum(), bio_x, retain_graph=retain
-        )[
-            0
-        ]  # (B, n_features)
-        grads.append((g.abs() if args.abs else g).detach().cpu())
-
-    # Stack: (n_targets, B, n_features) → (B, n_features, n_targets)
-    grads_np = np.stack(
-        [g.numpy() for g in grads], axis=2
-    )  # (B, n_features, n_targets)
+        jac = torch.func.jacfwd(forward_func)(
+            bio_x
+        )  # (1, n_targets, n_meas, n_features)
+    jac = jac[0]  # (n_targets, n_meas, n_features)
+    jac = jac.reshape(jac.shape[0], -1)  # (n_targets, n_meas * n_features)
+    jac = jac.T  # (n_meas * n_features, n_targets)
+    if args.abs:
+        jac = jac.abs()
+    jac = jac.detach().cpu().numpy()
 
     for b, pid in enumerate(pids):
         results[int(pid)] = {
-            feat: grads_np[b, f, :].astype(np.float16)
-            for f, feat in enumerate(feature_names)
+            "jacobian": jac.astype(np.float16),  # (n_meas * n_features, n_targets)
+            "timestamp": float(timestamp[b]),
         }
+# -
+
 
 # +
 results["targets"] = target_names
 results["tokenizer"] = tokenizer
+results["modality"] = modality.name
 
 fname = args.fname or f"saliency-{args.modality.upper()}-ckpt-{ckpt.stem}.pkl.gz"
 out_path = ckpt.parent / fname
 with gzip.open(out_path, "wb") as f:
     pickle.dump(results, f)
 
-print(f"saved {len(results) - 2} participants → {out_path}")
+print(f"saved {len(results) - 3} participants -> {out_path}")
