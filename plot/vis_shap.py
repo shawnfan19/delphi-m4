@@ -403,6 +403,7 @@ def plot_shap_dependence(
         ax.axvline(x=np.mean(x_full), color="gray", linestyle="--", linewidth=0.8)
         ax.axhline(y=1, color="black", linestyle="--", linewidth=0.8)
         ax.set_xlabel(feat_name)
+        ax.set_yscale("log")
         if col == 0:
             ax.set_ylabel("Odds ratio")
 
@@ -877,7 +878,7 @@ def plot_feature_disease_heatmap(
 
 # %%
 shap_data, tokenizer = load_shap_data(
-    Path(DELPHI_CKPT_DIR) / "interpret/blood_0.1/shap_missingness.pickle.gz"
+    Path(DELPHI_CKPT_DIR) / "interpret/blood_0.1/shap_biomarkers.pickle.gz"
 )
 
 # Get summary
@@ -936,12 +937,15 @@ def moi_pids(modality: str, feature: str, greater: bool, cutoff: float):
 shap_feature = f"LFT"
 print(f"analyzing feature: '{shap_feature}'")
 cutoff = 1
-greater = cutoff > 0
 contribution_direction = "positive"
 
 if cutoff is not None:
+    greater = cutoff > 0
     select_pids = moi_pids(
-        modality=shap_feature, feature="total_bilirubin", greater=greater, cutoff=cutoff
+        modality=shap_feature,
+        feature="aspartate_aminotransferase",
+        greater=greater,
+        cutoff=cutoff,
     )
     shap_subset = {pid: shap_data[pid] for pid in select_pids}
 else:
@@ -961,12 +965,12 @@ df_feature = plot_feature_to_diseases(
 # %%
 disease_idx = 688
 
-# df_dep = plot_shap_dependence(
-#     shap_data,
-#     modality=shap_feature,
-#     disease_idx=disease_idx,
-#     disease_name=detokenizer[disease_idx],
-# )
+df_dep = plot_shap_dependence(
+    shap_data,
+    modality=shap_feature,
+    disease_idx=disease_idx,
+    disease_name=detokenizer[disease_idx],
+)
 
 plot_shap_dependence_interactive(
     df_dep,
@@ -987,7 +991,7 @@ val_ds = MultimodalUKBDataset(
 )
 
 # %%
-visualize_participant(pid=5035238, ds=val_ds)
+visualize_participant(pid=5076502, ds=val_ds)
 
 # %%
 
