@@ -334,7 +334,7 @@ class DelphiM4(torch.nn.Module):
         mod_idx: torch.Tensor,
         targets: None | torch.Tensor = None,
         targets_age: None | torch.Tensor = None,
-    ) -> tuple[tensor_dict, None | tensor_dict, torch.Tensor]:
+    ):
 
         if self.config.ablate_biomarker is not None:
             if mod_age.numel() > 0:
@@ -380,6 +380,11 @@ class DelphiM4(torch.nn.Module):
         x = self.transformer.ln_f(x)
         att = torch.stack(att)
 
+        misc = dict()
+        misc["attn_mask"] = attn_mask
+        misc["attn"] = att
+
+        outputs = dict()
         logits = self.lm_head(x)
 
         if (targets is not None) and (targets_age is not None):
@@ -387,6 +392,8 @@ class DelphiM4(torch.nn.Module):
                 targets_age=targets_age, mod_age=mod_age
             ).bool()
             logits = logits[is_target].view(*idx.shape, -1)
+            age = fused_age[is_target].view(*idx.shape)
+            outputs["age"] = age
 
             is_valid_target = targets != 0
             for k in self.config.ignore_tokens:
@@ -408,4 +415,6 @@ class DelphiM4(torch.nn.Module):
         else:
             loss = None
 
-        return {"logits": logits, "attn_mask": attn_mask}, loss, att
+        outputs["logits"] = logits
+
+        return outputs, loss, misc

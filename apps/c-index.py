@@ -98,6 +98,7 @@ with torch.no_grad():
 
         out_dict, _, _ = model(*batch_input)
         logits = out_dict["logits"].half()
+        t0 = out_dict["age"]
 
         t0_off, logits_off = correct_time_offset(t0, t1, logits, offset=offset_days)
         dis_collator.step(tokens=x1, timesteps=t0_off, logits=logits_off)
@@ -176,6 +177,7 @@ with torch.no_grad():
         # No correct_time_offset: raw t0 and logits for searchsorted lookup
         out_dict, _, _ = model(*batch_input)
         logits = out_dict["logits"].half()  # (B, L, V)
+        t0 = out_dict["age"]
 
         t0_f = t0.float()  # (B, L) float32 required by searchsorted
         B, L, V = logits.shape

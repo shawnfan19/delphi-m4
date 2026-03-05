@@ -2,6 +2,7 @@
 import argparse
 import json
 import math
+import os
 import pprint
 import sys
 from collections import defaultdict
@@ -11,7 +12,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from delphi.data.ukb import MultimodalUKBDataset
+from delphi.data.ukb import Biomarker, MultimodalUKBDataset
 from delphi.env import DELPHI_CKPT_DIR
 from delphi.eval import AgeStratRatesCollator as ControlRatesCollator
 from delphi.eval import (
@@ -20,8 +21,8 @@ from delphi.eval import (
     correct_time_offset,
     mann_whitney_auc,
 )
-from delphi.experiment import eval_iter, move_batch_to_device
-from delphi.model.multimodal import DelphiM4, DelphiM4Config
+from delphi.experiment import eval_iter, load_ckpt, move_batch_to_device
+from delphi.multimodal import Modality
 
 # -
 
@@ -34,6 +35,19 @@ parser.add_argument("--min_time_gap", type=float, default=0.01)
 parser.add_argument("--age_start", type=int, default=40)
 parser.add_argument("--age_end", type=int, default=85)
 parser.add_argument("--age_gap", type=int, default=5)
+parser.add_argument(
+    "--after_biomarker",
+    type=str,
+    default=None,
+    help="Only compute AUC at time points after first occurrence of this biomarker modality (e.g. 'nmr')",
+)
+parser.add_argument(
+    "--modalities",
+    type=str,
+    nargs="+",
+    default=None,
+    help="Only evaluate participants with ALL of these modalities (e.g. '--modalities nmr lipid')",
+)
 parser.add_argument("--fname", type=str)
 
 if "ipykernel" in sys.modules:
@@ -51,46 +65,18 @@ pprint.pp(vars(args))
 # -
 
 
-def get_init_defaults(cls):
-    """Get default __init__ arguments for a class as a dictionary."""
-    import inspect
-
-    sig = inspect.signature(cls.__init__)
-    return {
-        name: param.default
-        for name, param in sig.parameters.items()
-        if param.default is not inspect.Parameter.empty and name != "self"
-    }
-
-
 # +
 ckpt = Path(DELPHI_CKPT_DIR) / args.ckpt
-
-ckpt_dict = torch.load(
-    ckpt, map_location=torch.device("cpu") if not torch.cuda.is_available() else None
-)
-model_cfg = DelphiM4Config(**ckpt_dict["model_args"])
-model = DelphiM4(model_cfg)
-model.load_state_dict(ckpt_dict["model"])
-
+model, ckpt_dict = load_ckpt(ckpt)
 device = "cuda" if torch.cuda.is_available() else "cpu"
-model.to(device)
-model.eval()
-print(f"model: {ckpt} [iter: {ckpt_dict['iter_num']}]")
 
-if "data_args" in ckpt_dict:
-    data_args = ckpt_dict["data_args"].copy()
-    data_args["subject_list"] = "participants/val_fold.bin"
-    data_args["stats_subject_list"] = ckpt_dict["data_args"]["subject_list"]
-else:
-    data_args = get_init_defaults(MultimodalUKBDataset)
-    data_args["subject_list"] = "participants/val_fold.bin"
-    biomarkers = ckpt_dict["config"]["biomarkers"]
-    if biomarkers is not None:
-        biomarkers = list(biomarkers.keys())
-    data_args["biomarkers"] = biomarkers
-    expansion_packs = ckpt_dict["config"]["expansion_packs"]
-    data_args["expansion_packs"] = expansion_packs
+data_args = ckpt_dict["data_args"].copy()
+data_args["subject_list"] = "participants/val_fold.bin"
+data_args["stats_subject_list"] = ckpt_dict["data_args"]["subject_list"]
+# data_args["must_have_biomarkers"] = data_args["biomarkers"]
+if args.modalities is not None:
+    data_args["must_have_biomarkers"] = args.modalities
+
 pprint.pp(data_args)
 # -
 ds = MultimodalUKBDataset(**data_args)
@@ -123,6 +109,7 @@ with torch.no_grad():
 
         out_dict, _, _ = model(*batch_input)
         logits = out_dict["logits"].half()
+        t0 = out_dict["age"]
 
         t0, logits = correct_time_offset(
             t0, t1, logits, offset=args.min_time_gap * 365.25
@@ -142,6 +129,20 @@ is_female = is_female.numpy()
 is_male = ~is_female
 either = np.logical_or(is_female, is_male)
 
+if args.after_biomarker is not None:
+    modality = Modality[args.after_biomarker.upper()]
+    bio_ds = Biomarker(path=os.path.join(ds.biomarker_dir, modality.name.lower()))
+    bio_first = bio_ds.first_occurrence_times(ds.participants)
+    # mask out participants without the biomarker
+    no_bio = np.isnan(bio_first)
+    ctl_rates[no_bio] = np.nan
+    dis_rates[no_bio] = np.nan
+    # mask control scores at time points before the biomarker
+    before_bio_ctl = ctl_times < bio_first[:, None]
+    ctl_rates[before_bio_ctl] = np.nan
+    # mask disease scores at time points before the biomarker
+    before_bio_dis = dis_times < bio_first[:, None]
+    dis_rates[before_bio_dis] = np.nan
 
 # +
 dis_time_bin = np.searchsorted(age_group_edges, dis_times, side="right")
@@ -226,6 +227,10 @@ pprint.pp(fmt_logbook["death"])
 
 if args.fname is None:
     args.fname = f"auc-min_time_gap-{args.min_time_gap}-ckpt-{ckpt.stem}"
+    if args.after_biomarker is not None:
+        args.fname += f"-after_{args.after_biomarker}"
+    if args.modalities is not None:
+        args.fname += f"-modalities_{'_'.join(args.modalities)}"
 logbook_path = ckpt.parent / f"{args.fname}.json"
 with open(logbook_path, "w") as f:
     json.dump(fmt_logbook, f, indent=4)
