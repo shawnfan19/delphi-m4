@@ -26,3 +26,6 @@ submit
 pyrightconfig.json
 *.tar.gz
 *.bin
+.claude
+cache
+iframe_figures
