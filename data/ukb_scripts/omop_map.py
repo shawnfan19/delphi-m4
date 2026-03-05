@@ -1,12 +1,10 @@
 import pandas as pd
 import yaml
-from utils import multimodal_dir
+from utils import _raw_dir
 
 overlap_with_finngen = ["blood", "urine"]
 
-ukb2omop = pd.read_csv(
-    multimodal_dir / "all_concepts_numeric_prio.csv", index_col="field_id"
-)
+ukb2omop = pd.read_csv(_raw_dir / "all_concepts_numeric_prio.csv", index_col="field_id")
 
 with open("data/gather_biomarker/panel.yaml", "r") as f:
     panel = yaml.safe_load(f)
