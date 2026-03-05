@@ -60,6 +60,9 @@ def cut_prompt(
         prompt_age[~is_prompt] = -10000
         prompt_age = prompt_age.max(dim=1, keepdim=True)[0]
 
+    if isinstance(prompt_age, float):
+        prompt_age = torch.full((idx.shape[0], 1), fill_value=prompt_age)
+
     idx[age > prompt_age] = 0
     age[age > prompt_age] = -10000.0
 
@@ -75,6 +78,12 @@ def cut_prompt(
     idx, age = idx[:, trim_margin:], age[:, trim_margin:]
 
     return idx, age, prompt_age
+
+
+def load_label_meta(data_dir="ukb_real_data") -> pd.DataFrame:
+    """Load disease label metadata (ICD chapters, colors)."""
+    path = Path(DELPHI_DATA_DIR) / data_dir / "labels_chapters_colours.csv"
+    return pd.read_csv(path)
 
 
 class UKBDataset:
@@ -236,15 +245,6 @@ class UKBDataset:
         print(f"{len(keep_lst)}/{self.participants.size} participants remaining")
         self.participants = self.participants[keep_lst]
 
-    def subset_by_tokens(self, tokens: np.ndarray):
-        keep_lst = list()
-        for i in range(self.participants.size):
-            x_pid, _, _, _ = self[i]
-            if np.isin(x_pid, tokens).any():
-                keep_lst.append(i)
-        print(f"{len(keep_lst)}/{self.participants.size} participants remaining")
-        self.participants = self.participants[keep_lst]
-
     def get_batch(self, batch_idx: Iterable):
 
         X0, T0, X1, T1 = list(), list(), list(), list()
@@ -346,6 +346,32 @@ class Biomarker:
             return (x - self.mean) / self.std
         else:
             return x
+
+    def first_occurrence_times(self, pids: np.ndarray) -> np.ndarray:
+        """Return the timestamp of the first measurement for each pid.
+
+        Returns NaN for pids that have no measurement in this biomarker.
+        """
+        result = np.full(len(pids), np.nan, dtype=np.float32)
+        for i, pid in enumerate(pids):
+            if pid in self.pid2idx:
+                result[i] = self.time_steps[self.pid2idx[pid]]
+        return result
+
+    def occurrence_times(self, pids: np.ndarray) -> dict[int, np.ndarray]:
+        """Return all measurement timestamps for each pid.
+
+        Returns a dict mapping pid to array of times. Pids with no
+        measurement are omitted.
+        """
+        result = {}
+        for pid in pids:
+            pid = int(pid)
+            if pid in self.pid2idx:
+                idx = self.pid2idx[pid]
+                cnt = self.pid2cnt[pid]
+                result[pid] = self.time_steps[idx : idx + cnt]
+        return result
 
     def __getitem__(
         self, pid: int
@@ -508,7 +534,7 @@ class MultimodalUKBDataset:
             assert biomarkers is None
             self.mod_ds = biomarker_datasets
         else:
-            biomarker_dir = os.path.join(DELPHI_DATA_DIR, data_dir, biomarker_dir)
+            self.biomarker_dir = os.path.join(DELPHI_DATA_DIR, data_dir, biomarker_dir)
             if stats_subject_list is None:
                 stats_subjects = self.participants
             else:
@@ -521,7 +547,9 @@ class MultimodalUKBDataset:
             if biomarkers is not None:
                 for modality in biomarkers:
                     modality = Modality[modality.upper()]
-                    biomarker_path = os.path.join(biomarker_dir, modality.name.lower())
+                    biomarker_path = os.path.join(
+                        self.biomarker_dir, modality.name.lower()
+                    )
                     dataset = Biomarker(
                         path=biomarker_path,
                         stats_subjects=stats_subjects,
@@ -536,8 +564,11 @@ class MultimodalUKBDataset:
             old_n = self.participants.size
             for modality in must_have_biomarkers:
                 modality = Modality[modality.upper()]
+                mod_pids = pd.read_csv(
+                    os.path.join(self.biomarker_dir, modality.name.lower(), "p2i.csv")
+                )["pid"]
                 self.participants = self.participants[
-                    np.isin(self.participants, self.mod_ds[modality].pids)
+                    np.isin(self.participants, mod_pids)
                 ]
             print(f"{self.participants.size}/{old_n} remaining")
 
