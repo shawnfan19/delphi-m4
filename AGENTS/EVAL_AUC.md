@@ -103,6 +103,45 @@ Age is handled by coarse 5-year bins, and sex by simple stratification. A more p
 
 Using the instantaneous intensity at a single time point as the score ignores the temporal dimension — it doesn't account for how long a participant is at elevated risk. Integrated risk over a time horizon (as in `integrate_risk` in `delphi/eval.py`) would be more appropriate for prognostic evaluation, but is not used here because the goal is ranking, not prognosis.
 
+## Multimodal Version (`apps/auc_fast_m4.py`)
+
+`auc_fast_m4.py` is the multimodal counterpart of `auc_fast.py`. The evaluation logic (collators, AUC computation, stratification, output format) is identical. The differences are purely about loading and running a multimodal model:
+
+- **Model**: `DelphiM4` / `DelphiM4Config` instead of `Delphi2M` / `Delphi2MConfig`
+- **Dataset**: `MultimodalUKBDataset` instead of `UKBDataset`. Data args are restored from `ckpt_dict["data_args"]` when available, with a fallback that reads `biomarkers` and `expansion_packs` from `ckpt_dict["config"]`
+- **Batch shape**: The multimodal batch has 7 elements (`x0, t0, _, _, _, x1, t1`) vs 4 (`x0, t0, x1, t1`). The extra slots carry the additional modality inputs; they are passed to the model but not used directly by the AUC collators
+
+Everything downstream of the forward pass — time offset correction, control/disease score collection, AUC computation, and JSON output — is unchanged.
+
+### Biomarker-gated AUC (`--after_biomarker`)
+
+When comparing a multimodal model (trained with biomarkers) against a baseline (trained without), a fair comparison should only consider time points where the biomarker information is actually available. The `--after_biomarker` flag enables this:
+
+```bash
+python apps/auc_fast_m4.py --ckpt path/to/ckpt.pt --after_biomarker nmr
+```
+
+When set:
+1. The specified biomarker is added to `must_have_biomarkers`, restricting the evaluation to participants who have at least one measurement of that biomarker
+2. After the collators finalize, any control or disease score at a time point *before* the participant's first biomarker measurement is masked out (set to NaN and excluded from AUC computation)
+3. The output filename is suffixed with `-after_{biomarker}` (e.g. `auc-min_time_gap-0.01-ckpt-ckpt-after_nmr.json`)
+
+The first-occurrence timestamps come from `Biomarker.first_occurrence_times()`, which looks up the earliest measurement time per participant from the biomarker's `p2i.csv`.
+
+### Participant filtering by modality (`--modalities`)
+
+The `--modalities` flag restricts evaluation to participants who have **all** of the specified biomarker modalities:
+
+```bash
+python apps/auc_fast_m4.py --ckpt path/to/ckpt.pt --modalities nmr lipid
+```
+
+When set, the modality names are passed as `must_have_biomarkers` to `MultimodalUKBDataset`, which filters `self.participants` at construction time so that only participants with all specified modalities are included. The dataset prints the number of retained participants during setup.
+
+The output filename is suffixed with `-modalities_<names>` (e.g. `auc-min_time_gap-0.01-ckpt-ckpt-modalities_nmr_lipid.json`).
+
+`--modalities` and `--after_biomarker` are independent and can be combined. `--modalities` determines *who* is evaluated; `--after_biomarker` determines *when* scores are eligible. The modality names must be a subset of the biomarkers loaded by the checkpoint (a `KeyError` is raised otherwise).
+
 ## Related Code
 
 - `delphi/eval.py`: Contains all collator classes, `correct_time_offset`, `mann_whitney_auc`, and related utilities

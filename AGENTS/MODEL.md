@@ -51,58 +51,41 @@ The model uses different heads depending on loss type:
 # For intensity-based losses (default, homo_poisson, homo_cluster_poisson)
 self.lm_head = nn.Linear(config.n_embd, config.vocab_size)  # outputs log-intensities
 
-# For parametric losses (hawkes, hawkes_weibull, weibull)
-self.param_head = ParametricHead(n_embd, vocab_size)  # outputs distribution params
+# For hawkes loss
+self.param_head = HawkesHead(n_embd, vocab_size)  # outputs alpha, beta, mu
+
+# For neural_tpp loss
+self.neural_tpp_head = NeuralTPPHead(
+    n_embd, vocab_size, time_encoder, n_integrate_grid, self_terminate, self_terminate_except, time_unit
+)  # neural intensity
 
 # For cluster losses (homo_cluster_poisson)
 self.aux_head = nn.Linear(config.n_embd, 1)  # outputs auxiliary rate
 ```
 
-All parametric losses (`hawkes`, `hawkes_weibull`, `weibull`) share the unified `self.param_head` attribute — the head class varies by loss type.
+### HawkesHead
 
-### ParametricHead
-
-Used when the loss requires learned distribution parameters rather than direct intensities:
+Outputs excitation parameters (α, β) from the transformer hidden state, plus a binned age-dependent baseline intensity μ:
 
 ```python
-class ParametricHead(nn.Module):
-    def __init__(self, n_embd: int, vocab_size: int):
+class HawkesHead(nn.Module):
+    def __init__(self, n_embd: int, vocab_size: int, n_bins: int = 20):
         super().__init__()
         self.proj_alpha = nn.Linear(n_embd, vocab_size)
         self.proj_beta = nn.Linear(n_embd, vocab_size)
+        self.log_mu = nn.Parameter(torch.full((n_bins, vocab_size), -5.0))
 
-    def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
+    def forward(self, x):
         param_alpha = F.softplus(self.proj_alpha(x))
-        param_beta = F.softplus(self.proj_beta(x)) + 0.1
-        return {"alpha": param_alpha, "beta": param_beta}
+        param_beta = F.softplus(self.proj_beta(x))
+        return {
+            "alpha": param_alpha,
+            "beta": param_beta,
+            "mu": F.softplus(self.log_mu),  # (n_bins, V) — age baseline
+        }
 ```
 
-**Note**: `F.softplus` ensures positivity. Add small constants (e.g., `+ 0.1`) to prevent numerical issues when parameters must be strictly positive.
-
-### HawkesWeibullHead
-
-Combines **global Weibull baseline parameters** with **context-dependent excitation parameters**. This is a deliberate architectural split:
-
-- **Weibull params** (k, λ, A) are `nn.Parameter` — one value per event type, shared across all patients and positions. They represent population-level age-dependent disease incidence profiles that don't depend on individual patient history.
-- **Excitation params** (α, β) are linear projections of the transformer hidden state — context-dependent per position. They capture how a patient's specific history modulates short-term event clustering.
-
-```python
-class HawkesWeibullHead(nn.Module):
-    def __init__(self, n_embd: int, vocab_size: int):
-        super().__init__()
-        self.log_k = nn.Parameter(torch.zeros(vocab_size))    # Weibull shape
-        self.log_lam = nn.Parameter(torch.zeros(vocab_size))  # Weibull scale
-        self.log_A = nn.Parameter(torch.zeros(vocab_size))    # Weibull amplitude
-        self.proj_alpha = nn.Linear(n_embd, vocab_size)
-        self.proj_beta = nn.Linear(n_embd, vocab_size)
-
-    def forward(self, x, age) -> dict:
-        # age is passed for interface consistency but Weibull evaluation
-        # happens in the NLL function (which needs both age and targets_age)
-        ...
-```
-
-The head accepts `age` in its forward signature even though Weibull baseline evaluation happens in the NLL function. This is because the NLL needs both `age` (interval start) and `targets_age` (interval end) to compute the compensator integral, and `targets_age` is not available during the forward pass when generating.
+The `log_mu` parameter provides a piecewise-constant baseline intensity over age bins, so the model can maintain non-zero intensity during long event-free intervals without relying solely on no-event tokens.
 
 ---
 
@@ -277,7 +260,7 @@ $$\int_{t_i}^{t_{i+1}} \alpha_v e^{-\beta_v(\tau - t_i)} d\tau = \frac{\alpha_v}
 **Full NLL:**
 $$-\ell = -\log \alpha_k + \beta_k \Delta t + \sum_v \frac{\alpha_v}{\beta_v}\left(1 - e^{-\beta_v \Delta t}\right)$$
 
-Note: There is no explicit $\mu_v$ term because baseline intensity is absorbed into the context-dependent $\alpha_v$.
+Note: The actual implementation includes a binned baseline $\mu_v(\text{bin}(\tau))$ via `HawkesHead.log_mu` — see the `hawkes` loss section below.
 
 
 ---
@@ -344,162 +327,113 @@ return {
 
 ### `hawkes`
 
-Parametric TPP with exponential decay kernel and **no explicit baseline intensity**:
+Parametric TPP with exponential decay kernel and a **binned age-dependent baseline intensity**:
 
-$$\lambda_v(\tau) = \alpha_v \cdot \exp(-\beta_v \cdot (\tau - t_i))$$
+$$\lambda_v(\tau) = \mu_v(\text{bin}(\tau)) + \alpha_v \cdot \exp(-\beta_v \cdot (\tau - t_i))$$
 
-Uses `ParametricHead` to output `alpha` (excitation) and `beta` (decay rate).
+Uses `HawkesHead` to output `alpha` (excitation), `beta` (decay rate), and `mu` (binned baseline, `nn.Parameter` of shape `(n_bins, V)`).
 
 ```python
 def nll_hawkes(
+    mu: torch.Tensor,          # (n_bins, V) age-binned baseline intensity
     alpha: torch.Tensor,       # (B, L, V) excitation amplitude
     beta: torch.Tensor,        # (B, L, V) decay rate
     age: torch.Tensor,         # (B, L)
+    idx: torch.Tensor,         # (B, L) for self-termination
     targets_age: torch.Tensor, # (B, L)
     targets: torch.Tensor,     # (B, L)
-    time_unit: float = 365.25,
 ) -> torch.Tensor:
-    # Part 1: log λ_k(t_{i+1}) = log(α_k) - β_k · Δt
-    # Part 2: -∫ Σ_v λ_v dτ = -Σ_v (α_v/β_v)·[1 - exp(-β_v·Δt)]
+    # Part 1: log(μ_k(bin(t_{i+1})) + α_k · exp(-β_k · Δt))
+    # Part 2: -∫ Σ_v [μ_v(τ) + α_v·exp(-β_v·(τ-t_i))] dτ
+    #   μ integral: bin_mu_compensator (overlap × mu)
+    #   α integral: (α/β)·(1 - exp(-β·Δt))
     ...
 ```
 
-**Limitation — no-event tokens still needed**: Because the intensity is purely self-exciting with no baseline, the exponential kernel decays toward zero over long gaps between events. A patient with no events for 20 years would have near-zero intensity for all event types, even though their age-dependent risk may be increasing. The transformer can partially compensate by outputting large α values, but this conflates two distinct phenomena: age-dependent baseline risk and event-triggered excitation. The `hawkes_weibull` loss was developed to address this.
+The binned baseline μ provides piecewise-constant age-dependent risk, so the model can maintain non-zero intensity during long event-free intervals.
 
 **Sampling not implemented**: `sample_next` raises `NotImplementedError` for this loss.
 
-### `hawkes_weibull`
+### `neural_tpp`
 
-**Motivation**: The pure `hawkes` loss has no explicit baseline intensity — the exponential decay kernel drives intensity toward zero during long event-free intervals. This is a fundamental problem for EHR modeling: a 60-year-old with no recent events still has substantial disease risk, but the exponential kernel can't express this. The only workaround is injecting synthetic no-event tokens, which wastes sequence capacity and introduces an artificial dependency on the token insertion strategy.
+A fully neural TPP where the intensity is an arbitrary function of the transformer hidden state and elapsed time:
 
-The `hawkes_weibull` loss adds an explicit **age-dependent baseline intensity** using the Weibull distribution, so the model can maintain non-zero intensity over arbitrarily long gaps without no-event tokens.
+$$\lambda_v(\tau) = \text{softplus}\!\bigl(\text{net}(h + \text{time\_encode}(\tau - t_i))\bigr)_v$$
 
-#### Intensity Function
+Unlike the Hawkes head, which constrains intensity to exponential decay, `NeuralTPPHead` uses an MLP that can learn any intensity shape — rising, oscillating, multi-modal, etc.
 
-$$\lambda_v(t) = \underbrace{\mu_v(t)}_{\text{Weibull baseline}} + \underbrace{\alpha_v^{(i)} \cdot e^{-\beta_v^{(i)}(t - t_i)}}_{\text{self-exciting kernel}}$$
-
-The two components serve distinct purposes:
-- **Weibull baseline** $\mu_v(t)$: population-level age-dependent disease incidence. "How likely is this disease at this age, regardless of patient history?"
-- **Excitation kernel** $\alpha_v^{(i)} e^{-\beta_v^{(i)} \Delta t}$: patient-specific short-term clustering. "Given this patient's recent events, how much more likely is a follow-up?"
-
-#### Why Weibull Density (Not Hazard)
-
-The Weibull **hazard function** $h(t) = (k/\lambda)(t/\lambda)^{k-1}$ is monotonic — always increasing or always decreasing. But disease incidence often peaks at specific ages (e.g., childhood infections peak early, cardiovascular disease peaks late, some cancers peak mid-life).
-
-The Weibull **density function** (unnormalized) is non-monotonic for $k > 1$:
-
-$$\mu_v(t) = A_v \cdot \frac{k_v}{\lambda_v}\left(\frac{t}{\lambda_v}\right)^{k_v-1} \exp\left(-\left(\frac{t}{\lambda_v}\right)^{k_v}\right)$$
-
-It peaks at $t = \lambda_v \cdot ((k_v - 1)/k_v)^{1/k_v}$. By varying $k_v$ and $\lambda_v$ per event type, the model can place the peak of baseline risk at different ages:
-- **Small $\lambda$, moderate $k$** → peaks early in life
-- **Large $\lambda$, large $k$** → peaks late in life
-- **Medium $\lambda$, large $k$** → peaks mid-life
-
-The additional amplitude parameter $A_v$ controls the overall scale of spontaneous incidence.
-
-#### Why Global Weibull Parameters
-
-The Weibull parameters $(k_v, \lambda_v, A_v)$ are **global `nn.Parameter`s** (per event type, shared across all patients/positions), not transformer outputs. This is intentional:
-
-1. **Baseline risk is a population property**: The age profile of type 2 diabetes incidence is roughly the same across the population — it's the spontaneous rate given only age. Patient-specific modulation belongs in the excitation kernel.
-2. **Identifiability**: If both baseline and excitation were context-dependent, the model could collapse one into the other. Keeping the baseline global forces the model to learn a clean decomposition.
-3. **Regularization**: With ~1270 event types × 3 params = ~3810 global parameters, the Weibull baseline is a lightweight addition. Making them context-dependent would add 3 × (n_embd × vocab_size) ≈ 450K parameters.
-
-#### NLL Derivation
-
-**Part 1 — event log-likelihood** (log of combined intensity at target time):
-$$\log[\mu_k(t_{i+1}) + \alpha_k \cdot e^{-\beta_k \Delta t}]$$
-
-Unlike pure Hawkes where this decomposes into $\log \alpha_k - \beta_k \Delta t$, the sum inside the log means we can't simplify further. This is computed directly with an epsilon for numerical safety.
-
-**Part 2 — Weibull compensator** (closed-form integral of the Weibull density):
-$$\int_{t_i}^{t_{i+1}} \mu_v(\tau) \, d\tau = A_v \left[e^{-(t_i/\lambda_v)^{k_v}} - e^{-(t_{i+1}/\lambda_v)^{k_v}}\right]$$
-
-This is simply $A_v \cdot [S(t_i) - S(t_{i+1})]$ where $S$ is the Weibull survival function. The closed form is a key advantage of choosing Weibull — no numerical quadrature needed.
-
-**Part 3 — excitation compensator** (identical to pure Hawkes):
-$$\sum_v \frac{\alpha_v}{\beta_v}\left(1 - e^{-\beta_v \Delta t}\right)$$
-
-**Full NLL:**
-$$-\ell = -\log[\mu_k(t_{i+1}) + \alpha_k e^{-\beta_k \Delta t}] + \sum_v \left[A_v \left(e^{-(t_i/\lambda_v)^{k_v}} - e^{-(t_{i+1}/\lambda_v)^{k_v}}\right) + \frac{\alpha_v}{\beta_v}(1 - e^{-\beta_v \Delta t})\right]$$
-
-#### Numerical Stability
-
-- $(t/\lambda)^k$ is computed in log-space: $\exp(k \cdot \log(t/\lambda))$ to avoid overflow for large $k$
-- The Weibull baseline is computed in log-space then exponentiated, to handle the product of many terms
-- All times are clamped to $\epsilon$ before taking logs (ages near zero)
-- Weibull parameters use `F.softplus() + 0.1` to keep strictly positive and bounded away from zero
-
-#### Usage
+#### NeuralTPPHead
 
 ```python
-config = Delphi2MConfig(
-    loss="hawkes_weibull",
-    time_unit=365.25,  # normalize to years (recommended for Weibull stability)
-)
-model = Delphi2M(config)
+class NeuralTPPHead(nn.Module):
+    def __init__(
+        self,
+        n_embd,
+        vocab_size,
+        time_encoder,
+        n_integrate_grid=20,
+        self_terminate=True,
+        self_terminate_except=None,
+        time_unit=1.0,
+    ):
+        self.time_encoder = time_encoder   # shared AgeEncoding module
+        self.net = nn.Sequential(
+            nn.Linear(n_embd, n_embd),
+            nn.GELU(),
+            nn.Linear(n_embd, vocab_size),
+        )
+        self.n_integrate_grid = n_integrate_grid
+        self.self_terminate = self_terminate
+        self.register_buffer("terminate_except", torch.tensor(...))
+        self.time_unit = time_unit
+
+    def forward(self, h, delta_t):
+        # h: (B, L, n_embd), delta_t: (B, L) or (B, L, G)
+        time_emb = time_encoder(delta_t)   # sinusoidal encoding of elapsed time
+        return self.net(h + time_emb)       # raw pre-softplus values
+
+    def nll(self, h, targets, age, targets_age, idx):
+        ...
 ```
 
-**Sampling not yet implemented**: `sample_next` raises `NotImplementedError` for this loss. When implementing, note that sampling from the sum of a Weibull baseline and exponential kernel requires either thinning (rejection sampling) or numerical inversion of the compensator — there is no simple inverse CDF.
+The head accepts `delta_t` as either `(B, L)` (single time per position, used for Part 1) or `(B, L, G)` (a grid of times per position, used for Part 2). When given a grid, it broadcasts `h` across grid points and returns `(B, L, G, V)`.
 
-### `weibull`
+`nll()` is implemented as a method on `NeuralTPPHead`, not a standalone function.
 
-The kernel is the **pure Weibull PDF** parameterised by shape $k$ and scale $\lambda$:
+#### NLL decomposition
 
-$$\lambda_v(\Delta t) = \frac{k_v}{\lambda_v}\left(\frac{\Delta t}{\lambda_v}\right)^{k_v-1} \exp\left(-\left(\frac{\Delta t}{\lambda_v}\right)^{k_v}\right)$$
+**Part 1 — log-intensity of the observed event**:
 
-Where $\Delta t = t - t_i$ is the time since the previous event (not absolute age).
+A single forward pass at Δt = t_{i+1} − t_i gives λ_v for all event types at the observation time. Gather the observed type k:
 
-Unlike `hawkes_weibull` where the Weibull operates on absolute age, here it operates on **inter-event time**. This means:
-- **$k < 1$**: intensity peaks immediately after the event and decays (heavy-tailed, slower than exponential)
-- **$k = 1$**: recovers the exponential kernel (equivalent to Hawkes with $\beta = 1/\lambda$)
-- **$k > 1$**: intensity peaks *after a delay* then decays — captures mid/long-range triggering that exponential kernels cannot express
+$$\text{Part 1} = \log \lambda_k(t_{i+1})$$
 
-Since the Weibull PDF integrates to 1 over $[0, \infty)$, the compensator has a simple interpretation: the expected number of triggered events of each type is at most 1.
+**Part 2 — compensator (survival term)**:
 
-#### Head
+Because the intensity is an arbitrary neural network, the integral ∫ Σ_v λ_v(τ) dτ has no closed form. It is approximated via **trapezoidal numerical integration**:
 
-Both parameters are **context-dependent** (linear projections of the transformer hidden state):
+1. Build a unit grid `[0, 1]` of G points (via `torch.linspace`)
+2. Scale by each position's Δt: `grid_times = t_unit * delta_t` → `(B, L, G)`
+3. Evaluate intensity at all grid points: `head(h, grid_times)` → `(B, L, G, V)`
+4. Sum over event types and integrate: `torch.trapezoid(total_intensity, grid_times) / time_unit`
 
-```python
-class WeibullHead(nn.Module):
-    def __init__(self, n_embd: int, vocab_size: int):
-        super().__init__()
-        self.proj_k = nn.Linear(n_embd, vocab_size)
-        self.proj_lam = nn.Linear(n_embd, vocab_size)
+The grid spacing is **proportional to the inter-event interval**: the unit grid is shared across all positions, and scaling by each position's Δt means short intervals get fine physical spacing and long intervals get coarser spacing. The number of grid points G is set directly by `n_integrate_grid` (default 20) and is fixed across batches. The compensator is divided by `time_unit` to match the normalization used by other losses, while the time encoder still receives raw days.
 
-    def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
-        k = F.softplus(self.proj_k(x)) + 0.1      # (B, L, V)
-        lam = F.softplus(self.proj_lam(x)) + 0.1  # (B, L, V)
-        return {"weibull_k": k, "weibull_lam": lam}
-```
+#### Self-termination in the compensator
 
-#### Compensator (Closed-Form)
+When `self_terminate=True`, the compensator zeros out intensity for event types already seen in the history (preventing the model from being penalised for not predicting impossible re-occurrences). The `(B, L, G, V)` intensity grid is reshaped to `(B, L*G, V)`, `idx` is tiled across grid points, and `self_terminate()` is applied, then reshaped back.
 
-$$\int_0^{\Delta t} \lambda_v(\tau) \, d\tau = 1 - \exp\left(-\left(\frac{\Delta t}{\lambda_v}\right)^{k_v}\right)$$
+#### Comparison with Hawkes
 
-#### NLL Derivation
+| Aspect | Hawkes | Neural TPP |
+|--------|--------|------------|
+| Intensity shape | Exponential decay only | Arbitrary (learned) |
+| Compensator | Closed-form: (α/β)(1 − e^{−βΔt}) | Numerical integration (trapezoidal) |
+| Parameters per position | α, β (2 × V) + global μ | MLP weights (shared) |
+| Compute cost | O(V) per position | O(G × V) per position (G grid evaluations) |
+| Baseline intensity | Binned μ(age) parameter | Absorbed into the MLP |
 
-**Part 1 — event log-likelihood** (computed in log-space for stability):
-$$\log \lambda_k(\Delta t) = \log k_k - \log \lambda_k + (k_k - 1) \log(\Delta t / \lambda_k) - (\Delta t / \lambda_k)^{k_k}$$
-
-**Part 2 — compensator** (survival penalty):
-$$\sum_v \left[1 - \exp\left(-\left(\frac{\Delta t}{\lambda_v}\right)^{k_v}\right)\right]$$
-
-**Full NLL:**
-$$-\ell = -\log k_k + \log \lambda_k - (k_k - 1)\log(\Delta t/\lambda_k) + (\Delta t/\lambda_k)^{k_k} + \sum_v\left[1 - \exp\left(-(\Delta t/\lambda_v)^{k_v}\right)\right]$$
-
-#### Usage
-
-```python
-config = Delphi2MConfig(
-    loss="weibull",
-    time_unit=365.25,  # normalize to years
-)
-model = Delphi2M(config)
-```
-
-**Sampling not yet implemented**: `sample_next` raises `NotImplementedError`.
+**Sampling not implemented**: `sample_next` raises `NotImplementedError` for this loss.
 
 ---
 
@@ -582,7 +516,7 @@ class Delphi2MConfig:
 
 When `mask_ties=True`, `model.loss()` calls `untie(outputs, age, targets_age)` before computing the NLL. This means all events in a simultaneous cluster are evaluated against the model predictions *before* any of them were observed, keeping `delta_t > 0`.
 
-**Comparability caveat**: Models trained with different `mask_ties` settings are **not directly comparable**. `mask_ties=False` was used by mistake when training early `weibull`/`hawkes` models — those models saw Δt=0 positions during training, which for Weibull yields PDF(0)=0 → log(0)=−∞ and corrupts the NLL. It is not a meaningful design choice; the correct setting for all non-cluster losses is `mask_ties=True`.
+**Comparability caveat**: Models trained with different `mask_ties` settings are **not directly comparable**. The correct setting for all non-cluster losses is `mask_ties=True`.
 
 When computing likelihoods outside `model.loss()` (e.g. in eval scripts), mirror the training behaviour:
 ```python
@@ -608,54 +542,6 @@ def multi_hot(
         cooccur: (B, L) boolean mask, True for cluster-continuation positions
     """
     ...
-```
-
-### `find_nearest_pred`: Nearest-Previous-Timestep Lookup
-
-Used to align model outputs (defined at event positions) with arbitrary evaluation timesteps:
-
-```python
-def find_nearest_pred(
-    timesteps: torch.Tensor,              # (B, L) event timestamps in days
-    target_timesteps: float | torch.Tensor,  # scalar, (B,), or (B, T)
-) -> torch.Tensor:                         # (B, T) indices into seq dim
-    """
-    For each target timestep, returns the index of the latest event that
-    occurred strictly before it (i.e., the nearest previous event).
-
-    Supports scalar, 1-D (B,), and 2-D (B, T) target_timesteps via broadcasting.
-    Future/current positions (time_since <= 0) are masked to infinity before argmin.
-    """
-```
-
-**Usage**: pass the returned indices to `torch.gather` or `torch.take_along_dim` to select the model's predictions at the appropriate position for each evaluation time.
-
-### Weibull Utility Functions
-
-Low-level building blocks used by the `weibull` / `hawkes_weibull` losses and the `TPP` evaluation class:
-
-```python
-def weibull_cdf(lam, k, t):
-    """CDF of Weibull(lam, k) at time t: 1 - exp(-(t/lam)^k)"""
-
-def weibull_integral(lam, k, start, end):
-    """Definite integral of Weibull PDF from start to end (= CDF(end) - CDF(start))"""
-
-def weibull_pdf(lam, k, dt, sum=True):
-    """
-    Weibull PDF: (k/lam)·(dt/lam)^(k-1)·exp(-(dt/lam)^k)
-    If sum=True, sums over the last (vocab) dimension and returns (B, L).
-    If sum=False, returns per-event-type values (B, L, V).
-    """
-
-def weibull_mode(lam, k):
-    """
-    Mode of Weibull(lam, k): lam·((k-1)/k)^(1/k) for k > 1, else 0.
-    Returns shape matching lam/k.
-    """
-
-def weibull_max(lam, k):
-    """Peak PDF value: weibull_pdf evaluated at the mode. Used as lam_max for thinning."""
 ```
 
 ### `self_terminate_single` and `self_terminate`: No-Repeat Masking
@@ -734,55 +620,9 @@ def sample_competing_exponentials(
     return t_next[1][:, None], t_next[0][:, None]
 ```
 
-### `sample_tpp` and `thinning_sample`: Thinning-Based Sampling
-
-```python
-def sample_tpp(
-    outputs: dict[str, torch.Tensor],
-    kernel: str,  # e.g. "weibull"
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Samples next inter-event time and event type from a TPP via Lewis-Shedler thinning.
-
-    Currently supports kernel="weibull":
-      - Reads weibull_lam and weibull_k from outputs[:, -1, :]
-      - Computes lam_max = weibull_max(lam, k) (PDF at the mode, a valid upper bound)
-      - Calls thinning_sample to get dt
-      - Selects event type via torch.multinomial weighted by per-type PDF at dt
-
-    Returns: (next_idx, dt) each (B, 1)
-    """
-```
-
-```python
-def thinning_sample(
-    lam_max: torch.Tensor,   # (B,) upper bound on total intensity
-    lam_func,                # callable: (n_active,) -> (n_active,) total intensity
-    max_steps: int = 1000,
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    """
-    Lewis-Shedler thinning algorithm for non-homogeneous TPPs.
-
-    Proposes candidate inter-event times from Exp(lam_max) and accepts each
-    with probability lam_func(t) / lam_max. Uses the same active-batch management
-    as generate(): accepted sequences are removed from the active set, so lam_func
-    is called on a shrinking sub-batch at each iteration.
-
-    Raises RuntimeError if any sequence fails to accept within max_steps steps.
-
-    Returns:
-        dt:      (B,) sampled inter-event times
-        metrics: {"n_steps": (B,), "accept_rate": (B,)}
-    """
-```
-
-**Requirement for `lam_func`**: must accept a variable-length 1-D tensor of elapsed times and return total intensities of the same shape. It will be called with the currently active sub-batch only.
-
 ### Losses without samplers
 
-`hawkes` and `hawkes_weibull` do not have sampling implementations. `sample_next` raises `NotImplementedError` for these losses.
-
-`weibull` now has sampling implemented via `sample_tpp` / `thinning_sample` — `sample_next` calls `sample_tpp(outputs, kernel="weibull")` for this loss.
+`hawkes` and `neural_tpp` do not have sampling implementations. `sample_next` raises `NotImplementedError` for these losses.
 
 ---
 
@@ -842,7 +682,7 @@ def __init__(self, config: Delphi2MConfig):
     ...
 
     # If your loss is parametric (not intensity-based)
-    parametric_losses = {"hawkes", "hawkes_weibull", "weibull", "your_loss"}  # add to set
+    parametric_losses = {"hawkes", "your_loss"}  # add to set
 
     # If your loss needs auxiliary outputs
     if "your_loss" in config.loss:
@@ -963,80 +803,6 @@ def nll_your_loss(
 
 ---
 
-## TPP Evaluation Class (`delphi/model/tpp.py`)
-
-`TPP` is a thin evaluation wrapper that encapsulates intensity and survival computations for post-hoc analysis (e.g. AUC, calibration, likelihood decomposition). It is **not** used during training — its role is to provide a unified interface over the different loss kernels when computing pointwise or integrated quantities over arbitrary evaluation timesteps.
-
-```python
-class TPP:
-    def __init__(self, loss: str, time_unit: float):
-        self.loss = loss          # "default", "homo_poisson", or "weibull"
-        self.time_unit = time_unit
-```
-
-### Methods
-
-#### `intensity(outputs, eval_timesteps, timesteps)`
-
-Returns the instantaneous intensity for each event type at the requested evaluation times.
-
-```python
-def intensity(
-    self,
-    outputs: dict[str, torch.Tensor],   # forward pass outputs (logits / weibull params)
-    eval_timesteps: torch.Tensor,        # (B, L) times to evaluate intensity at (days)
-    timesteps: torch.Tensor,             # (B, L) event timestamps (days, = age in model)
-) -> torch.Tensor:                       # (B, L, V) intensity per event type
-```
-
-- `"default"` / `"homo_poisson"`: returns `exp(logits)` (constant between events)
-- `"weibull"`: returns `weibull_pdf(lam, k, dt=eval_timesteps - timesteps, sum=False)`
-
-Times are normalised by `self.time_unit` before computation.
-
-#### `survival_prob(outputs, timesteps, start_age, end_age)`
-
-Returns the survival probability (probability of no event of any type) over an interval:
-
-```python
-def survival_prob(
-    self,
-    outputs: dict[str, torch.Tensor],
-    timesteps: torch.Tensor,             # (B, L) last event time (days)
-    start_age: float | torch.Tensor,     # interval start (days)
-    end_age: float | torch.Tensor,       # interval end (days)
-) -> torch.Tensor:                       # (B, L, V) per-type survival probabilities
-```
-
-Returns `exp(-∫ λ_v(τ) dτ)` from `start_age` to `end_age`:
-- `"default"` / `"homo_poisson"`: `exp(-λ_v · (end - start))`
-- `"weibull"`: uses `weibull_integral(lam, k, start=start-timesteps, end=end-timesteps)`
-
-#### `ll_time(outputs, eval_timesteps, timesteps)`
-
-Joint time log-likelihood at `eval_timesteps`:
-
-```python
-ll_time = intensity * survival_prob(start_age=timesteps, end_age=eval_timesteps)
-```
-
-This is the time density $f(t) = \lambda(t) \cdot S(t_{\text{prev}}, t)$ — the probability that the *next* event fires at exactly `eval_timesteps`.
-
-#### `ll_mark_conditional(outputs, timesteps, eval_timesteps, marks)`
-
-Log conditional probability of the mark (event type) given the event time:
-
-```python
-log p(mark | time) = log(λ_mark(t) / Σ_v λ_v(t))
-```
-
-`marks` is an integer tensor of shape `(B, L, 1)` indexing into the vocab dimension.
-
-### Design Notes
-
-- All methods accept the full sequence tensors from a forward pass; callers are responsible for selecting the relevant positions (e.g. via `find_nearest_pred`).
-- `tpp.py` imports `find_nearest_pred`, `weibull_pdf`, and `weibull_integral` from `delphi/model/utils.py`. `find_nearest_pred` is available but currently commented out in the implementation — it would be used to automatically select the correct model output position for each evaluation timestep.
-
 ---
 
 ## File Locations
@@ -1045,3 +811,271 @@ log p(mark | time) = log(λ_mark(t) / Σ_v λ_v(t))
 - **Config**: `Delphi2MConfig` in same file
 - **Loss functions & utilities**: `delphi/model/utils.py`
 - **TPP evaluation class**: `delphi/model/tpp.py`
+
+---
+
+## DelphiM4
+
+### Overview
+
+**DelphiM4** (`model_type = "delphi-m4"`, implemented in `delphi/model/multimodal.py`) is the multimodal extension of Delphi2M. It fuses biomarker modalities (e.g. blood biomarkers) with disease event tokens early in the transformer forward pass. The transformer backbone, cross-entropy loss, and exponential NLL loss are identical to Delphi2M.
+
+Key differences from Delphi2M:
+- Additional input tensors: `biomarker`, `mod_age`, `mod_idx`
+- `DelphiEmbedding` replaces the standard embedding to project biomarker features
+- `fuse_embed()` merges biomarker and token embeddings into a single sorted sequence
+- Ablation modes allow isolating the contribution of biomarkers vs. disease tokens
+
+---
+
+### Additional Inputs (beyond Delphi2M)
+
+| Tensor | Shape | Description |
+|--------|-------|-------------|
+| `biomarker` | `dict[Modality, Tensor]` | Per-modality raw biomarker features; each value is `(N_mod, input_size)` where `N_mod` is the total number of measurements of that modality across the batch |
+| `mod_age` | `(B, n_biomarkers)` | Timestamps (days) of each biomarker slot; padding sentinel = `-1e4` |
+| `mod_idx` | `(B, n_biomarkers)` | `Modality.value` integer for each biomarker slot; `0` = padding |
+
+`n_biomarkers` is the fixed number of biomarker slots per sample (set by the dataset). Sparse per-modality data is scattered into these dense slots via the `mod_idx` mask.
+
+---
+
+### DelphiM4Config Fields
+
+```python
+@dataclass
+class DelphiM4Config:
+    block_size: None | int = 256        # max sequence length (None = unlimited)
+    vocab_size: int = 1270
+    n_layer: int = 12
+    n_head: int = 12
+    n_embd: int = 120
+    dropout: float = 0.1
+    token_dropout: float = 0.0          # dropout on token embeddings (scaled out at inference)
+    t_min: float = 0.1                  # epsilon for time-to-next-event
+    bias: bool = True
+    mask_ties: bool = True              # handle simultaneous events (same as Delphi2M)
+    attn_mask: str = "time"             # "time" (timestamp-causal) or "triangular"
+    weight_tying: bool = True           # tie token embedding ↔ lm_head weights
+    ignore_tokens: list = [0, 2, ..., 12]  # tokens excluded from loss targets
+    biomarkers: dict[str, BiomarkerEmbedConfig] = {}  # name → embed config per modality
+    modality_emb: bool = True           # add a per-modality learned embedding to biomarker tokens
+    ablate_biomarker: None | str = None # ablation mode: None / "biomarker" / "token" / "both"
+    ce_beta: float = 1.0                # weight on cross-entropy loss
+    dt_beta: float = 1.0                # weight on exponential NLL loss
+    fuse: str = "early"                 # fusion strategy; only "early" is implemented
+```
+
+`biomarkers` maps lowercase modality names (matching `Modality` enum keys) to `BiomarkerEmbedConfig` dicts:
+
+```python
+config.biomarkers = {
+    "blood": {"input_size": 64, "projector": "mlp", "n_layers": 2, "n_hidden": 128},
+}
+```
+
+---
+
+### BiomarkerEmbedConfig / BiomarkerEmbedding
+
+**`BiomarkerEmbedConfig`** is a `TypedDict`:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `input_size` | `int` | yes | Dimensionality of the raw biomarker feature vector |
+| `projector` | `str` | yes | `"linear"` or `"mlp"` |
+| `n_layers` | `int \| None` | no | Number of layers (required for `"mlp"`) |
+| `n_hidden` | `int \| None` | no | Hidden dimension (required for `"mlp"`) |
+| `bias` | `bool` | no | Whether to include bias terms (default: `False`) |
+
+**`BiomarkerEmbedding`** projects raw biomarker features `(N_mod, input_size)` → `(N_mod, n_embd)`:
+
+- `"linear"`: single `nn.Linear(input_size, n_embd)`
+- `"mlp"`: stack of `nn.Linear` + `nn.ReLU`, final layer projects to `n_embd`
+
+---
+
+### DelphiEmbedding
+
+`DelphiEmbedding` computes embeddings for both disease tokens and biomarkers.
+
+```python
+def forward(idx, age, mod_idx, mod_age, biomarker_x) -> (emb, biomarker_emb, raw):
+```
+
+**Disease token path** (same as Delphi2M):
+1. `idx_emb = token_embedding(idx)` — lookup `(B, L, n_embd)`
+2. `idx_emb = token_drop(idx_emb) * (1 - token_dropout)` — dropout with scale compensation
+3. `age_emb = age_encoding(age.unsqueeze(-1))` — sinusoidal age encoding `(B, L, n_embd)`
+4. `emb = idx_emb + age_emb`
+
+**Biomarker path**:
+1. `mod_age_emb = age_encoding(mod_age.unsqueeze(-1))` — age encoding for all biomarker slots `(B, n_biomarkers, n_embd)`
+2. For each modality in `biomarker_x`:
+   - `biomarker_embed[modality](biomarker_x[modality])` projects `(N_mod, input_size)` → `(N_mod, n_embd)`
+   - Add age encoding at measurement timestamps: `biomarker_emb[modality] += mod_age_emb[mod_mask]`
+   - If `modality_emb=True`: add a learned per-modality scalar embedding `mod_embedding(modality.value)`
+
+**Returns**: `(emb, biomarker_emb, raw)`
+- `emb`: `(B, L, n_embd)` — disease token embeddings
+- `biomarker_emb`: `dict[Modality, Tensor]` — `(N_mod, n_embd)` per modality (sparse)
+- `raw`: dict `{"idx": idx_emb, "age": age_emb, "mod_age": mod_age_emb, "biomarker": biomarker_emb}` — for analysis/debugging only; assigned to `_` in model forward
+
+---
+
+### fuse_embed()
+
+```python
+def fuse_embed(mod_idx, mod_age, mod_emb, emb, age) -> (fused_emb, fused_age, fused_mod_idx):
+```
+
+**Purpose**: Merge sparse per-modality biomarker embeddings and disease token embeddings into one time-sorted sequence.
+
+**Steps**:
+1. Scatter sparse `mod_emb` dict → dense `(B, n_biomarkers, n_embd)` tensor (`mod_emb_dense`) using `mod_idx` masks
+2. Concatenate along the sequence dimension (biomarkers first, then disease tokens):
+   - `fused_emb_unsorted = cat([mod_emb_dense, emb], dim=1)` → `(B, n_biomarkers + L, n_embd)`
+   - `fused_age_unsorted = cat([mod_age, age], dim=1)` → `(B, n_biomarkers + L)`
+   - `fused_idx_unsorted = cat([mod_idx, ones_like(age)], dim=1)` → disease tokens get `fused_mod_idx = 1`
+3. Sort by timestamp: `sort_indices = argsort(fused_age_unsorted, stable=True, dim=1)`
+   - `stable=True` ensures biomarker slots (placed first in the unsorted tensor) precede disease tokens with equal timestamps
+4. Apply sort to all three tensors
+
+**Returns**: `(fused_emb, fused_age, fused_mod_idx)` — three parallel views of the merged `(B, n_biomarkers+L, ...)` sequence passed to the transformer.
+
+---
+
+### ablate_biomarker
+
+Ablation modes control which information context is available during the forward pass, enabling ablation studies. Loss is always computed on positions where `age > min_mod_age` (disease tokens after the first biomarker measurement), providing a consistent target set across all modes.
+
+`min_mod_age` is the earliest non-padding biomarker timestamp per sample (`mod_age` with padding `-1e4` replaced by `+inf`, then `min(dim=1)`).
+
+**Token zeroing** (applied before `fuse_embed`):
+
+| Mode | Token zeroing |
+|------|--------------|
+| `None` | None |
+| `"biomarker"` | `idx *= 0` — all disease token indices set to zero (padding) |
+| `"token"` or `"both"` | `idx[age > min_mod_age] = 0` — disease tokens after first biomarker zeroed |
+
+**Pad mask** (applied after `fuse_embed`, controls attention column availability):
+
+The base pad mask is `fused_age != -1e4` (excludes padding slots). Ablation narrows it further:
+
+| Mode | Additional pad mask constraint |
+|------|-------------------------------|
+| `None` | None (all non-padding positions visible) |
+| `"biomarker"` | `pad *= (fused_mod_idx != 1)` — exclude disease token columns |
+| `"token"` | `pad *= (fused_age <= min_mod_age) AND (fused_mod_idx == 1)` — only disease tokens before first biomarker |
+| `"both"` | `pad *= (fused_age <= min_mod_age)` — biomarkers at first visit + disease tokens before first biomarker |
+
+**Attention masking note**: `causal_attention_mask` applies `pad_mask` to **columns only** — a position with `pad=False` cannot be attended to by others, but it CAN still attend to valid positions (plus itself via forced diagonal). This is why positions after the first biomarker can still produce meaningful logits for loss computation even when they are excluded from the pad mask.
+
+**Summary table**:
+
+| Mode | Context available to model | Zeroed/masked |
+|------|---------------------------|---------------|
+| `None` | All tokens + all biomarkers | Nothing |
+| `"biomarker"` | Only biomarkers | `idx *= 0`; disease token columns excluded from pad |
+| `"token"` | Only disease tokens before first biomarker | Post-biomarker disease tokens zeroed; biomarker + post-biomarker disease columns excluded |
+| `"both"` | Biomarkers at first visit + disease tokens before first biomarker | Post-biomarker disease tokens zeroed; anything after `min_mod_age` excluded from pad |
+
+**UKB context**: designed primarily for blood biomarkers collected at a single recruitment visit, so `min_mod_age ≈ visit_age` and all biomarkers share approximately the same timestamp.
+
+---
+
+### Forward Pass Summary
+
+```
+idx, age, biomarker, mod_age, mod_idx
+      │
+      ▼ (ablate_biomarker: optionally zero idx)
+      │
+      ▼ DelphiEmbedding.forward(idx, age, mod_idx, mod_age, biomarker)
+      │   → emb (B, L, H), biomarker_emb dict, raw (discarded)
+      │
+      ▼ fuse_embed(mod_idx, mod_age, biomarker_emb, emb, age)
+      │   → fused_emb (B, n_bio+L, H), fused_age, fused_mod_idx
+      │
+      ▼ pad = fused_age != -1e4  [+ ablation narrowing]
+      │
+      ▼ causal_attention_mask(pad=pad, timestep=fused_age)
+      │   → attn_mask (B, n_bio+L, n_bio+L)
+      │
+      ▼ Dropout → Transformer blocks → LayerNorm
+      │   → x (B, n_bio+L, H)
+      │
+      ▼ lm_head(x)
+      │   → logits (B, n_bio+L, vocab_size)
+      │
+      ▼ fuse_targets_mask(targets_age, mod_age)  [if targets provided]
+      │   → is_target bool mask; extract logits[is_target] → (B, L, vocab_size)
+      │
+      ▼ loss(logits, targets, age, targets_age)
+          is_valid_target = targets != 0 AND targets not in ignore_tokens
+          [+ ablation: is_valid_target *= age > min_mod_age]
+          loss_ce = mean(cross_entropy[is_valid_target]) * ce_beta
+          loss_dt = mean(exponential_nll[is_valid_target]) * dt_beta
+```
+
+**Returns**: `({"logits": logits, "attn_mask": attn_mask}, loss_dict, att)`
+
+---
+
+### fuse_targets_mask()
+
+```python
+def fuse_targets_mask(targets_age: Tensor, mod_age: Tensor) -> Tensor:
+```
+
+**Purpose**: Identify the optimal **readout positions** in the fused `(B, n_biomarkers+L)` sequence for each target prediction — i.e., the positions that have integrated the maximum available context (biomarkers + disease tokens) up to each prediction time.
+
+**Method**: Concatenates `[zeros(mod_age), ones(targets_age)]` and sorts by `argsort(stable=True)`. Returns a `(B, n_biomarkers+L)` binary tensor where `1` marks readout positions.
+
+**Why `targets_age`, not `age`**: `fuse_embed` sorts by `[mod_age, age]` to build the fused sequence, but `fuse_targets_mask` intentionally sorts by `[mod_age, targets_age]`. The readout position for predicting `targets[i]` (which occurs at `targets_age[i]`) should be the last fused position with `fused_age ≤ targets_age[i]` — this ensures the logits come from a position that has attended to all biomarkers and disease tokens available before the prediction time. A biomarker measured between `age[i]` and `targets_age[i]` *should* inform the prediction of `targets[i]`, and sorting by `targets_age` guarantees its logits are read from a position that attended to that biomarker.
+
+**Usage in forward**: `logits[is_target.bool()].view(*idx.shape, -1)` extracts the `(B, L, vocab_size)` logits at readout positions; `fused_age[is_target.bool()].view(*idx.shape)` extracts the corresponding timestamps for `delta_t` computation in the loss.
+
+---
+
+### File Locations (DelphiM4)
+
+- **Model + Config**: `delphi/model/multimodal.py`
+- **Modality enum**: `delphi/multimodal.py` (`Modality`, `module_name`)
+- **Shared transformer components**: `delphi/model/transformer.py` (`AgeEncoding`, `Block`, `LayerNorm`, `causal_attention_mask`, `exponential_nll`)
+- **Training script**: `apps/train-delphi-m4.py`
+
+---
+
+## Future Direction: ODE-TPP and Continuous-Time Multi-Task Prediction
+
+### Motivation
+
+The goal is a model that can decode the hidden state onto multiple output spaces at arbitrary times — e.g. predict both event intensities and biomarker values at any query time τ.
+
+### ODE-TPP Sketch
+
+Replace the `neural_tpp` time-additive hidden state with a Neural ODE:
+
+```
+z(t_i) = h_i                    (transformer hidden state as initial condition)
+dz/dτ  = f_θ(z, τ)              (learned continuous dynamics)
+λ_v(τ) = softplus(W_tpp · z(τ)) (TPP head)
+bio(τ)  = W_bio · z(τ)          (biomarker regression head)
+```
+
+**Compensator**: use an **augmented ODE** — extend the state with a scalar `c` that accumulates the survival integral:
+
+```
+d/dτ [z]  =  [f_θ(z, τ)           ]    initial: [h_i, 0]
+     [c]     [Σ_v softplus(W·z + b)]
+```
+
+Solving once from `t_i` to `t_{i+1}` yields both `z(t_{i+1})` (for log λ_k) and `c(t_{i+1})` (compensator directly) — no separate grid integration needed.
+
+### Why not do this now
+
+`neural_tpp` already supports multi-task decoding at arbitrary τ via `z(τ) = h + time_encode(τ − t_i)`. Additional projection heads can be attached to `z(τ)` for any output modality. The ODE would give richer inter-event dynamics but is significantly more expensive (multiple ODE solver evaluations per position, adjoint-method gradients, `torchdiffeq` dependency).
+
+**The binding constraint**: meaningful biomarker interpolation requires **repeated longitudinal measurements** as training signal. UKB provides biomarkers at a single recruitment visit — no ground-truth values exist at intermediate times, so the interpolation trajectory is unconstrained regardless of architecture. Return to ODE-TPP when a dataset with longitudinal biomarker series is available.
