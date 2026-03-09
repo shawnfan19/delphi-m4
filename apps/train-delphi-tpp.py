@@ -33,6 +33,7 @@ class TrainConfig(TrainBaseConfig):
 
         if self.additional_dx_token:
             self.model.vocab_size = 1271
+            self.model.self_terminate_except = [1, 1270]
 
 
 def experiment(cfg: TrainConfig):
