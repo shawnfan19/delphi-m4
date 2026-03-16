@@ -17,54 +17,59 @@ from delphi.plot import plot_diff_by_chapter
 
 os.chdir("/hps/nobackup/birney/users/sfan/Delphi")
 
-# +
-male_only_disease_lst = "config/disease_list/ukb/male_only.yaml"
-female_only_disease_lst = "config/disease_list/ukb/female_only.yaml"
-
-male_only_diseases = []
-if male_only_disease_lst is not None:
-    with open(male_only_disease_lst, "r") as f:
-        male_only_diseases = yaml.safe_load(f)
-female_only_diseases = []
-if female_only_disease_lst is not None:
-    with open(female_only_disease_lst, "r") as f:
-        female_only_diseases = yaml.safe_load(f)
-
-
-# -
-
 
 def agg_stats(
     auc_logbook: dict,
     disease_lst: list,
-    male_only_diseases: None | list,
-    female_only_diseases: None | list,
-    age_grp: None | str = None,
+    aggregate: str = "uniform",
 ):
-    if age_grp is None:
-        age_grp = "total"
     cnt_lst, auc_lst = list(), list()
     for disease in disease_lst:
-        f_auc = auc_logbook[disease]["female"][age_grp]["auc"]
-        f_cnt = auc_logbook[disease]["female"][age_grp]["dis_count"]
-        m_auc = auc_logbook[disease]["male"][age_grp]["auc"]
-        m_cnt = auc_logbook[disease]["male"][age_grp]["dis_count"]
-        if disease in male_only_diseases:
-            auc = m_auc
-            cnt = m_cnt
-        elif disease in female_only_diseases:
-            auc = f_auc
-            cnt = f_cnt
-        else:
-            if f_auc is None or m_auc is None:
-                auc = None
+        age_groups = [k for k in auc_logbook[disease]["female"] if k != "total"]
+
+        bin_aucs, bin_cnts = [], []
+        for ag in age_groups:
+            f_auc = auc_logbook[disease]["female"][ag]["auc"]
+            f_cnt = auc_logbook[disease]["female"][ag]["dis_count"] or 0
+            m_auc = auc_logbook[disease]["male"][ag]["auc"]
+            m_cnt = auc_logbook[disease]["male"][ag]["dis_count"] or 0
+
+            total = f_cnt + m_cnt
+            if total == 0:
+                bin_aucs.append(np.nan)
+            elif f_auc is not None and m_auc is not None:
+                bin_aucs.append((f_auc * f_cnt + m_auc * m_cnt) / total)
+            elif f_auc is not None:
+                bin_aucs.append(f_auc)
+            elif m_auc is not None:
+                bin_aucs.append(m_auc)
             else:
-                auc = (f_auc + m_auc) / 2.0
-            cnt = f_cnt + m_cnt
-        if auc is None:
-            auc = float("nan")
+                bin_aucs.append(np.nan)
+            bin_cnts.append(total)
+
+        bin_aucs = np.array(bin_aucs)
+        bin_cnts = np.array(bin_cnts)
+
+        valid = ~np.isnan(bin_aucs)
+        if not valid.any():
+            auc_lst.append(float("nan"))
+            cnt_lst.append(0)
+            continue
+
+        if aggregate == "uniform":
+            auc = np.nanmean(bin_aucs)
+        elif aggregate == "weighted":
+            weights = bin_cnts[valid].astype(float)
+            auc = (
+                np.average(bin_aucs[valid], weights=weights)
+                if weights.sum() > 0
+                else float("nan")
+            )
+        else:
+            raise ValueError(f"Unknown aggregate method: {aggregate!r}")
+
         auc_lst.append(auc)
-        cnt_lst.append(cnt)
+        cnt_lst.append(int(bin_cnts.sum()))
 
     return np.array(cnt_lst), np.array(auc_lst)
 
@@ -92,13 +97,11 @@ with open(disease_lst, "r") as f:
 
 with open(json_path, "r") as f:
     auc_logbook = json.load(f)
-n_dis, aucs = agg_stats(auc_logbook, diseases, male_only_diseases, female_only_diseases)
+n_dis, aucs = agg_stats(auc_logbook, diseases, "weighted")
 
 with open(bl_json_path, "r") as f:
     bl_auc_logbook = json.load(f)
-_, bl_aucs = agg_stats(
-    bl_auc_logbook, diseases, male_only_diseases, female_only_diseases
-)
+_, bl_aucs = agg_stats(bl_auc_logbook, diseases, "weighted")
 
 
 delta = aucs - bl_aucs
@@ -109,9 +112,8 @@ print(f"\ntop 10 diseases improved:")
 delta[np.isnan(delta)] = 0
 for i in np.argsort(np.array(delta))[-10:]:
     print(diseases[i])
+# -
 
-# +
-# plt.violinplot([delta])
 
 # +
 color_max = np.log(np.array(n_dis)).max()
@@ -169,16 +171,12 @@ json_paths = {
     "m4-lite": "fusion/m4-lite/auc-min_time_gap-0.01-ckpt-ckpt.json",
 }
 
-age_grp = "total"
-
 # +
 auc_dict = dict()
 for key, json_path in json_paths.items():
     with open(Path(DELPHI_CKPT_DIR) / json_path, "r") as f:
         auc_logbook = json.load(f)
-    n_dis, aucs = agg_stats(
-        auc_logbook, diseases, male_only_diseases, female_only_diseases, age_grp
-    )
+    n_dis, aucs = agg_stats(auc_logbook, diseases)
     auc_dict[key] = aucs
 
 
@@ -189,4 +187,3 @@ def remove_nan(auc_lst: list[np.ndarray]):
 plt.violinplot(remove_nan(list(auc_dict.values())), showmeans=True)
 plt.ylabel("mann-whitney aucs (sex-adjusted)")
 plt.xticks(np.arange(len(auc_dict)) + 1, list(json_paths.keys()))
-# -

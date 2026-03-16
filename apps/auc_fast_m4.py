@@ -2,7 +2,6 @@
 import argparse
 import json
 import math
-import os
 import pprint
 import sys
 from collections import defaultdict
@@ -12,7 +11,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from delphi.data.ukb import Biomarker, MultimodalUKBDataset
+from delphi.data.ukb import MultimodalUKBDataset
 from delphi.env import DELPHI_CKPT_DIR
 from delphi.eval import AgeStratRatesCollator as ControlRatesCollator
 from delphi.eval import (
@@ -22,7 +21,6 @@ from delphi.eval import (
     mann_whitney_auc,
 )
 from delphi.experiment import eval_iter, load_ckpt, move_batch_to_device
-from delphi.multimodal import Modality
 
 # -
 
@@ -127,12 +125,9 @@ dis_rates, dis_times = dis_rates.numpy(), dis_times.numpy()
 is_female = is_female.numpy()
 
 is_male = ~is_female
-either = np.logical_or(is_female, is_male)
 
 if args.after_biomarker is not None:
-    modality = Modality[args.after_biomarker.upper()]
-    bio_ds = Biomarker(path=os.path.join(ds.biomarker_dir, modality.name.lower()))
-    bio_first = bio_ds.first_occurrence_times(ds.participants)
+    bio_first = ds.first_occurrence_times(args.after_biomarker)
     # mask out participants without the biomarker
     no_bio = np.isnan(bio_first)
     ctl_rates[no_bio] = np.nan
@@ -160,7 +155,7 @@ for i in tqdm(range(len(age_groups))):
         n_dis = list()
         aucs = list()
 
-        for is_gender in [is_female, is_male, either]:
+        for is_gender in [is_female, is_male]:
 
             ctl = ctl_rates[:, i, dis_token].copy()
             dis = dis_rates[:, dis_token].copy()
@@ -177,23 +172,6 @@ for i in tqdm(range(len(age_groups))):
         logbook[dis_token][i] = {"auc": aucs, "ctl_count": n_ctl, "dis_count": n_dis}
 # -
 
-
-# compute_total
-total_dis = defaultdict(dict)
-total_ctl = defaultdict(dict)
-for dis_token in range(0, 1270):
-    for j, is_gender in enumerate([is_female, is_male, either]):
-        total_dis[dis_token][j] = (~np.isnan(dis_rates[is_gender, dis_token])).sum()
-        total_ctl[dis_token][j] = is_gender.sum() - total_dis[dis_token][j]
-# compute mean
-mean_auc = defaultdict(dict)
-for dis_token in range(0, 1270):
-    for j, is_gender in enumerate([is_female, is_male, either]):
-        auc = list()
-        for i in range(len(age_groups)):
-            auc.append(logbook[dis_token][i]["auc"][j])
-        mean_auc[dis_token][j] = np.nanmean(auc)
-
 # +
 reverse_tokenizer = {v: k for k, v in ds.tokenizer.items()}
 age_group_keys = [
@@ -204,18 +182,11 @@ fmt_logbook = dict()
 for token in logbook.keys():
     icd = reverse_tokenizer[token]
     fmt_logbook[icd] = defaultdict(dict)
-    for i in range(len(age_group_keys) + 1):
-        if i == len(age_group_keys):
-            aucs = mean_auc[token]
-            ctl_count = total_ctl[token]
-            dis_count = total_dis[token]
-            age_grp = "total"
-        else:
-            aucs = logbook[token][i]["auc"]
-            ctl_count = logbook[token][i]["ctl_count"]
-            dis_count = logbook[token][i]["dis_count"]
-            age_grp = age_group_keys[i]
-        for j, sex in enumerate(["female", "male", "either"]):
+    for i, age_grp in enumerate(age_group_keys):
+        aucs = logbook[token][i]["auc"]
+        ctl_count = logbook[token][i]["ctl_count"]
+        dis_count = logbook[token][i]["dis_count"]
+        for j, sex in enumerate(["female", "male"]):
             fmt_logbook[icd][sex][age_grp] = {
                 "auc": round(aucs[j], 4) if not np.isnan(aucs[j]) else None,
                 "ctl_count": int(ctl_count[j]),

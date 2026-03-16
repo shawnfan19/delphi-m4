@@ -34,8 +34,8 @@ from delphi.plot import plot_diff_by_chapter
 # ## Config — edit these paths
 
 # %%
-ckpt_a_json = Path(DELPHI_CKPT_DIR) / "delphi-m4/baseline/cindex-modalities_nmr.json"
-ckpt_b_json = Path(DELPHI_CKPT_DIR) / "delphi-m4/nmr/cindex-modalities_nmr.json"
+# ckpt_a_json = Path(DELPHI_CKPT_DIR) / "delphi-m4/baseline/cindex-modalities_nmr.json"
+# ckpt_b_json = Path(DELPHI_CKPT_DIR) / "delphi-m4/nmr/cindex-modalities_nmr.json"
 
 # ckpt_a_json = Path(DELPHI_CKPT_DIR) / "bug_age/baseline_seed43/cindex.json"
 # ckpt_b_json = Path(DELPHI_CKPT_DIR) / "bug_age/blood_seed43/cindex.json"
@@ -43,13 +43,10 @@ ckpt_b_json = Path(DELPHI_CKPT_DIR) / "delphi-m4/nmr/cindex-modalities_nmr.json"
 # ckpt_a_json = Path(DELPHI_CKPT_DIR) / "bug_age/baseline/cindex.json"
 # ckpt_b_json = Path(DELPHI_CKPT_DIR) / "bug_age/blood/cindex.json"
 
-ckpt_a_json = (
-    Path(DELPHI_CKPT_DIR)
-    / "delphi-m4/baseline/cindex-min_time_gap-0-max_gap-5-ckpt-ckpt.json"
-)
+ckpt_a_json = Path(DELPHI_CKPT_DIR) / "delphi-m4/baseline/cindex_blood.json"
 # ckpt_b_json = Path(DELPHI_CKPT_DIR) / "delphi-m4/blood/cindex-min_time_gap-0-max_gap-5-ckpt-ckpt.json"
 # ckpt_b_json = Path(DELPHI_CKPT_DIR) / "delphi-m4/urine/cindex.json"
-ckpt_b_json = Path(DELPHI_CKPT_DIR) / "delphi-m4/prs/cindex.json"
+ckpt_b_json = Path(DELPHI_CKPT_DIR) / "interpret/blood/cindex_blood.json"
 
 label_a = "delphi-m4 (full)"
 label_b = "delphi-m4 (blood)"
@@ -68,6 +65,28 @@ with open(ckpt_b_json) as f:
 
 # %%
 # Collect per-disease rows for all three sex groupings
+def _get_cindex(stats, sex_key):
+    """Return (c_index, n_events) for a disease entry, deriving 'either' as weighted avg."""
+    if sex_key != "either":
+        entry = stats.get(sex_key, {})
+        return entry.get("c_index"), entry.get("n_events", 0) or 0
+
+    m = stats.get("male", {})
+    f = stats.get("female", {})
+    ci_m, n_m = m.get("c_index"), m.get("n_events", 0) or 0
+    ci_f, n_f = f.get("c_index"), f.get("n_events", 0) or 0
+    total = n_m + n_f
+    if total == 0:
+        return None, 0
+    if ci_m is not None and ci_f is not None:
+        return (ci_m * n_m + ci_f * n_f) / total, total
+    if ci_m is not None:
+        return ci_m, total
+    if ci_f is not None:
+        return ci_f, total
+    return None, 0
+
+
 def build_df(data_a, data_b, sex_key, min_events):
     rows = []
     for key, stats_a in data_a.items():
@@ -75,10 +94,8 @@ def build_df(data_a, data_b, sex_key, min_events):
             continue
         stats_b = data_b[key]
 
-        ci_a = stats_a.get(sex_key, {}).get("c_index")
-        ci_b = stats_b.get(sex_key, {}).get("c_index")
-        n_a = stats_a.get(sex_key, {}).get("n_events", 0) or 0
-        n_b = stats_b.get(sex_key, {}).get("n_events", 0) or 0
+        ci_a, n_a = _get_cindex(stats_a, sex_key)
+        ci_b, n_b = _get_cindex(stats_b, sex_key)
 
         if ci_a is None or ci_b is None:
             continue
@@ -165,5 +182,10 @@ plot_diff_by_chapter(df_either, label_a, label_b, title="C-index difference by d
 plt.show()
 
 # %%
+import yaml
+
+with open("diseases.yaml", "w") as f:
+    yaml.dump(df_either[df_either["diff"] >= 0.02].key.tolist(), f)
+df_either[df_either["diff"] >= 0.02].key.tolist()
 
 # %%
