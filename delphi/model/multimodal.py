@@ -144,6 +144,7 @@ def fuse_embed(
     mod_emb: dict[Modality, torch.Tensor],
     emb: torch.Tensor,
     age: torch.Tensor,
+    idx: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     fuse modality embeddings and base embeddings, sorted by age.
@@ -151,7 +152,7 @@ def fuse_embed(
     construct the full unsorted tensors first (concatenating modality and base data),
     then apply the time-sort index to the whole block at once.
 
-    disease token positions get mod_idx=1 only when age != -1e4 (non-padding),
+    disease token positions get mod_idx=1 only when idx > 0 (non-padding),
     so that fused_mod_idx > 0 can be used as a padding mask.
     """
     _, _, n_embd = emb.shape
@@ -169,7 +170,7 @@ def fuse_embed(
         mod_emb_dense[mask] = m_tensor
 
     fused_emb_unsorted = torch.cat((mod_emb_dense, emb), dim=1)
-    disease_mod_idx = (age != -1e4).to(mod_idx.dtype)
+    disease_mod_idx = (idx > 0).to(mod_idx.dtype)
     fused_idx_unsorted = torch.cat((mod_idx, disease_mod_idx), dim=1)
     fused_age_unsorted = torch.cat((mod_age, age), dim=1)
 
@@ -218,11 +219,6 @@ class DelphiM4Config:
             default [0, 2-12] includes zero padding tokens and gender and lifestyle tokens in the UKB.
         biomarkers: mapping biomarker names to their embedding configs.
         modality_emb: whether to introduce modality-specific embeddings.
-        ablate_biomarker: settings for biomarker ablation experiments
-            None [default]: no ablation setting applied.
-            "biomarker": only attend to biomarker(s).
-            "token": only attend to tokens before the first biomarker.
-            "both": attend both biomarker(s) and the tokens before the first biomarker.
         ce_beta: weight coefficient for cross-entropy loss.
         dt_beta: weight coefficient for delta-time loss.
         fuse: strategy for fusing multimodal information (only "early" is currently supported).
@@ -245,7 +241,6 @@ class DelphiM4Config:
     )
     biomarkers: dict[str, BiomarkerEmbedConfig] = field(default_factory=dict)
     modality_emb: bool = True
-    ablate_biomarker: None | str = None  # biomarker, token, both
     ce_beta: float = 1.0
     dt_beta: float = 1.0
     fuse: str = "early"  # early, cross, concat, concat-raw
@@ -338,36 +333,13 @@ class DelphiM4(torch.nn.Module):
         targets_age: None | torch.Tensor = None,
     ):
 
-        if self.config.ablate_biomarker is not None:
-            if mod_age.numel() > 0:
-                _mod_age = mod_age.clone()
-                _mod_age[_mod_age == -1e4] = torch.inf
-                min_mod_age = _mod_age.min(dim=1, keepdim=True)[0]
-            else:
-                min_mod_age = torch.full(
-                    (mod_age.shape[0], 1), fill_value=torch.inf
-                ).to(age.device)
-            if self.config.ablate_biomarker == "biomarker":
-                idx *= 0
-            elif self.config.ablate_biomarker in {"token", "both"}:
-                idx[age > min_mod_age] = 0
-            else:
-                raise NotImplementedError
-
         x, mod_emb, _ = self.transformer.embed(
             idx=idx, age=age, mod_idx=mod_idx, mod_age=mod_age, biomarker_x=biomarker
         )
         x, fused_age, fused_mod_idx = fuse_embed(
-            emb=x, age=age, mod_idx=mod_idx, mod_age=mod_age, mod_emb=mod_emb
+            emb=x, age=age, mod_idx=mod_idx, mod_age=mod_age, mod_emb=mod_emb, idx=idx
         )
         pad = fused_mod_idx > 0
-        if self.config.ablate_biomarker is not None:
-            if self.config.ablate_biomarker == "biomarker":
-                pad *= fused_mod_idx != 1
-            elif self.config.ablate_biomarker == "token":
-                pad *= torch.logical_and(fused_age <= min_mod_age, fused_mod_idx == 1)  # type: ignore
-            elif self.config.ablate_biomarker == "both":
-                pad *= fused_age <= min_mod_age  # type: ignore
 
         if self.config.attn_mask == "triangular":
             attn_mask = causal_attention_mask(pad=pad)
@@ -400,8 +372,6 @@ class DelphiM4(torch.nn.Module):
             is_valid_target = targets != 0
             for k in self.config.ignore_tokens:
                 is_valid_target *= targets != k
-            if self.config.ablate_biomarker is not None:
-                is_valid_target *= age > min_mod_age  # type: ignore
             loss_ce, loss_dt = self.loss(
                 logits=logits,
                 targets=targets,
