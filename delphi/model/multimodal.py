@@ -150,6 +150,9 @@ def fuse_embed(
 
     construct the full unsorted tensors first (concatenating modality and base data),
     then apply the time-sort index to the whole block at once.
+
+    disease token positions get mod_idx=1 only when age != -1e4 (non-padding),
+    so that fused_mod_idx > 0 can be used as a padding mask.
     """
     _, _, n_embd = emb.shape
     device = emb.device
@@ -166,9 +169,8 @@ def fuse_embed(
         mod_emb_dense[mask] = m_tensor
 
     fused_emb_unsorted = torch.cat((mod_emb_dense, emb), dim=1)
-    fused_idx_unsorted = torch.cat(
-        (mod_idx, torch.ones_like(age, dtype=mod_idx.dtype)), dim=1
-    )
+    disease_mod_idx = (age != -1e4).to(mod_idx.dtype)
+    fused_idx_unsorted = torch.cat((mod_idx, disease_mod_idx), dim=1)
     fused_age_unsorted = torch.cat((mod_age, age), dim=1)
 
     # stable=True ensures biomarkers (mod_emb) precede disease tokens (emb) when ages are equal
@@ -358,7 +360,7 @@ class DelphiM4(torch.nn.Module):
         x, fused_age, fused_mod_idx = fuse_embed(
             emb=x, age=age, mod_idx=mod_idx, mod_age=mod_age, mod_emb=mod_emb
         )
-        pad = fused_age != -1e4
+        pad = fused_mod_idx > 0
         if self.config.ablate_biomarker is not None:
             if self.config.ablate_biomarker == "biomarker":
                 pad *= fused_mod_idx != 1
