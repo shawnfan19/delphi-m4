@@ -1,7 +1,6 @@
 # +
 import argparse
 import gzip
-import math
 import pickle
 import pprint
 import sys
@@ -51,32 +50,49 @@ data_args["stats_subject_list"] = ckpt_dict["data_args"]["subject_list"]
 data_args["deterministic"] = True
 data_args["must_have_biomarkers"] = data_args["biomarkers"]
 data_args["biomarker_dropout"] = False
+data_args["first_time_only"] = True
 pprint.pp(data_args)
 
 ds = MultimodalUKBDataset(**data_args)
 
+biomarker_features = {}
+for mod, mod_ds in ds.mod_ds.items():
+    biomarker_features[mod] = mod_ds.features
 tokenizer = ckpt_dict["tokenizer"]
-detokenizer = {v: k for k, v in tokenizer.items()}
-
 model_targets = model.targets.to(device)
 model_targets = model_targets[model_targets != 1]
-target_names = [detokenizer[int(tid)] for tid in model_targets]
 target_idx = model_targets.cpu().tolist()
-
-feature_names = ds.mod_ds[modality].features  # list[str], length n_features
 print(
-    f"modality: {modality.name}, n_features: {len(feature_names)}, n_targets: {len(model_targets)}"
+    f"modality: {modality.name}, n_features: {len(biomarker_features[modality])}, n_targets: {len(model_targets)}"
 )
 
 
+def remove_after_biomarker(x, t, bio_x_dict, bio_t, bio_m, biomarker):
+    b_t = bio_t[bio_m == Modality(biomarker).value].max()
+
+    # filter disease events
+    x_mask = t.ravel() <= b_t
+    x = x[:, x_mask].clone()
+    t = t[:, x_mask].clone()
+
+    # filter biomarker measurements from other modalities
+    bio_mask = bio_t.ravel() <= b_t
+    bio_x_dict = {
+        mod: v[bio_mask[bio_m.ravel() == mod.value]].clone()
+        for mod, v in bio_x_dict.items()
+    }
+    bio_t = bio_t[:, bio_mask].clone()
+    bio_m = bio_m[:, bio_mask].clone()
+
+    return x, t, bio_x_dict, bio_t, bio_m
+
+
 # -
-
-
 def _sal_forward(
-    bio_x, *, model, x0, t0, bio_x_rest, bio_T, bio_M, x1, t1, modality, target_idx
+    bio_x, *, model, x0, t0, bio_x_rest, bio_T, bio_M, modality, target_idx
 ):
     bio_x_dict = {**bio_x_rest, modality: bio_x}
-    out, _, _ = model(x0, t0, bio_x_dict, bio_T, bio_M, x1, t1)
+    out, _, _ = model(x0, t0, bio_x_dict, bio_T, bio_M)
     return out["logits"][:, -1, target_idx]  # (B, n_targets)
 
 
@@ -86,14 +102,20 @@ n = len(ds) if args.subsample is None else args.subsample
 
 for batch_idx in tqdm(
     eval_iter(total_size=n, batch_size=1),
-    total=math.ceil(n / 1),
+    total=n,
 ):
     batch = ds.get_batch(batch_idx)
     batch = move_batch_to_device(batch, device)
-    x0, t0, bio_X_dict, bio_T, bio_M, x1, t1 = batch
-    pids = ds.participants[batch_idx]
+    x0, t0, bio_X_dict, bio_t, bio_m, x1, t1 = batch
 
-    n_meas = (bio_M[0] == modality.value).sum().item()
+    x0, t0, bio_X_dict, bio_t, bio_m = remove_after_biomarker(
+        x0, t0, bio_X_dict, bio_t, bio_m, modality
+    )
+
+    out, _, _ = model(x0, t0, bio_X_dict, bio_t, bio_m)
+    logits = out["logits"][:, -1, target_idx].detach().cpu().numpy()
+    pid = ds.participants[batch_idx][0]
+
     bio_x = bio_X_dict[modality].float().detach()  # (n_meas, n_features)
 
     forward_func = partial(
@@ -102,17 +124,11 @@ for batch_idx in tqdm(
         x0=x0,
         t0=t0,
         bio_x_rest={m: v.detach() for m, v in bio_X_dict.items() if m != modality},
-        bio_T=bio_T,
-        bio_M=bio_M,
-        x1=x1,
-        t1=t1,
+        bio_T=bio_t,
+        bio_M=bio_m,
         modality=modality,
         target_idx=target_idx,
     )
-
-    with torch.no_grad():
-        out, _, _ = model(x0, t0, bio_X_dict, bio_T, bio_M, x1, t1)
-        timestamp = out["age"][:, -1]  # (B,) — age at last target position
 
     with torch.enable_grad():
         jac = torch.func.jacfwd(forward_func)(
@@ -120,27 +136,36 @@ for batch_idx in tqdm(
         )  # (1, n_targets, n_meas, n_features)
     jac = jac[0]  # (n_targets, n_meas, n_features)
     jac = jac.reshape(jac.shape[0], -1)  # (n_targets, n_meas * n_features)
-    jac = jac.T  # (n_meas * n_features, n_targets)
-    if args.abs:
-        jac = jac.abs()
-    jac = jac.detach().cpu().numpy()
+    jac = jac.T.detach().cpu().numpy()  # (n_meas * n_features, n_targets)
 
-    for b, pid in enumerate(pids):
-        results[int(pid)] = {
-            "jacobian": jac.astype(np.float16),  # (n_meas * n_features, n_targets)
-            "timestamp": float(timestamp[b]),
-        }
+    if data_args["z_score_biomarkers"]:
+        jac = jac / np.expand_dims(ds.mod_ds[modality].std, axis=1)
+
+    raw_bio_x = dict()
+    for m, v in bio_X_dict.items():
+        raw_bio_x[m] = ds.mod_ds[m].untransform(v.cpu().numpy())
+
+    results[int(pid)] = {
+        "logits": logits.astype(np.float32),
+        "jacobian": jac.astype(np.float32),  # (n_meas * n_features, n_targets)
+        "x": x0.ravel().cpu().numpy(),
+        "t": t0.ravel().cpu().numpy(),
+        "bio_t": bio_t.ravel().cpu().numpy(),
+        "bio_m": bio_m.ravel().cpu().numpy(),
+        "bio_x": raw_bio_x,
+    }
 # -
 
 
 # +
-results["targets"] = target_names
+results["targets"] = model_targets.cpu().numpy()
 results["tokenizer"] = tokenizer
-results["modality"] = modality.name
+results["biomarker"] = modality.name
+results["biomarker_features"] = biomarker_features
 
 fname = args.fname or f"saliency-{args.modality.upper()}-ckpt-{ckpt.stem}.pkl.gz"
 out_path = ckpt.parent / fname
 with gzip.open(out_path, "wb") as f:
     pickle.dump(results, f)
 
-print(f"saved {len(results) - 3} participants -> {out_path}")
+print(f"saved to {out_path}")
