@@ -1,7 +1,5 @@
 # +
 import argparse
-import gzip
-import pickle
 import pprint
 import sys
 from functools import partial
@@ -97,7 +95,9 @@ def _sal_forward(
 
 
 # +
-results = {}
+pids_list = []
+jacobians_list = []
+logits_list = []
 n = len(ds) if args.subsample is None else args.subsample
 
 for batch_idx in tqdm(
@@ -138,34 +138,23 @@ for batch_idx in tqdm(
     jac = jac.reshape(jac.shape[0], -1)  # (n_targets, n_meas * n_features)
     jac = jac.T.detach().cpu().numpy()  # (n_meas * n_features, n_targets)
 
-    if data_args["z_score_biomarkers"]:
-        jac = jac / np.expand_dims(ds.mod_ds[modality].std, axis=1)
-
-    raw_bio_x = dict()
-    for m, v in bio_X_dict.items():
-        raw_bio_x[m] = ds.mod_ds[m].untransform(v.cpu().numpy())
-
-    results[int(pid)] = {
-        "logits": logits.astype(np.float32),
-        "jacobian": jac.astype(np.float32),  # (n_meas * n_features, n_targets)
-        "x": x0.ravel().cpu().numpy(),
-        "t": t0.ravel().cpu().numpy(),
-        "bio_t": bio_t.ravel().cpu().numpy(),
-        "bio_m": bio_m.ravel().cpu().numpy(),
-        "bio_x": raw_bio_x,
-    }
+    pids_list.append(int(pid))
+    jacobians_list.append(jac.astype(np.float32))
+    logits_list.append(logits.ravel().astype(np.float32))
 # -
 
 
 # +
-results["targets"] = model_targets.cpu().numpy()
-results["tokenizer"] = tokenizer
-results["biomarker"] = modality.name
-results["biomarker_features"] = biomarker_features
+pids = np.array(pids_list, dtype=np.int64)
+jacobians = np.stack(jacobians_list)  # (N, n_features, n_targets)
+logits = np.stack(logits_list)  # (N, n_targets)
 
-fname = args.fname or f"saliency-{args.modality.upper()}-ckpt-{ckpt.stem}.pkl.gz"
-out_path = ckpt.parent / fname
-with gzip.open(out_path, "wb") as f:
-    pickle.dump(results, f)
+dirname = args.fname or f"saliency-{args.modality.upper()}"
+out_dir = ckpt.parent / dirname
+out_dir.mkdir(exist_ok=True)
 
-print(f"saved to {out_path}")
+np.save(out_dir / "pids.npy", pids)
+np.save(out_dir / "jacobians.npy", jacobians)
+np.save(out_dir / "logits.npy", logits)
+
+print(f"saved to {out_dir}  (N={len(pids)}, jacobians={jacobians.shape})")
