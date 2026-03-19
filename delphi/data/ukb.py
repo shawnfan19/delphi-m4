@@ -1,6 +1,7 @@
 import functools
 import os
 from collections import defaultdict
+from functools import cached_property
 from pathlib import Path
 from typing import Iterable, Literal
 
@@ -194,7 +195,7 @@ class UKBDataset:
     def vocab_size(self):
         return len(self.tokenizer)
 
-    @property
+    @cached_property
     def detokenizer(self):
         return {v: k for k, v in self.tokenizer.items()}
 
@@ -316,22 +317,20 @@ class Biomarker:
         start_pos = self.start_pos[include]
         seq_len = self.seq_len[include]
         pids = self.pids[include]
+        seen = set()
         for pid, i, l in zip(pids, start_pos, seq_len):
+            if self.first_time_only:
+                if pid in seen:
+                    continue
+                seen.add(pid)
             pid_data = self.data[i : i + l]
             data.append(pid_data)
             subs.append(pid)
         data = np.stack(data, axis=0)
         return data, np.array(subs)
 
-    def to_transformed_array(self, subjects):
-        data, subs = self.to_array(subjects)
-        if self.z_score:
-            return (data - self.mean[np.newaxis, :]) / self.std[np.newaxis, :], subs
-        else:
-            return data, subs
-
     @property
-    def mask(self):
+    def background(self):
         if self.z_score:
             return np.zeros((self.n_features,))
         else:
@@ -344,8 +343,12 @@ class Biomarker:
     def transform(self, x):
         if self.z_score:
             return (x - self.mean) / self.std
-        else:
-            return x
+        return x
+
+    def untransform(self, z):
+        if self.z_score:
+            return z * self.std + self.mean
+        return z
 
     def first_occurrence_times(self, pids: np.ndarray) -> np.ndarray:
         """Return the timestamp of the first measurement for each pid.
@@ -356,21 +359,6 @@ class Biomarker:
         for i, pid in enumerate(pids):
             if pid in self.pid2idx:
                 result[i] = self.time_steps[self.pid2idx[pid]]
-        return result
-
-    def occurrence_times(self, pids: np.ndarray) -> dict[int, np.ndarray]:
-        """Return all measurement timestamps for each pid.
-
-        Returns a dict mapping pid to array of times. Pids with no
-        measurement are omitted.
-        """
-        result = {}
-        for pid in pids:
-            pid = int(pid)
-            if pid in self.pid2idx:
-                idx = self.pid2idx[pid]
-                cnt = self.pid2cnt[pid]
-                result[pid] = self.time_steps[idx : idx + cnt]
         return result
 
     def __getitem__(
@@ -442,6 +430,7 @@ class MultimodalUKBDataset:
         z_score_biomarkers: bool = True,
         first_time_only: bool = True,
         must_have_biomarkers: None | list = None,
+        biomarker_require: str = "all",
         stats_subject_list: None | str = None,
         subject_list: str = "participants/train_fold.bin",
         no_event_interval: None | float = 5 * 365.25,
@@ -466,6 +455,7 @@ class MultimodalUKBDataset:
             z_score_biomarkers: whether to z-score biomarker values
             first_time_only: if True only use the first occurrence of each biomarker
             must_have_biomarkers: a list of biomarkers that each participant must have to be included
+            biomarker_require: "all" to keep participants with all listed biomarkers, "any" to keep those with at least one
             stats_subject_list: sub-path within data_dir to an array of subjects for computing Biomarker stats
             subject_list: sub-path within data_dir to an array of subjects for loading
             no_event_interval: average time intervals for introducing no-event tokens
@@ -560,16 +550,30 @@ class MultimodalUKBDataset:
                     self.mod_ds[modality] = dataset
 
         if must_have_biomarkers is not None:
-            print(f"keeping participants with biomarkers: {must_have_biomarkers}")
+            print(
+                f"keeping participants with {biomarker_require} of: {must_have_biomarkers}"
+            )
             old_n = self.participants.size
-            for modality in must_have_biomarkers:
-                modality = Modality[modality.upper()]
-                mod_pids = pd.read_csv(
-                    os.path.join(self.biomarker_dir, modality.name.lower(), "p2i.csv")
-                )["pid"]
+            if biomarker_require == "all":
+                for mod in must_have_biomarkers:
+                    mod_pids = self.get_modality_participants(mod)
+                    self.participants = self.participants[
+                        np.isin(self.participants, mod_pids)
+                    ]
+            elif biomarker_require == "any":
+                union_pids = np.concatenate(
+                    [
+                        self.get_modality_participants(mod)
+                        for mod in must_have_biomarkers
+                    ]
+                )
                 self.participants = self.participants[
-                    np.isin(self.participants, mod_pids)
+                    np.isin(self.participants, union_pids)
                 ]
+            else:
+                raise ValueError(
+                    f"biomarker_require must be 'all' or 'any', got '{biomarker_require}'"
+                )
             print(f"{self.participants.size}/{old_n} remaining")
 
         if no_event_interval is not None:
@@ -611,6 +615,25 @@ class MultimodalUKBDataset:
         else:
             self.dropout_biomarkers = identity_transform
 
+    def get_modality_participants(self, modality) -> np.ndarray:
+        if isinstance(modality, str):
+            modality = Modality[modality.upper()]
+        return pd.read_csv(
+            os.path.join(self.biomarker_dir, modality.name.lower(), "p2i.csv")
+        )["pid"].to_numpy()
+
+    def first_occurrence_times(self, modality):
+        if isinstance(modality, str):
+            modality = Modality[modality.upper()]
+        p2i = pd.read_csv(
+            os.path.join(self.biomarker_dir, modality.name.lower(), "p2i.csv")
+        ).sort_values(by=["pid", "time"])
+        first = p2i.groupby("pid")["time"].first()
+        result = np.full(len(self.participants), np.nan, dtype=np.float32)
+        mask = np.isin(self.participants, first.index)
+        result[mask] = first.reindex(self.participants[mask]).to_numpy()
+        return result
+
     def __len__(self):
         return self.participants.size
 
@@ -628,11 +651,6 @@ class MultimodalUKBDataset:
         for exp_pack in self.expansion_packs:
             tokens.extend([v + exp_pack.offset for v in exp_pack.tokenizer.values()])
         return tokens
-
-    def update_subjects(self, new_subjects: np.ndarray, intersect: bool = True):
-        if intersect:
-            new_subjects = new_subjects[np.isin(new_subjects, self.participants)]
-        self.participants = new_subjects
 
     def __getitem__(self, idx: int):
 
@@ -724,7 +742,7 @@ class MultimodalUKBDataset:
         return X0, T0, bio_X_dict, bio_T, bio_M, X1, T1
 
 
-def load_core_data_package(data_dir: str, subject_list: str, memmap: bool = False):
+def load_core_data_package(data_dir: str, subject_list, memmap: bool = False):
 
     dataset_dir = Path(DELPHI_DATA_DIR) / data_dir
     tokenizer_path = dataset_dir / "tokenizer.yaml"
@@ -735,15 +753,21 @@ def load_core_data_package(data_dir: str, subject_list: str, memmap: bool = Fals
     start_pos = p2i["start_pos"].to_dict()
     seq_len = p2i["seq_len"].to_dict()
 
-    participants_path = dataset_dir / subject_list
+    if isinstance(subject_list, (str, os.PathLike)):
+        participants_path = dataset_dir / subject_list
+        if memmap:
+            participants = np.memmap(participants_path, dtype=np.uint32, mode="r")
+        else:
+            participants = np.fromfile(participants_path, dtype=np.uint32)
+    else:
+        participants = np.asarray(subject_list, dtype=np.uint32)
+
     tokens_path = dataset_dir / "data.bin"
     time_steps_path = dataset_dir / "time.bin"
     if memmap:
-        participants = np.memmap(participants_path, dtype=np.uint32, mode="r")
         tokens = np.memmap(tokens_path, dtype=np.uint32, mode="r")
         timesteps = np.memmap(time_steps_path, dtype=np.uint32, mode="r")
     else:
-        participants = np.fromfile(participants_path, dtype=np.uint32)
         tokens = np.fromfile(tokens_path, dtype=np.uint32)
         timesteps = np.fromfile(time_steps_path, dtype=np.uint32)
 
