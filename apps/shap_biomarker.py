@@ -4,7 +4,6 @@ import gzip
 import pickle
 import pprint
 import sys
-from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -14,13 +13,13 @@ from tqdm import trange
 from delphi.data.ukb import MultimodalUKBDataset
 from delphi.env import DELPHI_CKPT_DIR
 from delphi.experiment import load_ckpt
-from delphi.multimodal import Modality
-from delphi.shap import MultimodalShapMasker, multimodal_shap_forward
+from delphi.shap import MultimodalShapMasker, MultimodalShapModel
 
 # +
 parser = argparse.ArgumentParser()
 parser.add_argument("--ckpt", type=str, default="delphi-m4/delphi-m4/ckpt.pt")
-parser.add_argument("--immediate", action="store_true")
+parser.add_argument("--biomarker_only", action="store_true")
+parser.add_argument("--use_background", action="store_true")
 parser.add_argument("--fname", type=str)
 parser.add_argument("--subsample", type=int)
 parser.add_argument("--batch_size", type=int, default=512)
@@ -30,7 +29,6 @@ if "ipykernel" in sys.modules:
     print(f"running in jupyter notebook")
     args = parser.parse_args([])
     args.ckpt = "interpret/blood_0.1/ckpt.pt"
-    args.immediate = True
     args.subsample = 1000
 else:
     args = parser.parse_args()
@@ -53,7 +51,16 @@ data_args["must_have_biomarkers"] = data_args["biomarkers"]
 pprint.pp(data_args)
 
 ds = MultimodalUKBDataset(**data_args)
-
+biomarker_features = dict()
+for modality, mod_ds in ds.mod_ds.items():
+    biomarker_features[modality] = mod_ds.features
+print(biomarker_features)
+if args.use_background:
+    biomarker_background = dict()
+    for modality, mod_ds in ds.mod_ds.items():
+        biomarker_background[modality] = mod_ds.background
+else:
+    biomarker_background = None
 
 # +
 shap_pickle = dict()
@@ -69,28 +76,46 @@ for i in trange(total, leave=False):
     pid = ds.participants[i]
 
     out = (x, t, bio_dict, bio_t, bio_m)
-    meas_features = [Modality(int(mval)).name for mval in bio_m]
-    meas_timesteps = [float(t[-1]) - float(ts) for ts in bio_t]
 
-    shap_model = partial(multimodal_shap_forward, out=out, model=model)
-    explainer = shap.Explainer(
-        shap_model,
-        masker,
-        feature_names=np.array([meas_features]),
-        output_names=list(ckpt_dict["tokenizer"].keys()),
+    shap_model = MultimodalShapModel(
+        model=model,
+        biomarker_only=args.biomarker_only,
+        biomarker_features=biomarker_features,
+        biomarker_background=biomarker_background,
+        data=out,
     )
-    shap_values = explainer([bio_t], batch_size=args.batch_size)
+    explainer = shap.Explainer(
+        shap_model, masker, feature_names=np.arange(len(shap_model.dummy()))
+    )
+    shap_values = explainer([shap_model.dummy()], batch_size=args.batch_size)
 
-    shap_pickle[int(pid)] = {
-        "shap": shap_values.values[0].astype(np.float16),  # (n_measurements, vocab)
-        "features": meas_features,
-        "timesteps": np.array(meas_timesteps).astype(np.float16),
-    }
+    shap_vals = shap_values.values[0]  # (mask_size, vocab)
+    entry = {}
+
+    is_no_event = x == 1
+    entry["x"] = x[~is_no_event]
+    entry["t"] = t[~is_no_event]
+    if not args.biomarker_only:
+        token_shap = shap_vals[: shap_model.n_tokens].astype(np.float16)
+        entry["shap"] = token_shap[~is_no_event]
+
+    entry["bio_t"] = bio_t
+    entry["bio_m"] = bio_m
+    bio_shap = shap_vals[-shap_model.n_biomarker_features :]
+    entry["bio_shap"] = bio_shap.astype(np.float16)
+    entry["bio_x"] = bio_dict
+
+    shap_pickle[int(pid)] = entry
 # -
 
 
 shap_pickle["tokenizer"] = ds.tokenizer
-
-fname = args.fname if args.fname else "shap_biomarkers.pickle.gz"
-with gzip.open(ckpt.parent / fname, "wb") as f:
+shap_pickle["biomarker_features"] = biomarker_features
+if args.fname is None:
+    args.fname = "shap"
+    if args.biomarker_only:
+        args.fname += "_bio"
+    if args.use_background:
+        args.fname += "_bg"
+with gzip.open(ckpt.parent / f"{args.fname}.pickle.gz", "wb") as f:
     pickle.dump(shap_pickle, f)
