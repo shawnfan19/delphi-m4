@@ -9,7 +9,15 @@ from delphi import DAYS_PER_YEAR
 from delphi.env import DELPHI_DATA_DIR, IN_RAP
 
 if IN_RAP:
-    from utils_rap import VISITS, assessment_age, load_fid, load_fids, month_of_birth
+    from utils_rap import (
+        VISITS,
+        assessment_age,
+        dataset,
+        engine,
+        load_fid,
+        load_fids,
+        month_of_birth
+    )
 else:
     from utils_codon import (
         VISITS,
