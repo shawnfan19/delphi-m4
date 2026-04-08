@@ -1,42 +1,53 @@
+# +
+import math
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+from utils import build_expansion_pack, month_of_birth
 
-from data.gather_biomarker.utils import build_expansion_pack, multimodal_dir
+from delphi.env import DELPHI_DATA_DIR
 
-idir = Path(multimodal_dir) / "primary_care"
+# -
 
-bnf_lkp = pd.read_csv(idir / "bnf_lkp.csv")
-is_dummy = bnf_lkp["BNF_Subparagraph"].str.contains("DUMMY", na=False)
-bnf_lkp = bnf_lkp.loc[~is_dummy]
-bnf_codes = bnf_lkp["BNF_Presentation_Code"].str.replace(".", "").str[:6]
-is_duplicate = bnf_codes.duplicated(keep="first")
-
-unique_bnf_codes = bnf_codes.loc[~is_duplicate].values
-tokenizer_keys = bnf_lkp.loc[~is_duplicate, "BNF_Subparagraph"]
-tokenizer_values = np.arange(len(tokenizer_keys.unique()), dtype=np.int32) + 1
-tokenizer = pd.Series(tokenizer_values, index=tokenizer_keys.unique())
-
-saved_tokenizer = {}
-for key, value in tokenizer.to_dict().items():
-    key = key.lower().replace(" ", "_")
-    saved_tokenizer[key] = int(value)
-
-code2token = pd.Series(
-    tokenizer[tokenizer_keys].values,
-    index=unique_bnf_codes,
-)
+idir = Path(DELPHI_DATA_DIR) / "ukb/primary_care"
 
 read2bnf = pd.read_csv(idir / "read_v2_drugs_bnf.csv")
 read2bnf["read_code"] = read2bnf["read_code"].str.replace(" ", "")
 read2bnf = read2bnf.set_index("read_code")["bnf_code"]
 
+read2bnf.head()
+
+code_map = pd.read_csv(
+    idir / "atc_to_bnf.csv", converters={"ATC": str, "BNF": str, "BNF_NORM": str}
+)
+code_map = code_map.dropna(subset=["ATC", "BNF_NORM"])
+code_map = code_map[code_map["BNF_NORM"] != "<NA>"]
+
+code_map.head()
+
+bnf2atc = code_map.drop_duplicates("BNF_NORM", keep="first")
+bnf2atc = bnf2atc.set_index("BNF_NORM")
+bnf2atc = bnf2atc["ATC"]
+
+bnf2atc.head()
+
+drug_first_word = code_map["NAME"].str.split(" ", expand=True)[0]
+first_four_digits = code_map["BNF_NORM"].str[:4]
+code_map["FINE_BNF"] = drug_first_word + first_four_digits
+fine_bnf2atc = code_map.copy()
+fine_bnf2atc = fine_bnf2atc.drop_duplicates(subset="FINE_BNF")
+fine_bnf2atc = fine_bnf2atc.set_index("FINE_BNF")
+fine_bnf2atc = fine_bnf2atc["ATC"]
+
+fine_bnf2atc.head()
+
+chunksize = 500000
 df = pd.read_csv(
     idir / "gp_scripts.txt",
     sep="\t",
-    chunksize=int(1e6),
+    chunksize=int(chunksize),
     encoding="ISO-8859-1",
     converters={
         "eid": int,
@@ -50,17 +61,18 @@ df = pd.read_csv(
     },
 )
 
-mob_txt = Path(multimodal_dir) / "year_and_month_of_birth.txt"
-mob_df = pd.read_csv(mob_txt, sep="\t", index_col="eid")
-mob_df["year_month"] = pd.to_datetime(mob_df["year_month"], format="%Y%m")
+mob_df = month_of_birth()
 mob_participants = mob_df.index.astype(int).to_numpy()
 
+# +
 subjects = []
 count_list = []
 all_tokens = []
 all_timesteps = []
+
 hold_out_chunk = None
-for chunk in tqdm(df, leave=False):
+pbar = tqdm(enumerate(df), leave=False)
+for i, chunk in pbar:
     is_last_chunk = len(chunk) < int(1e6)
 
     # keep only those with month of birth data
@@ -86,6 +98,10 @@ for chunk in tqdm(df, leave=False):
     have_dates = (chunk["timesteps"].notna()) & (chunk["timesteps"] >= 0)
 
     bnf_codes = chunk["bnf_code"].copy()
+    # deal with formats like 04.06.03.00.00
+    bnf_codes = bnf_codes.str.replace(".", "")
+
+    # recover empty bnf codes from read_2 codes
     chunk["read_2"] = chunk["read_2"].str.replace("00", "")
     read_2 = chunk["read_2"]
     read_2_empty = read_2 == ""
@@ -93,29 +109,60 @@ for chunk in tqdm(df, leave=False):
     to_map = bnf_empty & ~read_2_empty
     if to_map.sum() > 0:
         mapped_bnf_codes = read2bnf.loc[chunk.loc[to_map, "read_2"]].values
-    bnf_codes.loc[to_map] = mapped_bnf_codes
-    bnf_codes = bnf_codes.str.replace(".", "")
-    bnf_codes = bnf_codes.str[:6]
-    have_tokens = bnf_codes.isin(code2token.index)
+        bnf_codes.loc[to_map] = mapped_bnf_codes
+
+    atc_codes = pd.Series(index=bnf_codes.index).astype(str)
+
+    # coarse match
+    bnf_codes = bnf_codes.str[:7]
+    is_coarse = bnf_codes.isin(bnf2atc.index)
+    atc_codes[is_coarse] = bnf2atc.loc[bnf_codes[is_coarse]].values
+
+    # fine match
+    bnf_codes = bnf_codes.str[:4]
+    drug_names = chunk["drug_name"].str.split(" ", expand=True)[0]
+    aug_bnf_codes = drug_names + bnf_codes
+    is_fine = aug_bnf_codes.isin(fine_bnf2atc.index)
+    is_fine = is_fine & ~is_coarse
+    atc_codes[is_fine] = fine_bnf2atc.loc[aug_bnf_codes[is_fine]].values
+
+    pbar.set_postfix(
+        chunk=i + 1,
+        total_count=len(bnf_codes),
+        coarse_match=is_coarse.sum(),
+        fine_match=is_fine.sum(),
+    )
+
+    chunk["atc"] = atc_codes.values
+    chunk["atc"] = chunk["atc"].str[:5]
+
+    have_tokens = chunk["atc"] != "nan"
+    assert chunk["atc"].isna().sum() == 0
 
     are_valid = have_dates & have_tokens
-    tokens = code2token.loc[bnf_codes[are_valid]].values.tolist()  # type: ignore
+    tokens = chunk.loc[are_valid, "atc"].values.tolist()
     timesteps = chunk.loc[are_valid, "timesteps"].values.tolist()
-
-    unique_subs = chunk.loc[are_valid, "eid"].unique().tolist()
-    subjects.extend(unique_subs)
-    seq_len = chunk.loc[are_valid, "eid"].value_counts()
-    seq_len = seq_len.loc[unique_subs].to_list()
-    count_list.extend(seq_len)
     all_tokens.extend(tokens)
     all_timesteps.extend(timesteps)
 
+    unique_subs = chunk.loc[are_valid, "eid"].unique().tolist()
+    subjects.extend(unique_subs)
+
+    seq_len = chunk.loc[are_valid, "eid"].value_counts()
+    seq_len = seq_len.loc[unique_subs].to_list()
+    count_list.extend(seq_len)
+# -
+raw_tokens = np.array(all_tokens)
+tokenizer = {str(atc_code): i + 1 for i, atc_code in enumerate(np.unique(raw_tokens))}
+token_np = np.array([tokenizer[str(token)] for token in raw_tokens])
+
 
 build_expansion_pack(
-    token_np=np.array(all_tokens),
+    token_np=token_np,
     time_np=np.array(all_timesteps),
     count_np=np.array(count_list),
     subjects=np.array(subjects),
-    tokenizer=saved_tokenizer,
+    tokenizer=tokenizer,
     expansion_pack="prescriptions",
+    odir=Path(DELPHI_DATA_DIR) / "ukb_real_data" / "expansion_packs",
 )
