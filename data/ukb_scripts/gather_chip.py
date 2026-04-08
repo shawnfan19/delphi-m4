@@ -95,12 +95,6 @@ def encode_variants(variant: pd.DataFrame, variant_freq: pd.DataFrame):
     variant_freq : pd.DataFrame, shape (N, K)
         Position-matched VAFs. None for empty slots.
     
-    Outputs
-    -------
-    gene.bin       : int32 array of gene IDs (contiguous, 1D)
-    frequency.bin  : float32 array of VAFs (contiguous, 1D)
-    p2i.csv        : participant_id, start, length
-    gene_map.csv   : gene name to integer ID mapping
     """
     
     N, K = variant.shape
@@ -142,33 +136,94 @@ variant
 gene_arr, freq_arr, gene_to_id = encode_variants(variant, variant_freq)
 
 # %%
-is_val = ~np.isnan(gene_arr)
-gene_arr = gene_arr[is_val]
-freq_arr = freq_arr[is_val]
-assert np.isnan(freq_arr).sum() == 0
-gene_arr.shape, freq_arr.shape
+freq_arr.shape, gene_arr.shape
 
 # %%
-seq_len = np.sum(is_val, axis=1)
-has_data = seq_len > 0
+np.unique(gene_arr[~np.isnan(gene_arr)]), freq_arr[~np.isnan(gene_arr)]
+
 
 # %%
+def create_vaf_matrix(gene_arr: np.ndarray, freq_arr: np.ndarray, gene_to_id: dict):
+    """
+    Create a participant-by-gene VAF matrix, summing frequencies 
+    for multiple mutations in the same gene.
+    
+    Parameters
+    ----------
+    gene_arr : np.ndarray, shape (N, K)
+        Encoded gene IDs. Empty slots are None or NaN.
+    freq_arr : np.ndarray, shape (N, K)
+        Position-matched VAFs. Empty slots are None or NaN.
+    gene_to_id : dict
+        Mapping of gene names to integer IDs (1-indexed).
+        
+    Returns
+    -------
+    vaf_arr : np.ndarray, shape (N, V)
+        Matrix where vaf_arr[i, j] is the sum of VAFs for participant i and gene j.
+    """
+    N, K = gene_arr.shape
+    V = len(gene_to_id)
+    
+    # Initialize the [N, V] matrix with zeros
+    vaf_arr = np.zeros((N, V), dtype=float)
+    
+    # Flatten arrays for vectorized processing
+    flat_genes = gene_arr.flatten()
+    flat_freqs = freq_arr.flatten()
+    
+    # Create a boolean mask of valid entries (ignoring None / NaN)
+    valid_mask = pd.notna(flat_genes) & pd.notna(flat_freqs)
+    
+    # Get the row indices (participant indices: 0 to N-1)
+    # np.repeat creates an array like [0,0... 1,1... N-1,N-1...]
+    row_indices = np.repeat(np.arange(N), K)[valid_mask]
+    
+    # Get the column indices (gene IDs). 
+    # Subtract 1 because gene_to_id is 1-indexed, but numpy arrays are 0-indexed.
+    col_indices = flat_genes[valid_mask].astype(int) - 1
+    
+    # Get the valid VAF values
+    valid_freqs = flat_freqs[valid_mask].astype(float)
+    
+    # In-place unbuffered addition. 
+    # If a participant has multiple mutations in the same gene (same row, same col), 
+    # np.add.at correctly sums their valid_freqs together.
+    np.add.at(vaf_arr, (row_indices, col_indices), valid_freqs)
+    
+    return vaf_arr
+
+
+# %%
+vaf_arr = create_vaf_matrix(gene_arr, freq_arr, gene_to_id)
+vaf_arr
+
+# %%
+vaf_arr.shape
+
+# %%
+has_data = ~np.isnan(variant_ct.values.ravel())
 has_time = ~np.isnan(init_assess_age)
-
-# %%
 is_valid = has_data & has_time
+is_valid.sum()
 
 # %%
-seq_len = seq_len[is_valid]
-starts = np.cumsum(seq_len) - seq_len[0]
+vaf_arr = vaf_arr[is_valid]
 pids = pids[is_valid]
 timesteps = init_assess_age[is_valid]
 
 # %%
-starts, seq_len, pids, timesteps
+seq_len = vaf_arr.shape[1]
+starts = seq_len * np.arange(vaf_arr.shape[0])
+seq_len = np.full_like(starts, seq_len)
+
+# %%
+starts, seq_len, pids, timesteps, vaf_arr.size
 
 # %%
 starts.shape, seq_len.shape, pids.shape, timesteps.shape
+
+# %%
 
 # %%
 p2i = pd.DataFrame({
@@ -177,14 +232,17 @@ p2i = pd.DataFrame({
         "seq_len": seq_len,
         "time": timesteps,
     })
+p2i["visit"] = "init_assess"
 
 # %%
-out_dir = Path(DELPHI_DATA_DIR) / "ukb_real_data" / "biomarkers" / "chip-lite"
-os.makedirs(out_dir, exist_ok=True)
+odir = Path(DELPHI_DATA_DIR) / "ukb_real_data" / "biomarkers" / "chip-lite"
+os.makedirs(odir, exist_ok=True)
+vaf_arr.ravel().astype(np.float32).tofile(odir / "data.bin")
+p2i.to_csv(odir / "p2i.csv", index=False)
+with open(odir / "features.yaml", "w") as f:
+    yaml.dump(list(gene_to_id.keys()), f)
 
 # %%
-gene_arr.tofile(out_dir / "gene.bin")
-freq_arr.tofile(out_dir / "frequency.bin")
-p2i.to_csv(out_dir / "p2i.csv", index=False)
+odir
 
 # %%
