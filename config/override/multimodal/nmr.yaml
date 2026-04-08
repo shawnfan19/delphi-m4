@@ -1,0 +1,6 @@
+biomarkers:
+  - nmr
+log:
+  run_name: nmr
+ckpt_dir:
+  delphi-m4

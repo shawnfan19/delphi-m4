@@ -1,0 +1,9 @@
+batch_size: 128
+expansion_packs:
+  - meds
+  - ops
+  - prescriptions
+  - summary_ops
+  - fsf
+log:
+  run_name: meds+prescriptions+surgeries+gynae

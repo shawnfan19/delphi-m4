@@ -1,0 +1,5 @@
+batch_size: 128
+expansion_packs:
+  - prescriptions
+log:
+  run_name: prescriptions
