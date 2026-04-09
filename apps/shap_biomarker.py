@@ -13,7 +13,7 @@ from tqdm import trange
 from delphi.data.ukb import MultimodalUKBDataset
 from delphi.env import DELPHI_CKPT_DIR
 from delphi.experiment import load_ckpt
-from delphi.shap import MultimodalShapMasker, MultimodalShapModel
+from delphi.shap import MultimodalShapModel, ShapMasker
 
 # +
 parser = argparse.ArgumentParser()
@@ -69,7 +69,7 @@ if args.subsample is None:
 else:
     total = args.subsample
 
-masker = MultimodalShapMasker()
+masker = ShapMasker()
 
 for i in trange(total, leave=False):
     x, t, bio_dict, bio_t, bio_m, _, _ = ds[i]

@@ -9,88 +9,10 @@ from delphi.multimodal import Modality
 
 
 class ShapMasker(shap.maskers.Masker):  # type: ignore
+    """Stateless SHAP masker that passes through binary masks.
 
-    def __init__(self):
-        self.immutable_outputs = True
-        self.fixed_background = False
-
-    def shape(self, s: tuple[np.ndarray, np.ndarray]):
-        return (1, len(s[0]))
-
-    def mask_shapes(self, s: tuple[np.ndarray, np.ndarray]):
-        return [(len(s[0]),)]
-
-    def __call__(self, mask, s: tuple[np.ndarray, np.ndarray]):
-        mask = self._standardize_mask(mask, s)
-        x, t = s
-        x, t = x.copy(), t.copy()
-        assert x.size == t.size
-        l = x.size
-        pos = np.arange(l)
-
-        # mask: True means that a feature participates
-        masked = ~mask
-        is_event = (x > 3).copy()
-        is_female = (x == 2).copy()
-        is_male = (x == 3).copy()
-        is_last = pos == l - 1
-
-        t = np.where(is_event & masked & ~is_last, -1e4, t)
-        x = np.where(is_event & masked & ~is_last, 0, x)
-
-        # if the last token were to be masked, replace it with the no-event token
-        # to avoid biasing the elapsed time estimate
-        x = np.where(is_event & masked & is_last, 1, x)
-
-        x = np.where(is_male & masked, 2, x)
-        x = np.where(is_female & masked, 3, x)
-
-        sort_idx = np.argsort(t)
-        x = np.take_along_axis(x, sort_idx, axis=0)
-        t = np.take_along_axis(t, sort_idx, axis=0)
-
-        return ((x,), (t,))
-
-
-@torch.no_grad
-def shap_forward(
-    idx: list[np.ndarray],
-    age: list[np.ndarray],
-    model: torch.nn.Module,
-    doi: list[int],
-):
-    x_lst, t_lst = list(), list()
-    for x, t in zip(idx, age):
-        x_lst.append(x)
-        t_lst.append(t)
-    x = collate_batch(x_lst)
-    t = collate_batch(t_lst)
-    device = next(model.parameters()).device
-    x = torch.tensor(x).to(device).long()
-    t = torch.tensor(t).to(device)
-
-    outputs, _, _ = model.forward(x, t)
-    # for compatibility with legacy model definition
-    if isinstance(outputs, torch.Tensor):
-        logits = outputs
-    else:
-        logits = outputs["logits"]
-    doi_logits = logits[:, -1, doi].detach().cpu().numpy()
-
-    return doi_logits
-
-
-MultimodalOut = tuple[
-    np.ndarray, np.ndarray, dict[Modality, list[np.ndarray]], np.ndarray, np.ndarray
-]
-
-
-class MultimodalShapMasker(shap.maskers.Masker):  # type: ignore
-    """SHAP masker for measurement-level attribution with missingness background.
-
-    Each SHAP feature is one biomarker measurement (modality × time-point).
-    Outputs a binary mask (1=present, 0=absent) consumed by multimodal_shap_forward.
-    Tokens are not SHAP features; they are always present in the model input.
+    Each SHAP feature is one position in the mask array.
+    The actual masking logic lives in the model wrapper (ShapModel / MultimodalShapModel).
     """
 
     def __init__(self):
@@ -106,6 +28,89 @@ class MultimodalShapMasker(shap.maskers.Masker):  # type: ignore
     def __call__(self, mask, dummy: np.ndarray):
         mask = self._standardize_mask(mask, dummy)
         return ((mask.astype(np.int8),),)
+
+
+def _mask_tokens(x: np.ndarray, t: np.ndarray, mask: np.ndarray):
+    """Apply token-level masking for SHAP attribution.
+
+    mask: boolean array where True = feature participates.
+
+    Token masking strategies:
+      - Event (non-last): drop (x=0, t=-1e4, sorts to front as padding)
+      - Event (last): replace with no-event token (preserve elapsed time)
+      - Sex token: swap as counterfactual (male<->female)
+    """
+    x, t = x.copy(), t.copy()
+    pos = np.arange(x.size)
+
+    masked = ~mask
+    is_event = (x > 3).copy()
+    is_female = (x == 2).copy()
+    is_male = (x == 3).copy()
+    is_last = pos == x.size - 1
+
+    t = np.where(is_event & masked & ~is_last, -1e4, t)
+    x = np.where(is_event & masked & ~is_last, 0, x)
+
+    # if the last token were to be masked, replace it with the no-event token
+    # to avoid biasing the elapsed time estimate
+    x = np.where(is_event & masked & is_last, 1, x)
+
+    x = np.where(is_male & masked, 2, x)
+    x = np.where(is_female & masked, 3, x)
+
+    sort_idx = np.argsort(t)
+    x = np.take_along_axis(x, sort_idx, axis=0)
+    t = np.take_along_axis(t, sort_idx, axis=0)
+
+    return x, t
+
+
+class ShapModel:
+    """SHAP model wrapper for unimodal (token-only) models."""
+
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        data: tuple[np.ndarray, np.ndarray],
+    ):
+        self.model = model
+        self.x, self.t = data
+        self.features = self.x.tolist()
+        self.timesteps = self.t
+        self.mask_size = len(self.x)
+
+    def dummy(self):
+        return np.ones(self.mask_size)
+
+    @torch.no_grad
+    def __call__(self, masks: list[np.ndarray]):
+        x_lst, t_lst = [], []
+        for mask in masks:
+            x, t = _mask_tokens(self.x, self.t, mask.astype(bool))
+            x_lst.append(x)
+            t_lst.append(t)
+
+        device = next(self.model.parameters()).device
+        dtype = next(self.model.parameters()).dtype
+        idx = collate_batch(x_lst)
+        idx = torch.tensor(idx, dtype=torch.long).to(device)
+        age = collate_batch(t_lst, fill_value=-1e4)
+        age = torch.tensor(age, dtype=dtype).to(device)
+
+        outputs, _, _ = self.model.forward(idx, age)
+        if isinstance(outputs, torch.Tensor):
+            logits = outputs
+        else:
+            logits = outputs["logits"]
+        logits = logits[:, -1, :]
+
+        return logits.detach().cpu().numpy()
+
+
+MultimodalOut = tuple[
+    np.ndarray, np.ndarray, dict[Modality, list[np.ndarray]], np.ndarray, np.ndarray
+]
 
 
 class MultimodalShapModel:
@@ -193,34 +198,6 @@ class MultimodalShapModel:
 
         return bio_x_dict, self.bio_t, self.bio_m
 
-    def mask_tokens(self, mask: np.ndarray):
-        x, t = self.x.copy(), self.t.copy()
-        l = x.size
-        pos = np.arange(l)
-
-        # mask: True means that a feature participates
-        masked = ~mask
-        is_event = (x > 3).copy()
-        is_female = (x == 2).copy()
-        is_male = (x == 3).copy()
-        is_last = pos == l - 1
-
-        t = np.where(is_event & masked & ~is_last, -1e4, t)
-        x = np.where(is_event & masked & ~is_last, 0, x)
-
-        # if the last token were to be masked, replace it with the no-event token
-        # to avoid biasing the elapsed time estimate
-        x = np.where(is_event & masked & is_last, 1, x)
-
-        x = np.where(is_male & masked, 2, x)
-        x = np.where(is_female & masked, 3, x)
-
-        sort_idx = np.argsort(t)
-        x = np.take_along_axis(x, sort_idx, axis=0)
-        t = np.take_along_axis(t, sort_idx, axis=0)
-
-        return x, t
-
     @torch.no_grad
     def __call__(self, masks: list[np.ndarray]):
         x_lst, t_lst = [], []
@@ -230,7 +207,7 @@ class MultimodalShapModel:
         for mask in masks:
 
             if not self.biomarker_only:
-                x, t = self.mask_tokens(mask[: self.n_tokens])
+                x, t = _mask_tokens(self.x, self.t, mask[: self.n_tokens].astype(bool))
                 x_lst.append(x)
                 t_lst.append(t)
             else:
