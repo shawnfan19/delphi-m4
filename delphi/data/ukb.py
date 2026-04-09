@@ -391,6 +391,7 @@ class ExpansionPack:
     def __init__(self, path: str, offset: int, memmap: bool = False):
 
         p2i = pd.read_csv(os.path.join(path, "p2i.csv"), index_col="pid")
+        self.pids = p2i.index.to_numpy()
         self.offset = offset
         self.start_pos = p2i["start_pos"].to_dict()
         self.seq_len = p2i["seq_len"].to_dict()
@@ -433,6 +434,8 @@ class MultimodalUKBDataset:
         biomarker_require: str = "all",
         stats_subject_list: None | str = None,
         subject_list: str = "participants/train_fold.bin",
+        must_have_expansion_packs: None | list = None,
+        expansion_pack_require: str = "all",
         no_event_interval: None | float = 5 * 365.25,
         no_event_mode: str = "legacy-random",
         perturb: bool = False,
@@ -497,14 +500,15 @@ class MultimodalUKBDataset:
         self.rng = np.random.default_rng(seed)
         self.deterministic = deterministic
 
-        self.expansion_packs = []
-        self.expansion_pack_tokenizers = []
+        self.expansion_pack_dir = os.path.join(
+            DELPHI_DATA_DIR, data_dir, expansion_pack_dir
+        )
+        self.expansion_packs = dict()
+        self.expansion_pack_tokenizers = dict()
         if expansion_packs is not None:
             expansion_packs.sort()
             for pack in expansion_packs:
-                pack_path = os.path.join(
-                    DELPHI_DATA_DIR, data_dir, expansion_pack_dir, pack
-                )
+                pack_path = os.path.join(self.expansion_pack_dir, pack)
                 assert os.path.exists(pack_path), FileNotFoundError(
                     f"expansion pack {pack_path} not found"
                 )
@@ -515,16 +519,16 @@ class MultimodalUKBDataset:
                 self.tokenizer, offset = update_tokenizer(
                     base_tokenizer=self.tokenizer, add_tokenizer=add_tokenizer  # type: ignore
                 )
-                self.expansion_pack_tokenizers.append(add_tokenizer)
-                self.expansion_packs.append(
-                    ExpansionPack(path=pack_path, offset=offset, memmap=memmap)
+                self.expansion_pack_tokenizers[pack] = add_tokenizer
+                self.expansion_packs[pack] = ExpansionPack(
+                    path=pack_path, offset=offset, memmap=memmap
                 )
 
+        self.biomarker_dir = os.path.join(DELPHI_DATA_DIR, data_dir, biomarker_dir)
         if biomarker_datasets is not None:
             assert biomarkers is None
             self.mod_ds = biomarker_datasets
         else:
-            self.biomarker_dir = os.path.join(DELPHI_DATA_DIR, data_dir, biomarker_dir)
             if stats_subject_list is None:
                 stats_subjects = self.participants
             else:
@@ -576,6 +580,30 @@ class MultimodalUKBDataset:
                 )
             print(f"{self.participants.size}/{old_n} remaining")
 
+        if must_have_expansion_packs is not None:
+            old_n = self.participants.size
+            if expansion_pack_require == "all":
+                for pack in must_have_expansion_packs:
+                    exp_pids = self.get_expansion_pack_participants(pack)
+                    self.participants = self.participants[
+                        np.isin(self.participants, exp_pids)
+                    ]
+            elif expansion_pack_require == "any":
+                union_pids = np.concatenate(
+                    [
+                        self.get_expansion_pack_participants(pack)
+                        for pack in must_have_expansion_packs
+                    ]
+                )
+                self.participants = self.participants[
+                    np.isin(self.participants, union_pids)
+                ]
+            else:
+                raise ValueError(
+                    f"expansion_pack_require must be 'all' or 'any', got '{biomarker_require}'"
+                )
+            print(f"{self.participants.size}/{old_n} remaining")
+
         if no_event_interval is not None:
             self.append_no_event = functools.partial(
                 append_no_event,
@@ -622,6 +650,11 @@ class MultimodalUKBDataset:
             os.path.join(self.biomarker_dir, modality.name.lower(), "p2i.csv")
         )["pid"].to_numpy()
 
+    def get_expansion_pack_participants(self, expansion_pack) -> np.ndarray:
+        return pd.read_csv(
+            os.path.join(self.expansion_pack_dir, expansion_pack.lower(), "p2i.csv")
+        )["pid"].to_numpy()
+
     def first_occurrence_times(self, modality):
         if isinstance(modality, str):
             modality = Modality[modality.upper()]
@@ -648,7 +681,7 @@ class MultimodalUKBDataset:
     @property
     def expansion_tokens(self):
         tokens = list()
-        for exp_pack in self.expansion_packs:
+        for exp_pack in self.expansion_packs.values():
             tokens.extend([v + exp_pack.offset for v in exp_pack.tokenizer.values()])
         return tokens
 
@@ -664,7 +697,7 @@ class MultimodalUKBDataset:
         x = self.tokens[i : i + l].astype(np.uint32)
         t = self.time_steps[i : i + l].astype(np.float32)
         x_lst, t_lst = [x], [t]
-        for expansion_pack in self.expansion_packs:
+        for expansion_pack in self.expansion_packs.values():
             exp_x, exp_t = expansion_pack[pid]
             x_lst.append(exp_x)
             t_lst.append(exp_t)
