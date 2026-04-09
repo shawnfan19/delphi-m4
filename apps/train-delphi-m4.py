@@ -24,6 +24,7 @@ class TrainConfig(TrainBaseConfig):
     biomarkers: None | list[str] = None
     first_time_only: bool = False
     must_have: bool = False
+    z_score_biomarkers: bool = True
     expansion_packs: None | list[str] = None
     biomarker_dropout: None | float = None
     log: TrainLogConfig = field(default_factory=lambda: TrainLogConfig())
@@ -40,6 +41,7 @@ def train(cfg: TrainConfig):
         "first_time_only": cfg.first_time_only,
         "seed": cfg.seed,
         "deterministic": cfg.deterministic,
+        "z_score_biomarkers": cfg.z_score_biomarkers,
     }
     if cfg.must_have:
         data_args["must_have_biomarkers"] = biomarkers
