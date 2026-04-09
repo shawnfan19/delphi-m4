@@ -16,9 +16,6 @@
 import dxdata
 import pandas as pd
 import numpy as np
-from pyspark.sql import SparkSession
-import pyspark.sql.functions as F
-from pyspark.sql.types import DateType, DoubleType
 import os
 from pathlib import Path
 import time
@@ -32,10 +29,6 @@ import matplotlib.pyplot as plt
 from delphi.env import DELPHI_DATA_DIR
 
 from utils import assessment_age
-
-spark = SparkSession.builder \
-    .appName("example") \
-    .getOrCreate()
 
 # %%
 engine = dxdata.connect(dialect="hive+pyspark")
@@ -53,30 +46,37 @@ dataset.entities
 main_entity = dataset.primary_entity
 
 # %%
-list(main_entity.find_fields(name_regex=f".*p30106_.*"))
+variant_fields = sorted(list(main_entity.find_fields(name_regex=f".*p30106.*")))
+freq_fields = sorted(list(main_entity.find_fields(name_regex=f".*p30107.*")))
+ct_field = main_entity["p30105"]
 
 # %%
+variant_fields, freq_fields, ct_field
 
 # %%
-variant_ct = main_entity.retrieve_fields(fields=[main_entity["p30105"]], engine=engine).toPandas()
-variant = main_entity.retrieve_fields(fields=list(main_entity.find_fields(name_regex=f".*p30106_.*")), engine=engine).toPandas()
-variant_freq = main_entity.retrieve_fields(fields=list(main_entity.find_fields(name_regex=f".*p30107_.*")), engine=engine).toPandas()
+eid_field = main_entity.find_field(name="eid")
+eid_field
 
 # %%
-pids = main_entity.retrieve_fields(
-    fields=[main_entity.find_field(name="eid")],
-    engine=engine
-).toPandas()
-pids = pids["eid"].values.astype(int)
+all_fields = variant_fields + freq_fields + [ct_field] + [eid_field]
+df = main_entity.retrieve_fields(fields=all_fields, engine=engine).toPandas()
 
 # %%
+df = df.set_index("eid")
+df.head()
+
+# %%
+pids = df.index.values
 pids
+
+# %%
+pids.shape
 
 # %%
 age = assessment_age()
 
 # %%
-init_assess_age = age["init_assess"].values
+init_assess_age = age.loc[pids, "init_assess"]
 init_assess_age
 
 
@@ -130,7 +130,12 @@ def encode_variants(variant: pd.DataFrame, variant_freq: pd.DataFrame):
 # %%
 
 # %%
-variant
+variant = df[[f.name for f in variant_fields]]
+variant_freq = df[[f.name for f in freq_fields]]
+variant_ct = df[ct_field.name]
+
+# %%
+variant.head()
 
 # %%
 gene_arr, freq_arr, gene_to_id = encode_variants(variant, variant_freq)
@@ -138,9 +143,8 @@ gene_arr, freq_arr, gene_to_id = encode_variants(variant, variant_freq)
 # %%
 freq_arr.shape, gene_arr.shape
 
-# %%
-np.unique(gene_arr[~np.isnan(gene_arr)]), freq_arr[~np.isnan(gene_arr)]
 
+# %%
 
 # %%
 def create_vaf_matrix(gene_arr: np.ndarray, freq_arr: np.ndarray, gene_to_id: dict):
