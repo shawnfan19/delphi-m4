@@ -1,5 +1,4 @@
 # +
-import math
 from pathlib import Path
 
 import numpy as np
@@ -88,14 +87,12 @@ for i, chunk in pbar:
         hold_out_chunk = chunk.loc[chunk["eid"] == hold_out_sub].copy()
         chunk = chunk.loc[chunk["eid"] != hold_out_sub].copy()
 
-    # first occurrence only
     chunk = chunk.drop_duplicates(subset=["eid", "bnf_code"], keep="first")
 
     chunk["issue_date"] = pd.to_datetime(chunk["issue_date"], format="%d/%m/%Y")
     chunk["timesteps"] = (chunk["issue_date"] - chunk["mob"]).dt.days.values.astype(
         np.float32
     )
-    have_dates = (chunk["timesteps"].notna()) & (chunk["timesteps"] >= 0)
 
     bnf_codes = chunk["bnf_code"].copy()
     # deal with formats like 04.06.03.00.00
@@ -136,8 +133,12 @@ for i, chunk in pbar:
     chunk["atc"] = atc_codes.values
     chunk["atc"] = chunk["atc"].str[:5]
 
+    # first occurrence only
+    chunk = chunk.drop_duplicates(subset=["eid", "atc"], keep="first")
+
     have_tokens = chunk["atc"] != "nan"
     assert chunk["atc"].isna().sum() == 0
+    have_dates = (chunk["timesteps"].notna()) & (chunk["timesteps"] >= 0)
 
     are_valid = have_dates & have_tokens
     tokens = chunk.loc[are_valid, "atc"].values.tolist()

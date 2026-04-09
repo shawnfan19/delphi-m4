@@ -16,7 +16,7 @@ if IN_RAP:
         engine,
         load_fid,
         load_fids,
-        month_of_birth
+        month_of_birth,
     )
 else:
     from utils_codon import (
@@ -97,21 +97,6 @@ def load_visit(fid: str, visit_idx: int = 0) -> dict:
     return df.iloc[:, visit_idx].to_dict()
 
 
-def init_expansion_pack_p2i():
-
-    ukb_subjects = all_ukb_participants()
-    p2i = pd.DataFrame(
-        {
-            "pid": ukb_subjects,
-            "start_pos": 0,
-            "seq_len": 0,
-        }
-    )
-    p2i = p2i.set_index("pid")
-
-    return p2i
-
-
 def build_expansion_pack(
     token_np: np.ndarray,
     time_np: np.ndarray,
@@ -131,10 +116,14 @@ def build_expansion_pack(
     print(f"\t - max tokens per subject: {count_np.max()}")
     print(f"\t - vocab size: {len(tokenizer)}")
 
-    p2i = init_expansion_pack_p2i()
-    p2i.loc[subjects, "seq_len"] = count_np
-    p2i.loc[subjects, "start_pos"] = np.cumsum(count_np) - count_np
-    p2i.loc[p2i["seq_len"] == 0, "start_pos"] = 0
+    p2i = pd.DataFrame(
+        {
+            "pid": subjects,
+            "start_pos": np.cumsum(count_np) - count_np,
+            "seq_len": count_np,
+        }
+    )
+    p2i = p2i.set_index("pid")
 
     odir = Path(odir) / expansion_pack
     os.makedirs(odir, exist_ok=True)
