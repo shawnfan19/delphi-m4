@@ -17,7 +17,7 @@ data/.gitattributes
 .ipynb_checkpoints
 logs
 notebook
-.env
+*.env
 .envrc
 dcgm
 slurm
