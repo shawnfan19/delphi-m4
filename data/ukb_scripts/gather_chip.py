@@ -28,19 +28,7 @@ import matplotlib.pyplot as plt
 
 from delphi.env import DELPHI_DATA_DIR
 
-from utils import assessment_age
-
-# %%
-engine = dxdata.connect(dialect="hive+pyspark")
-project = os.getenv('DX_PROJECT_CONTEXT_ID')
-record = os.popen("dx find data --type Dataset --delimiter ',' | awk -F ',' '{print $5}'").read().rstrip()
-record = record.split('\n')[0]
-DATASET_ID = project + ":" + record
-dataset = dxdata.load_dataset(id=DATASET_ID)
-print(f"DATASET_ID: {DATASET_ID}")
-
-# %%
-dataset.entities
+from utils import build_biomarker, dataset, engine
 
 # %%
 main_entity = dataset.primary_entity
@@ -49,13 +37,11 @@ main_entity = dataset.primary_entity
 variant_fields = sorted(list(main_entity.find_fields(name_regex=f".*p30106.*")))
 freq_fields = sorted(list(main_entity.find_fields(name_regex=f".*p30107.*")))
 ct_field = main_entity["p30105"]
-
-# %%
-variant_fields, freq_fields, ct_field
-
-# %%
 eid_field = main_entity.find_field(name="eid")
 eid_field
+
+# %%
+variant_fields, freq_fields, ct_field, eid_field
 
 # %%
 all_fields = variant_fields + freq_fields + [ct_field] + [eid_field]
@@ -72,15 +58,6 @@ pids
 # %%
 pids.shape
 
-# %%
-age = assessment_age()
-
-# %%
-init_assess_age = age.loc[pids, "init_assess"]
-init_assess_age
-
-
-# %%
 
 # %%
 def encode_variants(variant: pd.DataFrame, variant_freq: pd.DataFrame):
@@ -128,8 +105,6 @@ def encode_variants(variant: pd.DataFrame, variant_freq: pd.DataFrame):
 
 
 # %%
-
-# %%
 variant = df[[f.name for f in variant_fields]]
 variant_freq = df[[f.name for f in freq_fields]]
 variant_ct = df[ct_field.name]
@@ -143,8 +118,6 @@ gene_arr, freq_arr, gene_to_id = encode_variants(variant, variant_freq)
 # %%
 freq_arr.shape, gene_arr.shape
 
-
-# %%
 
 # %%
 def create_vaf_matrix(gene_arr: np.ndarray, freq_arr: np.ndarray, gene_to_id: dict):
@@ -199,54 +172,66 @@ def create_vaf_matrix(gene_arr: np.ndarray, freq_arr: np.ndarray, gene_to_id: di
 
 
 # %%
-vaf_arr = create_vaf_matrix(gene_arr, freq_arr, gene_to_id)
-vaf_arr
+is_valid = ~np.isnan(variant_ct.values.ravel())
+print(is_valid.sum())
 
-# %%
+freq_arr = freq_arr[is_valid, :]
+gene_arr = gene_arr[is_valid, :]
+pids = pids[is_valid]
+
+vaf_arr = create_vaf_matrix(gene_arr, freq_arr, gene_to_id)
 vaf_arr.shape
 
 # %%
-has_data = ~np.isnan(variant_ct.values.ravel())
-has_time = ~np.isnan(init_assess_age)
-is_valid = has_data & has_time
-is_valid.sum()
+vaf_df = pd.DataFrame(
+    data=vaf_arr,
+    columns=list(gene_to_id.keys()),
+    index=pd.MultiIndex.from_arrays(
+        [pids, np.full_like(pids, "init_assess")], names=["pid", "visit"]
+    )
+)
+
+build_biomarker(
+    biomarker_df=vaf_df,
+    features=list(gene_to_id.keys()),
+    odir=Path(DELPHI_DATA_DIR) / "ukb_real_data" / "biomarkers" / "chip_lite",
+)
 
 # %%
-vaf_arr = vaf_arr[is_valid]
-pids = pids[is_valid]
-timesteps = init_assess_age[is_valid]
+freq_arr = np.nan_to_num(freq_arr)
+freq_arr
 
 # %%
-seq_len = vaf_arr.shape[1]
-starts = seq_len * np.arange(vaf_arr.shape[0])
-seq_len = np.full_like(starts, seq_len)
+n_mutations = (freq_arr > 0).sum(axis=1)
+
+max_clone_size = freq_arr.max(axis=1)
+
+high_risk_genes = {"SRSF2", "SF3B1", "ZRSR2", "TP53", "RUNX1", "IDH1", "IDH2", "JAK2"}
+high_risk_ids = [gene_to_id[gene] - 1 for gene in high_risk_genes]
+has_high_risk = (vaf_arr[:, high_risk_ids].sum(axis=1) > 0).astype(int)
+has_high_risk
 
 # %%
-starts, seq_len, pids, timesteps, vaf_arr.size
+chrs = np.stack((n_mutations, max_clone_size, has_high_risk), axis=1)
+chrs.shape
 
 # %%
-starts.shape, seq_len.shape, pids.shape, timesteps.shape
+features = ["n_mutations", "max_clone_size", "has_high_risk_genes"]
+
+chrs_df = pd.DataFrame(
+    data=chrs,
+    columns=features,
+    index=pd.MultiIndex.from_arrays(
+        [pids, np.full_like(pids, "init_assess")], names=["pid", "visit"]
+    )
+)
+
+build_biomarker(
+    biomarker_df=chrs_df,
+    features=features,
+    odir=Path(DELPHI_DATA_DIR) / "ukb_real_data" / "biomarkers" / "chrs",
+)
 
 # %%
-
-# %%
-p2i = pd.DataFrame({
-        "pid": pids,
-        "start_pos": starts,
-        "seq_len": seq_len,
-        "time": timesteps,
-    })
-p2i["visit"] = "init_assess"
-
-# %%
-odir = Path(DELPHI_DATA_DIR) / "ukb_real_data" / "biomarkers" / "chip-lite"
-os.makedirs(odir, exist_ok=True)
-vaf_arr.ravel().astype(np.float32).tofile(odir / "data.bin")
-p2i.to_csv(odir / "p2i.csv", index=False)
-with open(odir / "features.yaml", "w") as f:
-    yaml.dump(list(gene_to_id.keys()), f)
-
-# %%
-odir
 
 # %%
