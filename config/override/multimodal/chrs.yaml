@@ -1,0 +1,4 @@
+biomarkers:
+  - chip_lite
+log:
+  run_name: chip_lite
