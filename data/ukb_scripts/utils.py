@@ -5,28 +5,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from delphi import DAYS_PER_YEAR
-from delphi.env import DELPHI_DATA_DIR, IN_RAP
-
-if IN_RAP:
-    from utils_rap import (
-        VISITS,
-        assessment_age,
-        dataset,
-        engine,
-        load_fid,
-        load_fids,
-        month_of_birth,
-    )
-else:
-    from utils_codon import (
-        VISITS,
-        assessment_age,
-        load_coding,
-        load_fid,
-        load_fids,
-        month_of_birth,
-    )
+from delphi.env import DELPHI_DATA_DIR
 
 
 def all_ukb_participants() -> np.ndarray:
@@ -68,22 +47,6 @@ def index_by_visit(df: pd.DataFrame, visits: list[str]) -> pd.Series:
             [subjects, visit_types], names=["pid", "visit"]
         ),
     )
-
-
-def load_biomarker_df(
-    fids: list, visits: list[str], preload: None | pd.DataFrame
-) -> pd.DataFrame:
-    "load fids and perform wide-to-long conversion"
-
-    markers = []
-    for fid in fids:
-        marker = load_fid(str(fid), preload=preload)
-        marker = index_by_visit(df=marker, visits=visits)
-        marker.name = str(fid)
-        markers.append(marker)
-    long_df = pd.concat(markers, axis=1)
-
-    return long_df
 
 
 def load_visit(fid: str, visit_idx: int = 0) -> dict:
@@ -131,7 +94,7 @@ def build_expansion_pack(
     token_np.astype(np.uint32).tofile(odir / "data.bin")
     time_np = time_np.astype(np.uint32)
     print(
-        f"\t - time points from {time_np.min() / DAYS_PER_YEAR} to {time_np.max() / DAYS_PER_YEAR}"
+        f"\t - time points from {time_np.min() / 365.25} to {time_np.max() / 365.25}"
     )
     time_np.tofile(odir / "time.bin")
 
