@@ -13,7 +13,7 @@ import yaml
 from tqdm import tqdm
 
 from delphi.data.ukb import MultimodalUKBDataset
-from delphi.env import DELPHI_CKPT_DIR
+from delphi.env import DELPHI_CKPT_READ, DELPHI_CKPT_WRITE
 from delphi.eval import (
     DiseaseRatesCollator,
     EventTimeCollator,
@@ -186,7 +186,7 @@ pprint.pp(vars(args))
 
 
 # +
-ckpt = Path(DELPHI_CKPT_DIR) / args.ckpt
+ckpt = Path(DELPHI_CKPT_READ) / args.ckpt
 model, ckpt_dict = load_ckpt(ckpt)
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -309,7 +309,9 @@ for d_int in np.unique(case_tokens):
 pprint.pp(result.get("death", result.get(next(iter(result)), {})))
 
 
-out_path = ckpt.parent / f"{args.fname}.json"
+ckpt_write = Path(str(ckpt).replace(DELPHI_CKPT_READ, DELPHI_CKPT_WRITE))
+os.makedirs(ckpt_write.parent, exist_ok=True)
+out_path = ckpt_write.parent / f"{args.fname}.json"
 with open(out_path, "w") as f:
     json.dump(result, f, indent=4)
 print(f"Saved to {out_path}")
