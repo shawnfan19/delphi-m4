@@ -27,6 +27,7 @@ class Modality(Enum):
     ABDO_FAT_LONG = 23
     NMR = 24
     CHIP_LITE = 25
+    CHRS = 26
 
 
 def module_name(modality: Modality) -> str:
