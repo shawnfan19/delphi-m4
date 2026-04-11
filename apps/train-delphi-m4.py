@@ -66,7 +66,7 @@ def train(cfg: TrainConfig):
         for modality, ds in train_ds.mod_ds.items():
             biomarker = module_name(modality)
             projector = "linear"
-            if biomarker == "nmr":
+            if biomarker in {"nmr", "proteomics"}:
                 projector = "mlp"
             cfg.model.biomarkers[biomarker] = {
                 "projector": projector,

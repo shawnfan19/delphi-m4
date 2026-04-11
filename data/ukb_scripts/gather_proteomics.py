@@ -31,16 +31,13 @@ import matplotlib.pyplot as plt
 
 from delphi.env import DELPHI_DATA_DIR
 
-from utils import assessment_age
+from utils_rap import build_biomarker
 
 spark = SparkSession.builder \
-    .appName("example") \
+    .config("spark.driver.maxResultSize", "4g") \
+    .config("spark.driver.memory", "8g") \
     .getOrCreate()
 spark.conf.set("spark.sql.execution.arrow.pyspark.enabled", "true")
-
-# %%
-out_dir = Path(DELPHI_DATA_DIR) / "ukb_real_data" / "biomarkers" / "proteomics"
-os.makedirs(out_dir, exist_ok=True)
 
 # %%
 engine = dxdata.connect(dialect="hive+pyspark")
@@ -55,40 +52,57 @@ print(f"DATASET_ID: {DATASET_ID}")
 dataset.entities
 
 # %%
-
-# %%
 instance0 = dataset["olink_instance_0"]
 
 # %%
 spark_df = instance0.retrieve_fields(fields=instance0.fields, engine=engine)
 non_id_cols = spark_df.columns[1:]
-spark_df_filtered = spark_df.dropna(how='all', subset=non_id_cols)
-protein0 = spark_df_filtered.toPandas()
+spark_df = spark_df.dropna(how='all', subset=non_id_cols)
+protein0 = spark_df.toPandas()
 
 # %%
 protein0.shape
 
 # %%
-protein0 = protein0.set_index("eid")
+# 2. Extract the dictionary of missing values per column
+nan_counts_dict = protein0.isna().sum().to_dict()
+# 3. Replace NaNs with None (or 0) directly in Pandas
+protein0 = protein0.replace({np.nan: 0}) 
+# If you actually wanted 0 instead of None as 
+
+# %%
 protein0.head()
 
 # %%
-protein0.to_csv(out_dir / "instance0.csv")
+protein0["visit"] = "init_assess"
+protein0 = protein0.rename(columns={"eid": "pid"})
+protein0 = protein0.set_index(["pid", "visit"])
+
+# %%
+protein0.head()
+
+# %%
+build_biomarker(
+    biomarker_df=protein0,
+    features=list(protein0.columns),
+    odir=Path(DELPHI_DATA_DIR) / "ukb_real_data" / "biomarkers" / "proteomics",
+)
 
 # %%
 
 # %%
 instance = dataset["olink_instance_2"]
 spark_df = instance.retrieve_fields(fields=instance.fields, engine=engine)
+non_id_cols = spark_df.columns[1:]
 spark_df_filtered = spark_df.dropna(how='all', subset=non_id_cols)
 protein = spark_df_filtered.toPandas()
 
 # %%
 protein.shape
 
-# %%
-protein = protein.set_index("eid")
-protein.head()
+# %% [raw]
+# protein = protein.set_index("eid")
+# protein.head()
 
 # %%
 protein.to_csv(out_dir / "instance2.csv")

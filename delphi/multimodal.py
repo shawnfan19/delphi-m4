@@ -28,6 +28,7 @@ class Modality(Enum):
     NMR = 24
     CHIP_LITE = 25
     CHRS = 26
+    PROTEOMICS = 27
 
 
 def module_name(modality: Modality) -> str:

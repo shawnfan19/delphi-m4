@@ -238,7 +238,7 @@ def build_expansion_pack(
         )
 
 
-def build_biomarker(
+def build_spark_biomarker(
     biomarker_df: pd.DataFrame,
     features: list,
     odir: str | Path,
@@ -319,6 +319,77 @@ def build_biomarker(
             "pid": subjects,
             "visit": visits,
             "start_pos": (np.cumsum(np.full(len(df_final), seq_len)) - seq_len).astype(
+                np.int32
+            ),
+            "seq_len": seq_len,
+            "time": time_np,
+        }
+    )
+
+    data_np.ravel().astype(np.float32).tofile(odir / "data.bin")
+    p2i.to_csv(odir / "p2i.csv", index=False)
+
+    
+def build_biomarker(
+    biomarker_df: pd.DataFrame,
+    features: list,
+    odir: str | Path,
+    data_dtype=np.float32,
+):
+
+    odir = Path(odir)
+    os.makedirs(odir, exist_ok=True)
+    print(f"{odir}")
+
+    print(f"\t - features: {features}")
+    with open(odir / "features.yaml", "w") as f:
+        yaml.dump(
+            features,
+            f,
+            default_flow_style=False,
+            sort_keys=False,
+        )
+
+    subjects = biomarker_df.reset_index()["pid"].to_numpy().astype(np.int32)
+    visits = biomarker_df.reset_index()["visit"].to_numpy().astype(str)
+
+    time_series = _long_assessment_age()
+    time_df = _long_assessment_age()
+    time_df = time_df.withColumnRenamed("eid", "pid")
+    time_df = time_df.toPandas()
+    time_df = time_df.set_index(["pid", "visit"])
+    time_series = time_df["time"]
+    time_np = time_series[biomarker_df.index].to_numpy().astype(np.float32)
+    has_nan_time = np.isnan(time_np)
+    print(f"\t - has NaN in time: {has_nan_time.sum()}")
+    is_valid = ~has_nan_time
+
+    data_np = biomarker_df.to_numpy().astype(data_dtype)
+    has_nan_data = np.isnan(biomarker_df.values).any(axis=1)
+    print(f"\t - has NaN in data: {has_nan_data.sum()}")
+    is_valid *= ~has_nan_data
+
+    print(f"\t - total remaining: {is_valid.sum()}")
+    histogram = (
+        biomarker_df.loc[is_valid]
+        .reset_index()["pid"]
+        .value_counts()
+        .value_counts()
+        .to_dict()
+    )
+    print(f"\t - histogram: {histogram}")
+
+    data_np = data_np[is_valid]
+    time_np = time_np[is_valid]
+    subjects = subjects[is_valid]
+    visits = visits[is_valid]
+
+    seq_len = data_np.shape[1]
+    p2i = pd.DataFrame.from_dict(
+        data={
+            "pid": subjects,
+            "visit": visits,
+            "start_pos": (np.cumsum(np.full(is_valid.sum(), seq_len)) - seq_len).astype(
                 np.int32
             ),
             "seq_len": seq_len,
