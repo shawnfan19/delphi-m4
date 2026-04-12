@@ -17,6 +17,7 @@ record = (
     .read()
     .rstrip()
 )
+record = record.split('\n')[0] 
 DATASET_ID = project + ":" + record
 print(DATASET_ID)
 
@@ -27,33 +28,6 @@ pheno = dataset["participant"]
 field_eid = pheno.find_field(name="eid")
 
 VISITS = ["birth", "init_assess", "1st_repeat_assess", "img", "1st_repeat_img"]
-
-
-def all_ukb_participants() -> np.ndarray:
-
-    participant_dir = Path(DELPHI_DATA_DIR) / "ukb_real_data" / "participants"
-    participants = np.fromfile(participant_dir / "all.bin", dtype=np.uint32)
-
-    return participants
-
-
-def index_by_visit(df: pd.DataFrame, visits: list[str]) -> pd.Series:
-
-    n = df.shape[0]
-    l = df.shape[1]
-    assert l == len(
-        visits
-    ), "Number of visits does not match number of columns in DataFrame"
-    vals = np.concatenate([df[col].to_numpy() for col in df.columns], axis=0)
-    visit_types = np.repeat(np.array(visits), n)
-    subjects = np.tile(df.index.to_numpy(), l)
-
-    return pd.Series(
-        data=vals,
-        index=pd.MultiIndex.from_arrays(
-            [subjects, visit_types], names=["pid", "visit"]
-        ),
-    )
 
 
 def regex_search(fid):
@@ -263,21 +237,13 @@ def build_spark_biomarker(
     # Optional: Cache the raw dataframe to make our sequential .count() logs extremely fast
     df = df.cache()
     
-    ukb_subjects = all_ukb_participants()
-    valid_pids_df = df.sparkSession.createDataFrame(pd.DataFrame({"pid": ukb_subjects}))
-    
-    count_before = df.count()
-    # A broadcast Inner Join efficiently drops anyone not in the valid cohort
-    biomarker_df = df.join(F.broadcast(valid_pids_df), on="pid", how="inner")
-    count_after_ukb = df.count()
-    print(f"\t - not found in Delphi cohort: {count_before - count_after_ukb}")
-
     time_df = _long_assessment_age()
     time_df = time_df.withColumnRenamed("eid", "pid")
     df = df.join(time_df, on=["pid", "visit"], how="left")
+    count_before_time = df.count()
     df = df.dropna(subset=["time"])
     count_after_time = df.count()
-    print(f"\t - has NaN in time: {count_after_ukb - count_after_time}")
+    print(f"\t - has NaN in time: {count_before_time - count_after_time}")
     
     
     meta_cols = {"pid", "visit", "time"}
