@@ -7,7 +7,7 @@ from omegaconf import OmegaConf
 
 from delphi import distributed
 from delphi.data.ukb import MultimodalUKBDataset
-from delphi.env import DELPHI_CKPT_DIR
+from delphi.env import DELPHI_CKPT_READ as DELPHI_CKPT_DIR
 from delphi.experiment import BaseTrainer, TrainBaseConfig, seed_everything
 from delphi.log import TrainLogConfig
 from delphi.model.multimodal import DelphiM4, DelphiM4Config
@@ -37,7 +37,7 @@ class FinetuneConfig(TrainBaseConfig):
     first_time_only: bool = False
     z_score_biomarkers: bool = True
     biomarker_dropout: None | float = None
-    freeze_backbone: bool = False
+    freeze_backbone: bool = True
     optim: OptimConfig = field(
         default_factory=lambda: OptimConfig(
             learning_rate=1e-5, schedule="constant", max_iters=5000
