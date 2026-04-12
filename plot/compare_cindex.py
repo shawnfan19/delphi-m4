@@ -27,7 +27,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from delphi.env import DELPHI_CKPT_DIR
+from delphi.env import DELPHI_CKPT_READ as DELPHI_CKPT_DIR
 from delphi.plot import plot_diff_by_chapter
 
 # %% [markdown]
