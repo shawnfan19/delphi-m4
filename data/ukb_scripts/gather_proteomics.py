@@ -29,7 +29,7 @@ import subprocess
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from delphi.env import DELPHI_DATA_DIR
+from delphi.env import DELPHI_DATA_WRITE as DELPHI_DATA_DIR
 
 from utils_rap import build_biomarker
 
@@ -64,14 +64,35 @@ protein0 = spark_df.toPandas()
 protein0.shape
 
 # %%
-# 2. Extract the dictionary of missing values per column
-nan_counts_dict = protein0.isna().sum().to_dict()
-# 3. Replace NaNs with None (or 0) directly in Pandas
-protein0 = protein0.replace({np.nan: 0}) 
-# If you actually wanted 0 instead of None as 
+pd.isna(protein0).sum(axis=1).hist(bins=20);
+plt.xlabel("number of missing proteins")
+
+# %%
+print(f"Original shape before filtering missingness: {protein0.shape}")
+# Calculate the fraction of missing values for each protein column
+missing_fractions = protein0[non_id_cols].isna().mean()
+# Identify proteins that have 20% or less missing data
+proteins_to_keep = missing_fractions[missing_fractions <= 0.20].index.tolist()
+dropped_count = len(non_id_cols) - len(proteins_to_keep)
+print(f"Dropping {dropped_count} proteins due to >20% missingness.")
+# Keep only 'eid' and the valid proteins
+protein0 = protein0[['eid'] + proteins_to_keep]
+# ==========================================
+
+# %%
+participants_to_keep = protein0[proteins_to_keep].isna().mean(axis=1) <= 0.20
+participants_to_keep.sum(), (protein0[proteins_to_keep].isna().sum(axis=1) > 600).sum()
+
+# %%
+protein0 = protein0.loc[participants_to_keep]
 
 # %%
 protein0.head()
+
+# %%
+protein_medians = protein0[proteins_to_keep].median()
+# Impute the missing values with the calculated medians
+protein0[proteins_to_keep] = protein0[proteins_to_keep].fillna(protein_medians)
 
 # %%
 protein0["visit"] = "init_assess"
@@ -80,6 +101,8 @@ protein0 = protein0.set_index(["pid", "visit"])
 
 # %%
 protein0.head()
+
+# %%
 
 # %%
 build_biomarker(
