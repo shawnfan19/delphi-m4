@@ -27,9 +27,10 @@ def unfreeze_biomarker_projectors(model, biomarkers):
 @dataclass
 class FinetuneConfig(TrainBaseConfig):
     pretrain_ckpt: str = ""
+    baseline_only: bool = False
     batch_size: int = 128
     seed: int = 42
-    deterministic: bool = False
+    deterministic: bool = True
     model: DelphiM4Config = field(
         default_factory=lambda: DelphiM4Config(block_size=None)
     )
@@ -40,7 +41,7 @@ class FinetuneConfig(TrainBaseConfig):
     freeze_backbone: bool = True
     optim: OptimConfig = field(
         default_factory=lambda: OptimConfig(
-            learning_rate=1e-5, schedule="constant", max_iters=5000
+            learning_rate=1e-5, schedule="constant", max_iters=2000
         )
     )
     eval_interval: int = 200
@@ -72,7 +73,6 @@ def finetune(cfg: FinetuneConfig):
     model_cfg = DelphiM4Config(**model_args)
 
     # Build datasets with all biomarkers (pre-trained + new)
-    all_biomarkers = pretrain_biomarkers + cfg.biomarkers
     data_args = {
         "expansion_packs": pretrain_cfg["expansion_packs"],
         "block_size": model_cfg.block_size,
@@ -84,6 +84,10 @@ def finetune(cfg: FinetuneConfig):
         "z_score_biomarkers": cfg.z_score_biomarkers,
     }
 
+    if not cfg.baseline_only:
+        all_biomarkers = pretrain_biomarkers + cfg.biomarkers
+    else:
+        all_biomarkers = pretrain_biomarkers
     train_ds = MultimodalUKBDataset(
         subject_list=pretrain_cfg["train_subject_list"],
         biomarkers=all_biomarkers,
@@ -97,20 +101,21 @@ def finetune(cfg: FinetuneConfig):
         **data_args,
     )
 
-    # Extend model config with new biomarkers
-    for modality, ds in train_ds.mod_ds.items():
-        biomarker = module_name(modality)
-        if biomarker not in model_cfg.biomarkers:
-            projector = "linear"
-            if biomarker in {"nmr", "proteomics"}:
-                projector = "mlp"
-            model_cfg.biomarkers[biomarker] = {
-                "projector": projector,
-                "input_size": ds.n_features,
-            }
-    # Ensure modality embedding is enabled for finetuning even if the
-    # pretrained model didn't have one (e.g. no biomarkers at all)
-    model_cfg.modality_emb = True
+    if not cfg.baseline_only:
+        # Extend model config with new biomarkers
+        for modality, ds in train_ds.mod_ds.items():
+            biomarker = module_name(modality)
+            if biomarker not in model_cfg.biomarkers:
+                projector = "linear"
+                if biomarker in {"nmr", "proteomics"}:
+                    projector = "mlp"
+                model_cfg.biomarkers[biomarker] = {
+                    "projector": projector,
+                    "input_size": ds.n_features,
+                }
+        # Ensure modality embedding is enabled for finetuning even if the
+        # pretrained model didn't have one (e.g. no biomarkers at all)
+        model_cfg.modality_emb = True
     cfg.model = model_cfg
 
     # Create model with extended config
@@ -131,9 +136,9 @@ def finetune(cfg: FinetuneConfig):
         )
 
     missing, unexpected = model.load_state_dict(pretrained_state, strict=False)
-    print(f"missing keys (new modules): {missing}")
-    if unexpected:
-        print(f"unexpected keys: {unexpected}")
+    print(f"new modules: {missing}")
+    # if unexpected:
+    #     print(f"unexpected keys: {unexpected}")
 
     # Freeze all parameters
     if cfg.freeze_backbone:
