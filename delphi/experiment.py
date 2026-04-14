@@ -1,10 +1,11 @@
+import math
 import os
 import pprint
 import random
 import sys
 from collections import defaultdict
 from contextlib import nullcontext
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 
@@ -51,7 +52,7 @@ def seed_everything(seed):
     #     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 
-def move_batch_to_device(args: Iterable, device: str):
+def move_batch_to_device(args: Iterable, device: str | torch.device):
 
     outputs = list()
     for arg in args:
@@ -62,6 +63,14 @@ def move_batch_to_device(args: Iterable, device: str):
         else:
             raise NotImplementedError
     return tuple(outputs)
+
+
+def fixed_batch_iter(seed: int, batch_size: int, total_size: int):
+    rng = np.random.default_rng(seed)
+    batch_size = min(batch_size, total_size)
+    batch_idx = rng.integers(total_size, size=(batch_size,))
+    while True:
+        yield batch_idx
 
 
 def train_iter(
@@ -100,6 +109,8 @@ class TrainBaseConfig:
     eval_only: bool = False  # if True, script exits right after the first eval
     init_from: str = "scratch"
     auto_resume: bool = True
+
+    debug_batch: bool = False
 
     seed: int = 42
     gradient_accumulation_steps: int = 1  # used to simulate larger batch sizes
@@ -185,14 +196,20 @@ class BaseTrainer:
         else:
             self.world_size = 1
             self.rank = 0
-        self.train_iter = train_iter(
-            seed=cfg.seed,
-            total_size=len(train_ds),
-            batch_size=cfg.batch_size,
-            world_size=self.world_size,
-            rank=self.rank,
-            step=self.iter_num,
-        )
+
+        if cfg.debug_batch:
+            self.train_iter = fixed_batch_iter(
+                seed=cfg.seed, batch_size=cfg.batch_size, total_size=len(train_ds)
+            )
+        else:
+            self.train_iter = train_iter(
+                seed=cfg.seed,
+                total_size=len(train_ds),
+                batch_size=cfg.batch_size,
+                world_size=self.world_size,
+                rank=self.rank,
+                step=self.iter_num,
+            )
 
         self.logger = TrainLogger(
             cfg=cfg.log,
@@ -217,20 +234,35 @@ class BaseTrainer:
         return loss
 
     @torch.no_grad()
-    def estimate_loss(self, *args, **kwargs) -> tuple[dict, dict]:
-        self.model.eval()
+    def estimate_loss(self, *args, **kwargs) -> dict:
+        training_states = {
+            name: mod.training for name, mod in self.model.named_modules()
+        }
+        self.model.eval()  # type: ignore
         eval_loss = {}
         for split in ["train", "val"]:
             eval_ds = self.train_ds if split == "train" else self.val_ds
-            estimate_iter = train_iter(
-                seed=self.cfg.seed,
-                total_size=len(eval_ds),
-                batch_size=self.cfg.batch_size,
-                world_size=self.world_size,
-                rank=self.rank,
-            )
+
+            if self.cfg.debug_batch:
+                estimate_iter = fixed_batch_iter(
+                    seed=self.cfg.seed,
+                    total_size=len(eval_ds),
+                    batch_size=self.cfg.batch_size,
+                )
+                eval_iters = 1
+            else:
+                estimate_iter = train_iter(
+                    seed=self.cfg.seed,
+                    total_size=len(eval_ds),
+                    batch_size=self.cfg.batch_size,
+                    world_size=self.world_size,
+                    rank=self.rank,
+                )
+                eval_iters = min(
+                    self.cfg.eval_iters, math.ceil(len(eval_ds) / self.cfg.batch_size)
+                )
             split_loss = defaultdict(float)
-            for _ in range(self.cfg.eval_iters):
+            for _ in range(eval_iters):
 
                 batch_idx = next(estimate_iter)
                 batch_data = eval_ds.get_batch(batch_idx)
@@ -239,13 +271,15 @@ class BaseTrainer:
                 for key in loss.keys():
                     split_loss[key] += loss[key].item()
             split_loss = dict(split_loss)
+            eval_loss[f"{split}/loss"] = 0
             for key in split_loss.keys():
-                split_loss[key] /= self.cfg.eval_iters
-            eval_loss[split] = split_loss
+                eval_loss[f"{split}/{key}"] = split_loss[key] / eval_iters
+                eval_loss[f"{split}/loss"] += eval_loss[f"{split}/{key}"]
 
-        self.model.train()
+        for name, mod in self.model.named_modules():
+            mod.training = training_states[name]
 
-        return eval_loss["train"], eval_loss["val"]
+        return eval_loss
 
     def train(self):
 
@@ -257,8 +291,8 @@ class BaseTrainer:
 
             # evaluate the loss on train/val sets and write checkpoints
             if self.iter_num % self.cfg.eval_interval == 0 and self.iter_num > 0:
-                _, val_loss = self.estimate_loss()
-                self.logger.eval_step(step=self.iter_num, loss=val_loss)
+                loss = self.estimate_loss()
+                self.logger.eval_step(step=self.iter_num, loss=loss)
 
             self.logger.ckpt_step(step=self.iter_num)
 

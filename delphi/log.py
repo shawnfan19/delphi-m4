@@ -105,21 +105,16 @@ class TrainLogger:
 
     def eval_step(self, step: int, loss: dict[str, float]):
         if self.backend.is_master_process():
-            lossf = 0.0
-            log_dict = {"step": step}
-            for loss_key, loss_pt in loss.items():
-                metric = f"val/{loss_key}"
-                log_dict[metric] = loss_pt  # type: ignore
-                lossf += loss_pt
-            log_dict["val/loss"] = lossf  # type: ignore
+            log_dict = {"step": step} | loss
             if self.wandb:
                 wandb.log(log_dict)
-
-            print(f"iter {step}: val loss {lossf:.4f}")
+            print(
+                f"iter {step}: train loss {loss['train/loss']:.4f}, val loss {loss['val/loss']:.4f}"
+            )
             self.save_ckpt(step, ckpt_fname="ckpt.pt")
-            if lossf < self.best_val_loss:
+            if loss["val/loss"] < self.best_val_loss:
                 self.save_ckpt(step, ckpt_fname="ckpt_best.pt")
-            self.best_val_loss = min(lossf, self.best_val_loss)
+            self.best_val_loss = min(loss["val/loss"], self.best_val_loss)
 
     def log_grad(self):
         if self.backend.is_master_process():
@@ -146,10 +141,10 @@ class TrainLogger:
                 }
                 lossf = 0.0
                 for loss_key, loss_pt in loss.items():
-                    metric = f"train/{loss_key}"
+                    metric = f"{loss_key}"
                     log_dict[metric] = loss_pt.item()
                     lossf += loss_pt.item()
-                log_dict["train/loss"] = lossf
+                log_dict["loss"] = lossf
 
                 print(f"iter {step}: loss {lossf:.4f}")
                 if self.wandb:

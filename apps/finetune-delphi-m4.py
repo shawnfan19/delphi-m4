@@ -101,6 +101,7 @@ def finetune(cfg: FinetuneConfig):
         **data_args,
     )
 
+    # pretrain_no_mod_emb = model_cfg.modality_emb == False
     if not cfg.baseline_only:
         # Extend model config with new biomarkers
         for modality, ds in train_ds.mod_ds.items():
@@ -147,9 +148,12 @@ def finetune(cfg: FinetuneConfig):
 
         unfreeze_biomarker_projectors(model=model, biomarkers=cfg.biomarkers)
 
+        # if pretrain_no_mod_emb:
+        #     with torch.no_grad():
+        #         model.transformer.embed.mod_embedding.weight[1, :] = 0
         # Unfreeze modality embedding; freeze row 0 (padding) and any pretrained rows
         model.transformer.embed.mod_embedding.weight.requires_grad = True
-        freeze_idx = [0] + old_mod_idx
+        freeze_idx = [0, 1] + old_mod_idx
 
         def mod_emb_grad_hook(grad, freeze_idx=freeze_idx):
             grad = grad.clone()
@@ -157,6 +161,11 @@ def finetune(cfg: FinetuneConfig):
             return grad
 
         model.transformer.embed.mod_embedding.weight.register_hook(mod_emb_grad_hook)
+
+        model.transformer.eval()
+        for biomarker in cfg.biomarkers:
+            bm_key = module_name(Modality[biomarker.upper()])
+            model.transformer.embed.biomarker_embed[bm_key].train()
 
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     n_total = sum(p.numel() for p in model.parameters())
