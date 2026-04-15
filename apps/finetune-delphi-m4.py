@@ -12,7 +12,13 @@ from delphi.experiment import BaseTrainer, TrainBaseConfig, seed_everything
 from delphi.log import TrainLogConfig
 from delphi.model.multimodal import DelphiM4, DelphiM4Config
 from delphi.multimodal import Modality, module_name
-from delphi.optim import OptimConfig
+from delphi.optim import (
+    OptimConfig,
+    configure_optimizer,
+    merge_param_groups,
+    parse_differential_lr_groups,
+    parse_weight_decay_groups,
+)
 
 
 def unfreeze_biomarker_projectors(model, biomarkers):
@@ -38,12 +44,13 @@ class FinetuneConfig(TrainBaseConfig):
     first_time_only: bool = False
     z_score_biomarkers: bool = True
     biomarker_dropout: None | float = None
-    freeze_backbone: bool = True
+    freeze_backbone: bool = False
     optim: OptimConfig = field(
         default_factory=lambda: OptimConfig(
-            learning_rate=1e-5, schedule="constant", max_iters=2000
+            learning_rate=6e-5, schedule="cosine", max_iters=50000, warmup_iters=0.1
         )
     )
+    differential_lr: float = 1e-4
     eval_interval: int = 200
     log: TrainLogConfig = field(default_factory=lambda: TrainLogConfig())
 
@@ -101,7 +108,7 @@ def finetune(cfg: FinetuneConfig):
         **data_args,
     )
 
-    # pretrain_no_mod_emb = model_cfg.modality_emb == False
+    pretrain_no_mod_emb = model_cfg.modality_emb == False
     if not cfg.baseline_only:
         # Extend model config with new biomarkers
         for modality, ds in train_ds.mod_ds.items():
@@ -136,10 +143,8 @@ def finetune(cfg: FinetuneConfig):
             old_mod_weight[preserve_idx]
         )
 
-    missing, unexpected = model.load_state_dict(pretrained_state, strict=False)
-    print(f"new modules: {missing}")
-    # if unexpected:
-    #     print(f"unexpected keys: {unexpected}")
+    new, unexpected = model.load_state_dict(pretrained_state, strict=False)
+    print(f"new modules: {new}")
 
     # Freeze all parameters
     if cfg.freeze_backbone:
@@ -148,9 +153,9 @@ def finetune(cfg: FinetuneConfig):
 
         unfreeze_biomarker_projectors(model=model, biomarkers=cfg.biomarkers)
 
-        # if pretrain_no_mod_emb:
-        #     with torch.no_grad():
-        #         model.transformer.embed.mod_embedding.weight[1, :] = 0
+        if pretrain_no_mod_emb:
+            with torch.no_grad():
+                model.transformer.embed.mod_embedding.weight[1, :] = 0
         # Unfreeze modality embedding; freeze row 0 (padding) and any pretrained rows
         model.transformer.embed.mod_embedding.weight.requires_grad = True
         freeze_idx = [0, 1] + old_mod_idx
@@ -166,6 +171,24 @@ def finetune(cfg: FinetuneConfig):
         for biomarker in cfg.biomarkers:
             bm_key = module_name(Modality[biomarker.upper()])
             model.transformer.embed.biomarker_embed[bm_key].train()
+
+        optimizer = None
+    else:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        model = model.to(device)
+        lr_param_groups = parse_differential_lr_groups(
+            model=model, new_keys=new, differential_lr=cfg.differential_lr
+        )
+        wd_param_groups = parse_weight_decay_groups(model=model)
+        param_groups = merge_param_groups(
+            lr_param_groups=lr_param_groups, wd_param_groups=wd_param_groups
+        )
+        optimizer = configure_optimizer(
+            optim_groups=param_groups,
+            learning_rate=cfg.optim.learning_rate,
+            beta1=cfg.optim.beta1,
+            beta2=cfg.optim.beta2,
+        )
 
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     n_total = sum(p.numel() for p in model.parameters())
@@ -183,6 +206,7 @@ def finetune(cfg: FinetuneConfig):
         model=model,
         train_ds=train_ds,
         val_ds=val_ds,
+        optimizer=optimizer,
     )
     trainer.train()
     backend.finalize()

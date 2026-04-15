@@ -19,7 +19,12 @@ from delphi.env import DELPHI_CKPT_DIR
 from delphi.log import TrainLogConfig, TrainLogger
 from delphi.model.multimodal import DelphiM4, DelphiM4Config
 from delphi.model.transformer import Delphi2M, Delphi2MConfig
-from delphi.optim import OptimConfig, configure_optimizers
+from delphi.optim import (
+    OptimConfig,
+    configure_optimizer,
+    configure_scheduler,
+    parse_weight_decay_groups,
+)
 
 
 # Update this function whenever you have a library that needs to be seeded.
@@ -140,6 +145,7 @@ class BaseTrainer:
         model: torch.nn.Module,
         train_ds: Any,
         val_ds: Any,
+        optimizer: None | torch.optim.Optimizer = None,
     ):
         self.backend = backend
         cfg = self.backend.get_adjusted_args_for_process(cfg)
@@ -165,9 +171,19 @@ class BaseTrainer:
         self.val_ds = val_ds
         self.model = model
         self.model.to(self.device)
-        self.optimizer, self.scheduler = configure_optimizers(
-            model=self.model, cfg=cfg.optim, device_type=self.device_type
-        )
+        param_groups = parse_weight_decay_groups(model=self.model)
+
+        if optimizer is not None:
+            self.optimizer = optimizer
+        else:
+            self.optimizer = configure_optimizer(
+                optim_groups=param_groups,
+                learning_rate=cfg.optim.learning_rate,
+                beta1=cfg.optim.beta1,
+                beta2=cfg.optim.beta2,
+            )
+
+        self.scheduler = configure_scheduler(cfg=cfg.optim, optimizer=self.optimizer)
         self.scaler = torch.GradScaler(
             device=self.device_type, enabled=(cfg.dtype == "float16")
         )
@@ -290,7 +306,7 @@ class BaseTrainer:
         while True:
 
             # evaluate the loss on train/val sets and write checkpoints
-            if self.iter_num % self.cfg.eval_interval == 0 and self.iter_num > 0:
+            if self.iter_num % self.cfg.eval_interval == 0:
                 loss = self.estimate_loss()
                 self.logger.eval_step(step=self.iter_num, loss=loss)
 

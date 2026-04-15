@@ -1,4 +1,3 @@
-import inspect
 import math
 from dataclasses import dataclass
 from functools import partial
@@ -20,35 +19,33 @@ class OptimConfig:
 
     # learning rate decay settings
     schedule: str = "cosine"  # consine, constant
-    warmup_iters: int = 1000  # how many steps to warm up for
-    lr_decay_iters: int = 100000  # should be ~= max_iters per Chinchilla
-    min_lr: float = (
-        6e-5  # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
-    )
+    warmup_iters: float | int = 1000  # how many steps to warm up for
+    min_lr: float = 0.1
+    # minimum learning rate fraction, should be ~= 1/10 per Chinchilla
 
 
 # learning rate decay scheduler (cosine with warmup)
-def get_cosine_lr(it: int, cfg: OptimConfig) -> float:
+def get_cosine_lr(
+    it: int, max_iters: int, warmup_iters: int, max_lr: float, min_lr: float
+) -> float:
     # 1) linear warmup for warmup_iters steps
-    if it < cfg.warmup_iters:
-        return it / cfg.warmup_iters
+    if it < warmup_iters:
+        return it / warmup_iters
     # 2) if it > lr_decay_iters, return min learning rate
-    if it > cfg.lr_decay_iters:
-        return cfg.min_lr / cfg.learning_rate
+    if it > max_iters:
+        return min_lr / max_lr
     # 3) in between, use cosine decay down to min learning rate
-    decay_ratio = (it - cfg.warmup_iters) / (cfg.lr_decay_iters - cfg.warmup_iters)
+    decay_ratio = (it - warmup_iters) / (max_iters - warmup_iters)
     assert 0 <= decay_ratio <= 1
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))  # coeff ranges 0..1
-    return (cfg.min_lr + coeff * (cfg.learning_rate - cfg.min_lr)) / cfg.learning_rate
+    return (min_lr + coeff * (max_lr - min_lr)) / max_lr
 
 
-def get_constant_lr(it: int, cfg: OptimConfig) -> float:
+def get_constant_lr(it: int) -> float:
     return 1.0
 
 
-def configure_optimizers(
-    model: torch.nn.Module, cfg: OptimConfig, device_type: str
-) -> tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LambdaLR]:
+def parse_weight_decay_groups(model: torch.nn.Module) -> list[dict]:
     """
     This long function is unfortunately doing something very simple and is being very defensive:
     We are separating out all parameters of the model into two buckets: those that will experience
@@ -62,6 +59,10 @@ def configure_optimizers(
     blacklist_weight_modules = (torch.nn.LayerNorm, LayerNorm, torch.nn.Embedding)
     for mn, m in model.named_modules():
         for pn, p in m.named_parameters(recurse=False):
+
+            if not p.requires_grad:
+                continue
+
             fpn = "%s.%s" % (mn, pn) if mn else pn  # full param name
             # random note: because named_modules and named_parameters are recursive
             # we will see the same tensors p many many times. but doing it this way
@@ -93,7 +94,7 @@ def configure_optimizers(
             decay.remove("lm_head.weight")
 
     # validate that we considered every parameter
-    param_dict = {pn: p for pn, p in model.named_parameters()}
+    param_dict = {pn: p for pn, p in model.named_parameters() if p.requires_grad}
     inter_params = decay & no_decay
     union_params = decay | no_decay
     assert (
@@ -120,30 +121,96 @@ def configure_optimizers(
     # create the pytorch optimizer object
     optim_groups = [
         {
-            "params": [param_dict[pn] for pn in sorted(list(decay))],
-            "weight_decay": cfg.weight_decay,
-        },
-        {
             "params": [param_dict[pn] for pn in sorted(list(no_decay))],
             "weight_decay": 0.0,
         },
+        {
+            "params": [param_dict[pn] for pn in sorted(list(decay))],
+        },
     ]
-    # new PyTorch nightly has a new 'fused' option for AdamW that is much faster
-    use_fused = (device_type == "cuda") and (
-        "fused" in inspect.signature(torch.optim.AdamW).parameters
-    )
-    extra_args = dict(fused=True) if use_fused else dict()
+
+    return optim_groups
+
+
+def parse_differential_lr_groups(model, new_keys, differential_lr):
+
+    #   Convert to a set for faster lookup
+    new_keys = set(new_keys)
+    differential_params = []
+    base_params = []
+    for name, param in model.named_parameters():
+        # Safety check: Only include parameters that will actually be trained
+        if not param.requires_grad:
+            continue
+
+        # If the parameter name was not in the checkpoint, it's newly initialized (e.g., your MLP)
+        if name in new_keys:
+            differential_params.append(param)
+            print(
+                f"Assigning High LR to new module: {name}"
+            )  # Optional: good for debugging
+
+        # Otherwise, it successfully loaded from the pretrained checkpoint
+        else:
+            base_params.append(param)
+
+    param_groups = [
+        {"params": differential_params, "lr": differential_lr},
+        {"params": base_params},
+    ]
+
+    return param_groups
+
+
+def merge_param_groups(lr_param_groups, wd_param_groups):
+
+    param_groups = list()
+    for lr_group in lr_param_groups:
+        for wd_group in wd_param_groups:
+            shared_params = list(set(lr_group["params"]) & set(wd_group["params"]))
+            if len(shared_params) > 0:
+                param_group = {"params": shared_params}
+                if "lr" in lr_group.keys():
+                    param_group["lr"] = lr_group["lr"]
+                if "weight_decay" in wd_group.keys():
+                    param_group["weight_decay"] = wd_group["weight_decay"]
+                param_groups.append(param_group)
+
+    return param_groups
+
+
+def configure_optimizer(optim_groups, learning_rate, beta1, beta2):
+
     optimizer = torch.optim.AdamW(
-        optim_groups, lr=cfg.learning_rate, betas=(cfg.beta1, cfg.beta2), **extra_args
+        optim_groups,
+        lr=learning_rate,
+        betas=(beta1, beta2),
+        fused=torch.cuda.is_available(),
     )
 
+    return optimizer
+
+
+def configure_scheduler(
+    cfg: OptimConfig, optimizer: torch.optim.Optimizer
+) -> torch.optim.lr_scheduler.LambdaLR:
+
     if cfg.schedule == "cosine":
+        if cfg.warmup_iters < 1.0:
+            warmup_iters = int(cfg.warmup_iters * cfg.max_iters)
+        else:
+            warmup_iters = int(cfg.warmup_iters)
+
+        min_lr = cfg.learning_rate * cfg.min_lr
         lr_schedule_fn = partial(
             get_cosine_lr,
-            cfg=cfg,
+            max_iters=cfg.max_iters,
+            warmup_iters=warmup_iters,
+            max_lr=cfg.learning_rate,
+            min_lr=min_lr,
         )
     elif cfg.schedule == "constant":
-        lr_schedule_fn = partial(get_constant_lr, cfg=cfg)
+        lr_schedule_fn = get_constant_lr
     else:
         raise ValueError(f"unknown lr schedule: {cfg.schedule}")
 
@@ -152,4 +219,4 @@ def configure_optimizers(
         lr_lambda=lr_schedule_fn,
     )
 
-    return optimizer, scheduler
+    return scheduler
