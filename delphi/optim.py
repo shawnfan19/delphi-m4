@@ -1,27 +1,9 @@
 import math
-from dataclasses import dataclass
 from functools import partial
 
 import torch
 
 from delphi.model.transformer import LayerNorm
-
-
-@dataclass
-class OptimConfig:
-    # adamw optimizer
-    learning_rate: float = 6e-4  # max learning rate
-    max_iters: int = 100000  # total number of training iterations
-    weight_decay: float = 1e-2
-    beta1: float = 0.9
-    beta2: float = 0.99
-    grad_clip: float = 1.0  # clip gradients at this value, or disable if == 0.0
-
-    # learning rate decay settings
-    schedule: str = "cosine"  # consine, constant
-    warmup_iters: float | int = 1000  # how many steps to warm up for
-    min_lr: float = 0.1
-    # minimum learning rate fraction, should be ~= 1/10 per Chinchilla
 
 
 # learning rate decay scheduler (cosine with warmup)
@@ -192,27 +174,32 @@ def configure_optimizer(optim_groups, learning_rate, beta1, beta2):
 
 
 def configure_scheduler(
-    cfg: OptimConfig, optimizer: torch.optim.Optimizer
+    schedule: str,
+    learning_rate: float,
+    min_lr: float,
+    warmup_iters: int | float,
+    max_iters: int,
+    optimizer: torch.optim.Optimizer,
 ) -> torch.optim.lr_scheduler.LambdaLR:
 
-    if cfg.schedule == "cosine":
-        if cfg.warmup_iters < 1.0:
-            warmup_iters = int(cfg.warmup_iters * cfg.max_iters)
+    if schedule == "cosine":
+        if warmup_iters < 1.0:
+            warmup_iters = int(warmup_iters * max_iters)
         else:
-            warmup_iters = int(cfg.warmup_iters)
+            warmup_iters = int(warmup_iters)
 
-        min_lr = cfg.learning_rate * cfg.min_lr
+        min_lr = learning_rate * min_lr
         lr_schedule_fn = partial(
             get_cosine_lr,
-            max_iters=cfg.max_iters,
+            max_iters=max_iters,
             warmup_iters=warmup_iters,
-            max_lr=cfg.learning_rate,
+            max_lr=learning_rate,
             min_lr=min_lr,
         )
-    elif cfg.schedule == "constant":
+    elif schedule == "constant":
         lr_schedule_fn = get_constant_lr
     else:
-        raise ValueError(f"unknown lr schedule: {cfg.schedule}")
+        raise ValueError(f"unknown lr schedule: {schedule}")
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer,

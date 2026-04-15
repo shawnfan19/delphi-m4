@@ -13,7 +13,6 @@ from delphi.log import TrainLogConfig
 from delphi.model.multimodal import DelphiM4, DelphiM4Config
 from delphi.multimodal import Modality, module_name
 from delphi.optim import (
-    OptimConfig,
     configure_optimizer,
     merge_param_groups,
     parse_differential_lr_groups,
@@ -45,12 +44,13 @@ class FinetuneConfig(TrainBaseConfig):
     z_score_biomarkers: bool = True
     biomarker_dropout: None | float = None
     freeze_backbone: bool = False
-    optim: OptimConfig = field(
-        default_factory=lambda: OptimConfig(
-            learning_rate=6e-5, schedule="cosine", max_iters=50000, warmup_iters=0.1
-        )
-    )
-    differential_lr: float = 1e-4
+
+    learning_rate = 1e-5
+    schedule = "cosine"
+    max_iters = 50000
+    warmup_iters = 0.1
+
+    differential_lr: float = 1e-3
     eval_interval: int = 200
     log: TrainLogConfig = field(default_factory=lambda: TrainLogConfig())
 
@@ -185,9 +185,9 @@ def finetune(cfg: FinetuneConfig):
         )
         optimizer = configure_optimizer(
             optim_groups=param_groups,
-            learning_rate=cfg.optim.learning_rate,
-            beta1=cfg.optim.beta1,
-            beta2=cfg.optim.beta2,
+            learning_rate=cfg.learning_rate,
+            beta1=cfg.beta1,
+            beta2=cfg.beta2,
         )
 
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)

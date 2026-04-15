@@ -20,7 +20,6 @@ from delphi.log import TrainLogConfig, TrainLogger
 from delphi.model.multimodal import DelphiM4, DelphiM4Config
 from delphi.model.transformer import Delphi2M, Delphi2MConfig
 from delphi.optim import (
-    OptimConfig,
     configure_optimizer,
     configure_scheduler,
     parse_weight_decay_groups,
@@ -131,7 +130,18 @@ class TrainBaseConfig:
 
     distributed_backend: Optional[str] = None
 
-    optim: OptimConfig = field(default_factory=OptimConfig)
+    # adamw optimizer
+    learning_rate: float = 6e-4  # max learning rate
+    max_iters: int = 100000  # total number of training iterations
+    weight_decay: float = 1e-2
+    beta1: float = 0.9
+    beta2: float = 0.99
+    grad_clip: float = 1.0  # clip gradients at this value, or disable if == 0.0
+
+    # learning rate decay settings
+    schedule: str = "cosine"  # consine, constant
+    warmup_iters: float | int = 1000  # how many steps to warm up for
+    min_lr: float = 0.1
 
     log: TrainLogConfig = field(default_factory=TrainLogConfig)
 
@@ -178,12 +188,19 @@ class BaseTrainer:
         else:
             self.optimizer = configure_optimizer(
                 optim_groups=param_groups,
-                learning_rate=cfg.optim.learning_rate,
-                beta1=cfg.optim.beta1,
-                beta2=cfg.optim.beta2,
+                learning_rate=cfg.learning_rate,
+                beta1=cfg.beta1,
+                beta2=cfg.beta2,
             )
 
-        self.scheduler = configure_scheduler(cfg=cfg.optim, optimizer=self.optimizer)
+        self.scheduler = configure_scheduler(
+            schedule=cfg.schedule,
+            learning_rate=cfg.learning_rate,
+            min_lr=cfg.min_lr,
+            warmup_iters=cfg.warmup_iters,
+            max_iters=cfg.max_iters,
+            optimizer=self.optimizer,
+        )
         self.scaler = torch.GradScaler(
             device=self.device_type, enabled=(cfg.dtype == "float16")
         )
@@ -332,10 +349,10 @@ class BaseTrainer:
                 self.scaler.scale(loss_agg).backward()  # type: ignore
 
             # clip the gradient
-            if self.cfg.optim.grad_clip != 0.0:
+            if self.cfg.grad_clip != 0.0:
                 self.scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(), self.cfg.optim.grad_clip
+                    self.model.parameters(), self.cfg.grad_clip
                 )
 
             self.logger.train_step(step=self.iter_num, loss=loss)
@@ -348,7 +365,7 @@ class BaseTrainer:
 
             self.iter_num += 1
             # termination conditions
-            if self.iter_num > self.cfg.optim.max_iters:
+            if self.iter_num > self.cfg.max_iters:
                 break
 
 
