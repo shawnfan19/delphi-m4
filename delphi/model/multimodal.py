@@ -13,7 +13,12 @@ from delphi.model.transformer import (
     causal_attention_mask,
     exponential_nll,
 )
-from delphi.model.utils import untie_idx
+from delphi.model.utils import (
+    incremental_attention_mask,
+    sample_competing_exponentials,
+    self_terminate_single,
+    untie_idx,
+)
 from delphi.multimodal import Modality, module_name
 
 tensor_dict = dict[str, torch.Tensor]
@@ -105,15 +110,23 @@ class DelphiEmbedding(nn.Module):
         self,
         idx: torch.Tensor,
         age: torch.Tensor,
-        mod_idx: torch.Tensor,
-        mod_age: torch.Tensor,
-        biomarker_x: dict[Modality, torch.Tensor],
+        mod_idx: None | torch.Tensor = None,
+        mod_age: None | torch.Tensor = None,
+        biomarker_x: None | dict[Modality, torch.Tensor] = None,
+        emb: None | torch.Tensor = None,
     ):
 
-        idx_emb = self.token_embedding(idx)
-        idx_emb = self.token_drop(idx_emb) * (1 - self.config.token_dropout)
-        age_emb = self.age_encoding(age.unsqueeze(-1))
-        emb = idx_emb + age_emb
+        raw = dict()
+        if emb is None:
+            idx_emb = self.token_embedding(idx)
+            idx_emb = self.token_drop(idx_emb) * (1 - self.config.token_dropout)
+            age_emb = self.age_encoding(age.unsqueeze(-1))
+            emb = idx_emb + age_emb
+            raw["idx"] = idx_emb
+            raw["age"] = age_emb
+
+        if biomarker_x is None:
+            return emb, None, None
 
         biomarker_emb = dict()
         mod_age_emb = self.age_encoding(mod_age.unsqueeze(-1))
@@ -241,6 +254,7 @@ class DelphiM4Config:
     )
     biomarkers: dict[str, BiomarkerEmbedConfig] = field(default_factory=dict)
     modality_emb: bool = True
+    self_terminate_except: list = field(default_factory=lambda: [1])
     ce_beta: float = 1.0
     dt_beta: float = 1.0
     fuse: str = "early"  # early, cross, concat, concat-raw
@@ -322,41 +336,80 @@ class DelphiM4(torch.nn.Module):
 
         return loss_ce, loss_dt
 
+    @torch.no_grad()
+    def sample_next(self, outputs: dict[str, torch.Tensor], idx: torch.Tensor):
+        logits = outputs["logits"][:, -1, :]
+        logits = self_terminate_single(
+            idx=idx,
+            logits=logits,
+            terminate_except=torch.tensor(self.config.self_terminate_except).to(
+                idx.device
+            ),
+        )
+        idx_next, time_til_next = sample_competing_exponentials(logits=logits)
+        return idx_next, time_til_next
+
     def forward(
         self,
         idx: torch.Tensor,
         age: torch.Tensor,
-        biomarker: dict[Modality, torch.Tensor],
-        mod_age: torch.Tensor,
-        mod_idx: torch.Tensor,
+        biomarker: None | dict[Modality, torch.Tensor] = None,
+        mod_age: None | torch.Tensor = None,
+        mod_idx: None | torch.Tensor = None,
         targets: None | torch.Tensor = None,
         targets_age: None | torch.Tensor = None,
+        past_kvs: None | list = None,
+        past_pad: None | torch.Tensor = None,
+        emb: None | torch.Tensor = None,
     ):
 
         x, mod_emb, _ = self.transformer.embed(
-            idx=idx, age=age, mod_idx=mod_idx, mod_age=mod_age, biomarker_x=biomarker
+            idx=idx,
+            age=age,
+            mod_idx=mod_idx,
+            mod_age=mod_age,
+            biomarker_x=biomarker,
+            emb=emb,
         )
-        x, fused_age, fused_mod_idx = fuse_embed(
-            emb=x, age=age, mod_idx=mod_idx, mod_age=mod_age, mod_emb=mod_emb, idx=idx
-        )
+
+        if mod_emb is not None:
+            x, fused_age, fused_mod_idx = fuse_embed(
+                emb=x,
+                age=age,
+                mod_idx=mod_idx,
+                mod_age=mod_age,
+                mod_emb=mod_emb,
+                idx=idx,
+            )
+        else:
+            fused_age = age
+            fused_mod_idx = (idx > 0).to(idx.dtype)
+
         pad = fused_mod_idx > 0
 
-        if self.config.attn_mask == "triangular":
+        if past_kvs is not None:
+            attn_mask = incremental_attention_mask(new_pad=pad, past_pad=past_pad)
+        elif self.config.attn_mask == "triangular":
             attn_mask = causal_attention_mask(pad=pad)
         else:
             attn_mask = causal_attention_mask(pad=pad, timestep=fused_age)
 
         x = self.transformer.drop(x)
         att = []
-        for block in self.transformer.h:
-            x, a, _ = block(x, attn_mask)
+        new_kvs = []
+        for i, block in enumerate(self.transformer.h):
+            past_kv = past_kvs[i] if past_kvs is not None else None
+            x, a, new_kv = block(x, attn_mask, past_kv=past_kv)
             att.append(a)
+            new_kvs.append(new_kv)
         x = self.transformer.ln_f(x)
         att = torch.stack(att)
 
         misc = dict()
         misc["attn_mask"] = attn_mask
         misc["attn"] = att
+        misc["past_kvs"] = new_kvs
+        misc["cur_pad"] = pad
 
         outputs = dict()
         logits = self.lm_head(x)

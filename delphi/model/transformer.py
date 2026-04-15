@@ -457,6 +457,7 @@ def generate(
     stop_at_block_size: bool = True,
     exclude_pad: bool = True,
     cached: bool = True,
+    **kwargs,
 ):
 
     termination_tokens = torch.tensor(
@@ -494,13 +495,11 @@ def generate(
 
     while len(active_indices) > 0:
         if not cached or cache_kvs is None:
-            outputs, _, misc = model(cur_idx, cur_age)
+            outputs, _, misc = model(cur_idx, cur_age, **kwargs)
+            kwargs = {}  # only pass on first call
         else:
-            T_cached = cache_kvs[0][0].shape[2]
-            new_idx = cur_idx[:, T_cached:]
-            new_age = cur_age[:, T_cached:]
             outputs, _, misc = model(
-                new_idx, new_age, past_kvs=cache_kvs, past_pad=cache_pad
+                idx_next, age_next, past_kvs=cache_kvs, past_pad=cache_pad
             )
             cache_pad = torch.cat([cache_pad, misc["cur_pad"]], dim=1)
 
@@ -547,6 +546,8 @@ def generate(
             if cached and cache_kvs is not None:
                 cache_kvs = [(k[~should_stop], v[~should_stop]) for k, v in cache_kvs]
                 cache_pad = cache_pad[~should_stop]
+                idx_next = idx_next[~should_stop]
+                age_next = age_next[~should_stop]
 
         if len(active_indices) == 0:
             break
