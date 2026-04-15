@@ -81,6 +81,79 @@ def cut_prompt(
     return idx, age, prompt_age
 
 
+def cut_prompt_multimodal(
+    idx: torch.Tensor,
+    age: torch.Tensor,
+    bio_x_dict: dict,
+    bio_t: torch.Tensor,
+    bio_m: torch.Tensor,
+    prompt_age: None | float | torch.Tensor = None,
+    prompt_token: None | torch.Tensor = None,
+    prompt_modalities: None | list = None,
+    append_no_event: bool = False,
+):
+    """Cut prompt for multimodal data.
+
+    Exactly one of prompt_age, prompt_token, or prompt_modalities must be set.
+
+    prompt_modalities: list of Modality enums. The prompt age is derived from
+        the last biomarker measurement time among these modalities, per sample.
+    """
+
+    n_set = sum(x is not None for x in [prompt_age, prompt_token, prompt_modalities])
+    assert n_set == 1, f"exactly one cutting criterion must be set, got {n_set}"
+
+    if prompt_modalities is not None:
+        mod_values = torch.tensor(
+            [m.value if hasattr(m, "value") else m for m in prompt_modalities],
+            device=bio_m.device,
+        )
+        is_prompt_mod = torch.isin(bio_m, mod_values)
+        assert is_prompt_mod.any(
+            dim=1
+        ).all(), "found samples with no measurements for prompt_modalities"
+        prompt_age = bio_t.clone()
+        prompt_age[~is_prompt_mod] = -1e4
+        prompt_age = prompt_age.max(dim=1, keepdim=True)[0]
+
+    # cut disease tokens; pass prompt_token only when that's the criterion
+    idx, age, prompt_age = cut_prompt(
+        idx,
+        age,
+        prompt_age=prompt_age if prompt_token is None else None,
+        prompt_token=prompt_token,
+        append_no_event=append_no_event,
+    )
+
+    # cut biomarker data at prompt_age (now always a (B, 1) tensor)
+    keep = (bio_m > 0) & (bio_t <= prompt_age)
+
+    new_bio_x_dict = {}
+    for modality, bio_x in bio_x_dict.items():
+        old_mask = (bio_m == modality.value).flatten()
+        new_mask = (keep & (bio_m == modality.value)).flatten()
+        keep_in_bio_x = new_mask[old_mask]
+        bio_x = bio_x[keep_in_bio_x]
+        if bio_x.shape[0] > 0:
+            new_bio_x_dict[modality] = bio_x
+
+    bio_t = bio_t.clone()
+    bio_m = bio_m.clone()
+    bio_t[~keep] = -1e4
+    bio_m[~keep] = 0
+
+    sort_idx = bio_t.argsort(dim=1)
+    bio_t = bio_t.gather(1, sort_idx)
+    bio_m = bio_m.gather(1, sort_idx)
+
+    trim = torch.min(torch.sum(bio_m == 0, dim=1)).item()
+    if trim > 0:
+        bio_t = bio_t[:, trim:]
+        bio_m = bio_m[:, trim:]
+
+    return idx, age, new_bio_x_dict, bio_t, bio_m, prompt_age
+
+
 def load_label_meta(data_dir="ukb_real_data") -> pd.DataFrame:
     """Load disease label metadata (ICD chapters, colors)."""
     path = Path(DELPHI_DATA_DIR) / data_dir / "labels_chapters_colours.csv"
