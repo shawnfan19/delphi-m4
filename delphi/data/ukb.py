@@ -10,6 +10,7 @@ import pandas as pd
 import torch
 import yaml
 
+from delphi.data.transform import TokenTransform
 from delphi.data.utils import (
     append_no_event,
     collate_batch,
@@ -226,67 +227,21 @@ class UKBDataset:
         self.rng = np.random.default_rng(seed)
         self.deterministic = deterministic
 
-        self.no_event_interval = no_event_interval
-        if no_event_interval is not None:
-            self.append_no_event = functools.partial(
-                append_no_event,
-                interval=no_event_interval,
-                token=self.tokenizer["no_event"],
-                mode=no_event_mode,
-            )
-        else:
-            self.append_no_event = identity_transform
-
-        if exclude:
-            if exclude_list is None:
-                exclude_list = LIFESTYLE
-            tokens_to_exclude = np.array(
-                [self.tokenizer[event] for event in exclude_list]
-            )
-            self.exclude_tokens = functools.partial(
-                exclude_tokens, blacklist=tokens_to_exclude
-            )
-        else:
-            self.exclude_tokens = identity_transform
-
-        if perturb:
-            if perturb_list is None:
-                perturb_list = LIFESTYLE
-            tokens_to_perturb = np.array(
-                [self.tokenizer[event] for event in perturb_list]
-            )
-            self.perturb_time = functools.partial(
-                perturb_time,
-                tokens=tokens_to_perturb,
-            )
-        else:
-            self.perturb_time = identity_transform
-
-        if block_size is not None:
-            self.crop_block_size = functools.partial(
-                crop_contiguous,
-                block_size=block_size,
-                mode=crop_mode,
-            )
-        else:
-            self.crop_block_size = identity_transform
-
-        self.dx_token = None
-        if break_clusters:
-            if additional_dx_token:
-                self.dx_token = self.vocab_size
-                self.tokenizer["dx"] = len(self.tokenizer)
-            else:
-                self.dx_token = NO_EVENT_TOKEN
-            self.break_clusters = functools.partial(
-                dissolve_clusters,
-                whitelist=np.concatenate(
-                    (np.array([NO_EVENT_TOKEN]), self.sex_tokens, self.lifestyle_tokens)
-                ),
-                dx_token=self.dx_token,
-            )
-        else:
-            self.break_clusters = identity_transform
+        self.token_transform = TokenTransform(
+            no_event_interval=no_event_interval,
+            no_event_mode=no_event_mode,
+            block_size=block_size,
+            perturb_tokens=perturb_list,
+            blacklist_tokens=exclude_list,
+            crop_mode=crop_mode,
+            deterministic=deterministic,
+            seed=seed,
+            break_clusters=break_clusters,
+            dx_token=self.vocab_size if additional_dx_token else 1,
+            whitelist_tokens=np.concatenate(
+                (np.array([NO_EVENT_TOKEN]), self.sex_tokens, self.lifestyle_tokens)
+            ),
+        )
 
     def __len__(self):
         return self.participants.size
@@ -312,16 +267,7 @@ class UKBDataset:
         pid = self.participants[idx]
         x_pid, t_pid = self.reader[pid]
 
-        if self.deterministic:
-            rng = np.random.default_rng(pid + self.seed)
-        else:
-            rng = self.rng
-        x_pid, t_pid = self.exclude_tokens(x_pid, t_pid)
-        x_pid, t_pid = self.append_no_event(x_pid, t_pid, rng=rng)
-        x_pid, t_pid = self.perturb_time(x_pid, t_pid, rng=rng)
-        t_pid, x_pid = sort_by_time(t_pid, x_pid, stable=self.deterministic)
-        x_pid, t_pid = self.crop_block_size(x_pid, t_pid, rng=rng)
-        x_pid, t_pid = self.break_clusters(x_pid, t_pid, rng=rng)
+        x_pid, t_pid = self.token_transform(x_pid, t_pid)
 
         return x_pid[:-1], t_pid[:-1], x_pid[1:], t_pid[1:]
 
@@ -697,36 +643,16 @@ class MultimodalUKBDataset:
                 )
             print(f"{self.participants.size}/{old_n} remaining")
 
-        if no_event_interval is not None:
-            self.append_no_event = functools.partial(
-                append_no_event,
-                interval=no_event_interval,
-                token=self.tokenizer["no_event"],
-                mode=no_event_mode,
-            )
-        else:
-            self.append_no_event = identity_transform
-
-        if perturb:
-            if perturb_list is None:
-                perturb_list = LIFESTYLE
-            tokens_to_perturb = np.array(
-                [self.tokenizer[event] for event in perturb_list]
-            )
-            self.perturb_time = functools.partial(
-                perturb_time, tokens=tokens_to_perturb
-            )
-        else:
-            self.perturb_time = identity_transform
-
-        if block_size is not None:
-            self.crop_block_size = functools.partial(
-                crop_contiguous,
-                block_size=block_size,
-                mode=crop_mode,
-            )
-        else:
-            self.crop_block_size = identity_transform
+        self.token_transform = TokenTransform(
+            no_event_interval=no_event_interval,
+            no_event_mode=no_event_mode,
+            block_size=block_size,
+            crop_mode=crop_mode,
+            perturb_tokens=perturb_list,
+            deterministic=deterministic,
+            seed=seed,
+            break_clusters=False,
+        )
 
         if biomarker_dropout is not None:
             self.dropout_biomarkers = functools.partial(
@@ -794,10 +720,8 @@ class MultimodalUKBDataset:
             t_lst.append(exp_t)
         x = np.concatenate(x_lst)
         t = np.concatenate(t_lst)
-        x, t = self.append_no_event(x, t, rng=rng)
-        x, t = self.perturb_time(x, t, rng=rng)
-        t, x = sort_by_time(t, x)
-        x, t = self.crop_block_size(x, t, rng=rng)
+
+        x, t = self.token_transform(x, t)
 
         bio_x_dict = dict()
         bio_t_lst = list()
