@@ -160,6 +160,38 @@ def load_label_meta(data_dir="ukb_real_data") -> pd.DataFrame:
     return pd.read_csv(path)
 
 
+class UKBReader:
+
+    def __init__(self, memmap: bool = False):
+
+        dataset_dir = Path(DELPHI_DATA_DIR) / "ukb_real_data"
+        tokenizer_path = dataset_dir / "tokenizer.yaml"
+        with open(tokenizer_path, "r") as f:
+            self.tokenizer = yaml.safe_load(f)
+
+        self.p2i = pd.read_csv(dataset_dir / "p2i.csv", index_col="pid")
+        self.start_pos = self.p2i["start_pos"].to_dict()
+        self.seq_len = self.p2i["seq_len"].to_dict()
+
+        tokens_path = dataset_dir / "data.bin"
+        time_steps_path = dataset_dir / "time.bin"
+        if memmap:
+            self.tokens = np.memmap(tokens_path, dtype=np.uint32, mode="r")
+            self.timesteps = np.memmap(time_steps_path, dtype=np.uint32, mode="r")
+        else:
+            self.tokens = np.fromfile(tokens_path, dtype=np.uint32)
+            self.timesteps = np.fromfile(time_steps_path, dtype=np.uint32)
+
+    def __getitem__(self, pid: int):
+
+        i = self.start_pos[pid]
+        l = self.seq_len[pid]
+        x_pid = self.tokens[i : i + l].astype(np.uint32)
+        t_pid = self.timesteps[i : i + l].astype(np.float32)
+
+        return x_pid, t_pid
+
+
 class UKBDataset:
 
     def __init__(
@@ -184,16 +216,11 @@ class UKBDataset:
         self._init_args = locals().copy()
         self._init_args.pop("self")  # Remove 'self' reference
 
-        (
-            self.tokenizer,
-            self.start_pos,
-            self.seq_len,
-            self.participants,
-            self.tokens,
-            self.time_steps,
-        ) = load_core_data_package(
-            data_dir=data_dir, subject_list=subject_list, memmap=memmap
-        )
+        self.reader = UKBReader()
+        self.tokenizer = self.reader.tokenizer
+
+        participants_path = Path(DELPHI_DATA_DIR) / "ukb_real_data" / subject_list
+        self.participants = np.fromfile(participants_path, dtype=np.uint32)
 
         self.seed = seed
         self.rng = np.random.default_rng(seed)
@@ -283,14 +310,12 @@ class UKBDataset:
     def __getitem__(self, idx: int):
 
         pid = self.participants[idx]
+        x_pid, t_pid = self.reader[pid]
+
         if self.deterministic:
             rng = np.random.default_rng(pid + self.seed)
         else:
             rng = self.rng
-        i = self.start_pos[pid]
-        l = self.seq_len[pid]
-        x_pid = self.tokens[i : i + l].astype(np.uint32)
-        t_pid = self.time_steps[i : i + l].astype(np.float32)
         x_pid, t_pid = self.exclude_tokens(x_pid, t_pid)
         x_pid, t_pid = self.append_no_event(x_pid, t_pid, rng=rng)
         x_pid, t_pid = self.perturb_time(x_pid, t_pid, rng=rng)
@@ -558,16 +583,11 @@ class MultimodalUKBDataset:
         self._init_args = locals().copy()
         self._init_args.pop("self")  # Remove 'self' reference
 
-        (
-            self.tokenizer,
-            self.start_pos,
-            self.seq_len,
-            self.participants,
-            self.tokens,
-            self.time_steps,
-        ) = load_core_data_package(
-            data_dir=data_dir, subject_list=subject_list, memmap=memmap
-        )
+        self.reader = UKBReader()
+        self.tokenizer = self.reader.tokenizer
+
+        participants_path = Path(DELPHI_DATA_DIR) / "ukb_real_data" / subject_list
+        self.participants = np.fromfile(participants_path, dtype=np.uint32)
 
         self.seed = seed
         self.rng = np.random.default_rng(seed)
@@ -761,14 +781,12 @@ class MultimodalUKBDataset:
     def __getitem__(self, idx: int):
 
         pid = self.participants[idx]
+        x, t = self.reader[pid]
+
         if self.deterministic:
             rng = np.random.default_rng(pid + self.seed)
         else:
             rng = self.rng
-        i = self.start_pos[pid]
-        l = self.seq_len[pid]
-        x = self.tokens[i : i + l].astype(np.uint32)
-        t = self.time_steps[i : i + l].astype(np.float32)
         x_lst, t_lst = [x], [t]
         for expansion_pack in self.expansion_packs.values():
             exp_x, exp_t = expansion_pack[pid]
@@ -846,35 +864,3 @@ class MultimodalUKBDataset:
         bio_M = torch.tensor(bio_M, dtype=torch.long)
 
         return X0, T0, bio_X_dict, bio_T, bio_M, X1, T1
-
-
-def load_core_data_package(data_dir: str, subject_list, memmap: bool = False):
-
-    dataset_dir = Path(DELPHI_DATA_DIR) / data_dir
-    tokenizer_path = dataset_dir / "tokenizer.yaml"
-    with open(tokenizer_path, "r") as f:
-        tokenizer = yaml.safe_load(f)
-
-    p2i = pd.read_csv(dataset_dir / "p2i.csv", index_col="pid")
-    start_pos = p2i["start_pos"].to_dict()
-    seq_len = p2i["seq_len"].to_dict()
-
-    if isinstance(subject_list, (str, os.PathLike)):
-        participants_path = dataset_dir / subject_list
-        if memmap:
-            participants = np.memmap(participants_path, dtype=np.uint32, mode="r")
-        else:
-            participants = np.fromfile(participants_path, dtype=np.uint32)
-    else:
-        participants = np.asarray(subject_list, dtype=np.uint32)
-
-    tokens_path = dataset_dir / "data.bin"
-    time_steps_path = dataset_dir / "time.bin"
-    if memmap:
-        tokens = np.memmap(tokens_path, dtype=np.uint32, mode="r")
-        timesteps = np.memmap(time_steps_path, dtype=np.uint32, mode="r")
-    else:
-        tokens = np.fromfile(tokens_path, dtype=np.uint32)
-        timesteps = np.fromfile(time_steps_path, dtype=np.uint32)
-
-    return tokenizer, start_pos, seq_len, participants, tokens, timesteps
