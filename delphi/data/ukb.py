@@ -200,36 +200,23 @@ class MultimodalUKBReader:
         self.token_reader = UKBReader(memmap=memmap)
         self.tokenizer = self.token_reader.tokenizer
 
-        expansion_pack_dir = Path(DELPHI_DATA_DIR) / "ukb_real_data" / "expansion_packs"
         self.expansion_packs = dict()
-        self.expansion_pack_tokenizers = dict()
+        self.expansion_offset = dict()
         if expansion_packs is not None:
             expansion_packs.sort()
-            for pack in expansion_packs:
-                pack_path = expansion_pack_dir / pack
-                assert os.path.exists(pack_path), FileNotFoundError(
-                    f"expansion pack {pack_path} not found"
-                )
-                tokenizer_path = os.path.join(pack_path, "tokenizer.yaml")
-                with open(tokenizer_path, "r") as f:
-                    add_tokenizer = yaml.safe_load(f)
-
+            for name in expansion_packs:
+                self.expansion_packs[name] = ExpansionPack(name=name, memmap=memmap)
+                add_tokenizer = self.expansion_packs[name]
                 self.tokenizer, offset = update_tokenizer(
                     base_tokenizer=self.tokenizer, add_tokenizer=add_tokenizer  # type: ignore
                 )
-                self.expansion_pack_tokenizers[pack] = add_tokenizer
-                self.expansion_packs[pack] = ExpansionPack(
-                    path=pack_path, offset=offset, memmap=memmap
-                )
+                self.expansion_offset[name] = offset
 
-        biomarker_dir = Path(DELPHI_DATA_DIR) / "ukb_real_data" / "biomarkers"
         self.biomarkers = dict()
         if biomarkers is not None:
             for biomarker in biomarkers:
-                biomarker = Modality[biomarker.upper()]
-                biomarker_path = biomarker_dir / biomarker.name.lower()
-                self.biomarkers[biomarker] = Biomarker(
-                    path=biomarker_path,
+                self.biomarkers[Modality[biomarker.upper()]] = Biomarker(
+                    name=biomarker.lower(),
                     memmap=memmap,
                 )
 
@@ -237,9 +224,9 @@ class MultimodalUKBReader:
 
         x, t = self.token_reader[pid]
         x_lst, t_lst = [x], [t]
-        for expansion_pack in self.expansion_packs.values():
+        for name, expansion_pack in self.expansion_packs.items():
             exp_x, exp_t = expansion_pack[pid]
-            x_lst.append(exp_x)
+            x_lst.append(exp_x + self.expansion_offset[name])
             t_lst.append(exp_t)
         x = np.concatenate(x_lst)
         t = np.concatenate(t_lst)
@@ -394,13 +381,16 @@ class Biomarker:
 
     def __init__(
         self,
-        path: str,
+        name: str,
         stats_subjects: None | np.ndarray = None,
         memmap: bool = False,
         first_time_only: bool = True,
         z_score: bool = False,
     ):
 
+        biomarker_dir = Path(DELPHI_DATA_DIR) / "ukb_real_data" / "biomarkers"
+        path = biomarker_dir / name
+        assert os.path.exists(path), FileNotFoundError(f"biomarker {path} not found")
         self.path = path
         data_path = os.path.join(path, "data.bin")
         if memmap:
@@ -509,11 +499,14 @@ class Biomarker:
 
 class ExpansionPack:
 
-    def __init__(self, path: str, offset: int, memmap: bool = False):
+    def __init__(self, name: str, memmap: bool = False):
 
+        path = Path(DELPHI_DATA_DIR) / "ukb_real_data" / "expansion_packs" / name
+        assert os.path.exists(path), FileNotFoundError(
+            f"expansion pack {path} not found"
+        )
         p2i = pd.read_csv(os.path.join(path, "p2i.csv"), index_col="pid")
         self.pids = p2i.index.to_numpy()
-        self.offset = offset
         self.start_pos = p2i["start_pos"].to_dict()
         self.seq_len = p2i["seq_len"].to_dict()
         data_path = os.path.join(path, "data.bin")
@@ -533,7 +526,7 @@ class ExpansionPack:
 
         i = self.start_pos[pid]
         l = self.seq_len[pid]
-        x_pid = self.tokens[i : i + l] + self.offset
+        x_pid = self.tokens[i : i + l]
         t_pid = self.time_steps[i : i + l]
 
         return x_pid, t_pid
