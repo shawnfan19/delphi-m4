@@ -249,37 +249,15 @@ def crop_contiguous(
             return x[cut]
 
 
-def crop_contiguous_multimodal(
-    x: np.ndarray,
-    biomarker: dict,
-    t: np.ndarray,
-    m: np.ndarray,
-    block_size: int,
-    rng: np.random.Generator,
-    mode: Literal["left", "right", "random"] = "left",
-):
-    """
-    input sequences should be sorted according to time
-    """
-
-    L = x.shape[0]
-    if L <= block_size:
-        return x, biomarker, t, m
-    else:
-        keep = _crop_slice(mode, L, block_size, rng)
-        mask = np.zeros_like(m).astype(bool)
-        mask[keep] = True
-        biomarker_keep = dict()
-        for modality in biomarker.keys():
-            modality_mask = mask[m == modality.value]
-            if modality_mask.sum() == 0:
-                continue
-            else:
-                biomarker_keep[modality] = list(
-                    itertools.compress(biomarker[modality], modality_mask)
-                )
-
-        return x[keep], biomarker_keep, t[keep], m[keep]
+def filter_biomarker_array(bio_x_dict, bio_t, bio_m, mask: np.ndarray):
+    """Boolean mask over t/m, propagated per-modality into x."""
+    new_bio_x_dict = {}
+    for mod, vals in bio_x_dict.items():
+        mod_mask = mask[bio_m == mod.value]
+        filtered = [v for v, k in zip(vals, mod_mask) if k]
+        if filtered:
+            new_bio_x_dict[mod] = filtered
+    return new_bio_x_dict, bio_t[mask], bio_m[mask]
 
 
 def dropout_biomarkers(
@@ -294,14 +272,24 @@ def dropout_biomarkers(
 
     keep = rng.random(size=len(bio_t)) >= p
 
-    new_bio_x_dict = {}
-    for modality, bio_x in bio_x_dict.items():
-        mod_keep = keep[bio_m == modality.value]
-        filtered = [x for x, k in zip(bio_x, mod_keep) if k]
-        if len(filtered) > 0:
-            new_bio_x_dict[modality] = filtered
+    return filter_biomarker_array(bio_x_dict, bio_t, bio_m, mask=keep)
 
-    return new_bio_x_dict, bio_t[keep], bio_m[keep]
+
+def remove_after_np(x, t, bio_x_dict, bio_t, bio_m, cutoff_t):
+    """Remove tokens and biomarker measurements after cutoff_t.
+
+    Unbatched version for __getitem__ outputs: x, t are 1D numpy arrays;
+    bio_x_dict values are lists of numpy arrays; bio_t, bio_m are 1D numpy.
+    """
+    x_mask = t <= cutoff_t
+    x = x[x_mask]
+    t = t[x_mask]
+
+    bio_x_dict, bio_t, bio_m = filter_biomarker_array(
+        bio_x_dict, bio_t, bio_m, mask=bio_t <= cutoff_t
+    )
+
+    return x, t, bio_x_dict, bio_t, bio_m
 
 
 def sort_by_time(t: np.ndarray, *args: np.ndarray, stable: bool = False):
@@ -346,27 +334,6 @@ def remove_after(x, t, bio_x_dict, bio_t, bio_m, cutoff_t):
     }
     bio_t = bio_t[:, bio_mask].clone()
     bio_m = bio_m[:, bio_mask].clone()
-
-    return x, t, bio_x_dict, bio_t, bio_m
-
-
-def remove_after_np(x, t, bio_x_dict, bio_t, bio_m, cutoff_t):
-    """Remove tokens and biomarker measurements after cutoff_t.
-
-    Unbatched version for __getitem__ outputs: x, t are 1D numpy arrays;
-    bio_x_dict values are lists of numpy arrays; bio_t, bio_m are 1D numpy.
-    """
-    x_mask = t <= cutoff_t
-    x = x[x_mask]
-    t = t[x_mask]
-
-    bio_mask = bio_t <= cutoff_t
-    bio_x_dict = {
-        mod: [v for v, keep in zip(vals, bio_mask[bio_m == mod.value]) if keep]
-        for mod, vals in bio_x_dict.items()
-    }
-    bio_t = bio_t[bio_mask]
-    bio_m = bio_m[bio_mask]
 
     return x, t, bio_x_dict, bio_t, bio_m
 
