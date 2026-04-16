@@ -12,14 +12,9 @@ import yaml
 
 from delphi.data.transform import TokenTransform
 from delphi.data.utils import (
-    append_no_event,
     collate_batch,
-    crop_contiguous,
-    dissolve_clusters,
     dropout_biomarkers,
-    exclude_tokens,
     identity_transform,
-    perturb_time,
     sort_by_time,
     update_tokenizer,
 )
@@ -191,6 +186,88 @@ class UKBReader:
         t_pid = self.timesteps[i : i + l].astype(np.float32)
 
         return x_pid, t_pid
+
+
+class MultimodalUKBReader:
+
+    def __init__(
+        self,
+        expansion_packs: list | None = None,
+        biomarkers: list | None = None,
+        memmap: bool = False,
+    ):
+
+        self.token_reader = UKBReader(memmap=memmap)
+        self.tokenizer = self.token_reader.tokenizer
+
+        expansion_pack_dir = Path(DELPHI_DATA_DIR) / "ukb_real_data" / "expansion_packs"
+        self.expansion_packs = dict()
+        self.expansion_pack_tokenizers = dict()
+        if expansion_packs is not None:
+            expansion_packs.sort()
+            for pack in expansion_packs:
+                pack_path = expansion_pack_dir / pack
+                assert os.path.exists(pack_path), FileNotFoundError(
+                    f"expansion pack {pack_path} not found"
+                )
+                tokenizer_path = os.path.join(pack_path, "tokenizer.yaml")
+                with open(tokenizer_path, "r") as f:
+                    add_tokenizer = yaml.safe_load(f)
+
+                self.tokenizer, offset = update_tokenizer(
+                    base_tokenizer=self.tokenizer, add_tokenizer=add_tokenizer  # type: ignore
+                )
+                self.expansion_pack_tokenizers[pack] = add_tokenizer
+                self.expansion_packs[pack] = ExpansionPack(
+                    path=pack_path, offset=offset, memmap=memmap
+                )
+
+        biomarker_dir = Path(DELPHI_DATA_DIR) / "ukb_real_data" / "biomarkers"
+        self.biomarkers = dict()
+        if biomarkers is not None:
+            for biomarker in biomarkers:
+                biomarker = Modality[biomarker.upper()]
+                biomarker_path = biomarker_dir / biomarker.name.lower()
+                self.biomarkers[biomarker] = Biomarker(
+                    path=biomarker_path,
+                    memmap=memmap,
+                )
+
+    def __getitem__(self, pid: int):
+
+        x, t = self.token_reader[pid]
+        x_lst, t_lst = [x], [t]
+        for expansion_pack in self.expansion_packs.values():
+            exp_x, exp_t = expansion_pack[pid]
+            x_lst.append(exp_x)
+            t_lst.append(exp_t)
+        x = np.concatenate(x_lst)
+        t = np.concatenate(t_lst)
+
+        bio_x_dict = dict()
+        bio_t_lst = list()
+        bio_m_lst = list()
+        for modality, ds in self.biomarkers.items():
+            bio_x, mod_t = ds[pid]
+            if bio_x is None:
+                continue
+            bio_x_dict[modality] = bio_x
+            mod_m = np.full_like(mod_t, fill_value=modality.value)
+            bio_t_lst.append(mod_t)
+            bio_m_lst.append(mod_m)
+
+        if len(bio_x_dict) == 0:
+            assert len(bio_t_lst) == 0
+            assert len(bio_m_lst) == 0
+            bio_t = np.array([])
+            bio_m = np.array([])
+        else:
+            bio_t = np.concatenate(bio_t_lst)
+            bio_m = np.concatenate(bio_m_lst)
+
+            bio_t, bio_m = sort_by_time(bio_t, bio_m)
+
+        return x, t, bio_x_dict, bio_t, bio_m
 
 
 class UKBDataset:
@@ -529,7 +606,9 @@ class MultimodalUKBDataset:
         self._init_args = locals().copy()
         self._init_args.pop("self")  # Remove 'self' reference
 
-        self.reader = UKBReader()
+        self.reader = MultimodalUKBReader(
+            expansion_packs=expansion_packs, biomarkers=biomarkers, memmap=memmap
+        )
         self.tokenizer = self.reader.tokenizer
 
         participants_path = Path(DELPHI_DATA_DIR) / "ukb_real_data" / subject_list
@@ -707,45 +786,14 @@ class MultimodalUKBDataset:
     def __getitem__(self, idx: int):
 
         pid = self.participants[idx]
-        x, t = self.reader[pid]
+        x, t, bio_x_dict, bio_t, bio_m = self.reader[pid]
 
         if self.deterministic:
             rng = np.random.default_rng(pid + self.seed)
         else:
             rng = self.rng
-        x_lst, t_lst = [x], [t]
-        for expansion_pack in self.expansion_packs.values():
-            exp_x, exp_t = expansion_pack[pid]
-            x_lst.append(exp_x)
-            t_lst.append(exp_t)
-        x = np.concatenate(x_lst)
-        t = np.concatenate(t_lst)
 
         x, t = self.token_transform(x, t)
-
-        bio_x_dict = dict()
-        bio_t_lst = list()
-        bio_m_lst = list()
-        for modality, ds in self.mod_ds.items():
-            bio_x, mod_t = ds[pid]
-            if bio_x is None:
-                continue
-            bio_x_dict[modality] = bio_x
-            mod_m = np.full_like(mod_t, fill_value=modality.value)
-            bio_t_lst.append(mod_t)
-            bio_m_lst.append(mod_m)
-
-        if len(bio_x_dict) == 0:
-            assert len(bio_t_lst) == 0
-            assert len(bio_m_lst) == 0
-            bio_t = np.array([])
-            bio_m = np.array([])
-        else:
-            bio_t = np.concatenate(bio_t_lst)
-            bio_m = np.concatenate(bio_m_lst)
-
-            bio_t, bio_m = sort_by_time(bio_t, bio_m)
-
         bio_x_dict, bio_t, bio_m = self.dropout_biomarkers(
             bio_x_dict, bio_t, bio_m, rng=rng
         )
