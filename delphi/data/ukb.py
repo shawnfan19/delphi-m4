@@ -1,182 +1,65 @@
-import functools
 import os
-from collections import defaultdict
-from functools import cached_property
 from pathlib import Path
-from typing import Iterable, Literal
 
 import numpy as np
 import pandas as pd
-import torch
 import yaml
 
-from delphi.data.transform import TokenTransform
 from delphi.data.utils import (
-    collate_batch,
-    dropout_biomarkers,
-    identity_transform,
     sort_by_time,
     update_tokenizer,
 )
-from delphi.env import DELPHI_DATA_DIR
+from delphi.env import DELPHI_DATA_READ as DELPHI_DATA_DIR
 from delphi.multimodal import Modality
-
-LIFESTYLE = [
-    "bmi_low",
-    "bmi_mid",
-    "bmi_high",
-    "smoking_low",
-    "smoking_mid",
-    "smoking_high",
-    "alcohol_low",
-    "alcohol_mid",
-    "alcohol_high",
-]
-
-SEX = ["female", "male"]
 
 NO_EVENT_TOKEN = 1
 
 
-def cut_prompt(
-    idx: torch.Tensor,
-    age: torch.Tensor,
-    prompt_age: None | float | torch.Tensor,
-    prompt_token: None | torch.Tensor,
-    append_no_event: bool,
-):
-
-    idx = idx.clone()
-    age = age.clone()
-
-    if prompt_age is None:
-        assert prompt_token is not None
-        is_prompt = torch.isin(idx, prompt_token)
-        assert is_prompt.any(dim=1).all(), "found sequences with no prompt_token(s)"
-        prompt_age = age.clone()
-        prompt_age[~is_prompt] = -10000
-        prompt_age = prompt_age.max(dim=1, keepdim=True)[0]
-
-    if isinstance(prompt_age, float):
-        prompt_age = torch.full((idx.shape[0], 1), fill_value=prompt_age)
-
-    idx[age > prompt_age] = 0
-    age[age > prompt_age] = -10000.0
-
-    if append_no_event:
-        idx = torch.nn.functional.pad(idx, (0, 1), "constant", 1)
-        age = torch.cat((age, age.max(dim=1, keepdim=True)[0]), dim=1)
-
-    age_sort = age.argsort(1)
-    idx = idx.gather(1, age_sort)
-    age = age.gather(1, age_sort)
-
-    trim_margin = torch.min(torch.sum(idx == 0, dim=1)).item()
-    idx, age = idx[:, trim_margin:], age[:, trim_margin:]
-
-    return idx, age, prompt_age
-
-
-def cut_prompt_multimodal(
-    idx: torch.Tensor,
-    age: torch.Tensor,
-    bio_x_dict: dict,
-    bio_t: torch.Tensor,
-    bio_m: torch.Tensor,
-    prompt_age: None | float | torch.Tensor = None,
-    prompt_token: None | torch.Tensor = None,
-    prompt_modalities: None | list = None,
-    append_no_event: bool = False,
-):
-    """Cut prompt for multimodal data.
-
-    Exactly one of prompt_age, prompt_token, or prompt_modalities must be set.
-
-    prompt_modalities: list of Modality enums. The prompt age is derived from
-        the last biomarker measurement time among these modalities, per sample.
-    """
-
-    n_set = sum(x is not None for x in [prompt_age, prompt_token, prompt_modalities])
-    assert n_set == 1, f"exactly one cutting criterion must be set, got {n_set}"
-
-    if prompt_modalities is not None:
-        mod_values = torch.tensor(
-            [m.value if hasattr(m, "value") else m for m in prompt_modalities],
-            device=bio_m.device,
-        )
-        is_prompt_mod = torch.isin(bio_m, mod_values)
-        assert is_prompt_mod.any(
-            dim=1
-        ).all(), "found samples with no measurements for prompt_modalities"
-        prompt_age = bio_t.clone()
-        prompt_age[~is_prompt_mod] = -1e4
-        prompt_age = prompt_age.max(dim=1, keepdim=True)[0]
-
-    # cut disease tokens; pass prompt_token only when that's the criterion
-    idx, age, prompt_age = cut_prompt(
-        idx,
-        age,
-        prompt_age=prompt_age if prompt_token is None else None,
-        prompt_token=prompt_token,
-        append_no_event=append_no_event,
-    )
-
-    # cut biomarker data at prompt_age (now always a (B, 1) tensor)
-    keep = (bio_m > 0) & (bio_t <= prompt_age)
-
-    new_bio_x_dict = {}
-    for modality, bio_x in bio_x_dict.items():
-        old_mask = (bio_m == modality.value).flatten()
-        new_mask = (keep & (bio_m == modality.value)).flatten()
-        keep_in_bio_x = new_mask[old_mask]
-        bio_x = bio_x[keep_in_bio_x]
-        if bio_x.shape[0] > 0:
-            new_bio_x_dict[modality] = bio_x
-
-    bio_t = bio_t.clone()
-    bio_m = bio_m.clone()
-    bio_t[~keep] = -1e4
-    bio_m[~keep] = 0
-
-    sort_idx = bio_t.argsort(dim=1)
-    bio_t = bio_t.gather(1, sort_idx)
-    bio_m = bio_m.gather(1, sort_idx)
-
-    trim = torch.min(torch.sum(bio_m == 0, dim=1)).item()
-    if trim > 0:
-        bio_t = bio_t[:, trim:]
-        bio_m = bio_m[:, trim:]
-
-    return idx, age, new_bio_x_dict, bio_t, bio_m, prompt_age
-
-
-def load_label_meta(data_dir="ukb_real_data") -> pd.DataFrame:
-    """Load disease label metadata (ICD chapters, colors)."""
-    path = Path(DELPHI_DATA_DIR) / data_dir / "labels_chapters_colours.csv"
-    return pd.read_csv(path)
-
-
 class UKBReader:
+    base_dir = Path(DELPHI_DATA_DIR) / "ukb_real_data"
+    lifestyle_keys = [
+        "bmi_low",
+        "bmi_mid",
+        "bmi_high",
+        "smoking_low",
+        "smoking_mid",
+        "smoking_high",
+        "alcohol_low",
+        "alcohol_mid",
+        "alcohol_high",
+    ]
+    sex_keys = ["female", "male"]
 
     def __init__(self, memmap: bool = False):
 
-        dataset_dir = Path(DELPHI_DATA_DIR) / "ukb_real_data"
-        tokenizer_path = dataset_dir / "tokenizer.yaml"
+        tokenizer_path = self.base_dir / "tokenizer.yaml"
         with open(tokenizer_path, "r") as f:
             self.tokenizer = yaml.safe_load(f)
+        self.vocab_size = len(self.tokenizer)
 
-        self.p2i = pd.read_csv(dataset_dir / "p2i.csv", index_col="pid")
+        self.p2i = pd.read_csv(self.base_dir / "p2i.csv", index_col="pid")
         self.start_pos = self.p2i["start_pos"].to_dict()
         self.seq_len = self.p2i["seq_len"].to_dict()
 
-        tokens_path = dataset_dir / "data.bin"
-        time_steps_path = dataset_dir / "time.bin"
+        tokens_path = self.base_dir / "data.bin"
+        time_steps_path = self.base_dir / "time.bin"
         if memmap:
             self.tokens = np.memmap(tokens_path, dtype=np.uint32, mode="r")
             self.timesteps = np.memmap(time_steps_path, dtype=np.uint32, mode="r")
         else:
             self.tokens = np.fromfile(tokens_path, dtype=np.uint32)
             self.timesteps = np.fromfile(time_steps_path, dtype=np.uint32)
+
+    @classmethod
+    def participants(cls, fold):
+        return np.fromfile(
+            cls.base_dir / "participants" / f"{fold}_fold.bin", dtype=np.uint32
+        )
+
+    @classmethod
+    def labels(cls) -> pd.DataFrame:
+        """Load disease label metadata (ICD chapters, colors)."""
+        return pd.read_csv(cls.base_dir / "labels_chapters_colours.csv")
 
     def __getitem__(self, pid: int):
 
@@ -189,6 +72,8 @@ class UKBReader:
 
 
 class MultimodalUKBReader:
+    lifestyle_keys = UKBReader.lifestyle_keys
+    sex_keys = UKBReader.sex_keys
 
     def __init__(
         self,
@@ -196,9 +81,16 @@ class MultimodalUKBReader:
         biomarkers: list | None = None,
         memmap: bool = False,
     ):
+        """
+        args:
+            expansion_packs: a list of expansion packs to include
+            biomarkers: a list of biomarkers to load
+            memmap: whether to load data files in memmap mode
+        """
 
         self.token_reader = UKBReader(memmap=memmap)
         self.tokenizer = self.token_reader.tokenizer
+        self.base_tokenizer = self.tokenizer.copy()
 
         self.expansion_packs = dict()
         self.expansion_offset = dict()
@@ -211,6 +103,7 @@ class MultimodalUKBReader:
                     base_tokenizer=self.tokenizer, add_tokenizer=add_tokenizer  # type: ignore
                 )
                 self.expansion_offset[name] = offset
+        self.vocab_size = len(self.tokenizer)
 
         self.biomarkers = dict()
         if biomarkers is not None:
@@ -219,6 +112,18 @@ class MultimodalUKBReader:
                     name=biomarker.lower(),
                     memmap=memmap,
                 )
+
+    @classmethod
+    def participants(cls, fold):
+        return UKBReader.participants(fold)
+
+    @classmethod
+    def labels(cls):
+        return UKBReader.labels()
+
+    @property
+    def expansion_tokens(self):
+        return list(set(self.tokenizer.values()) - set(self.base_tokenizer.values()))
 
     def __getitem__(self, pid: int):
 
@@ -257,139 +162,18 @@ class MultimodalUKBReader:
         return x, t, bio_x_dict, bio_t, bio_m
 
 
-class UKBDataset:
-
-    def __init__(
-        self,
-        data_dir: str = "ukb_real_data",
-        subject_list: str = "participants/train_fold.bin",
-        no_event_interval: None | float = 5 * 365.25,
-        no_event_mode: str = "legacy-random",
-        block_size: None | int = None,
-        perturb: bool = True,
-        perturb_list: None | list = None,
-        exclude: bool = False,
-        exclude_list: None | list = None,
-        crop_mode: Literal["left", "right", "random"] = "right",
-        break_clusters: bool = False,
-        additional_dx_token: bool = True,
-        seed: int = 42,
-        deterministic: bool = False,
-        memmap: bool = False,
-    ):
-
-        self._init_args = locals().copy()
-        self._init_args.pop("self")  # Remove 'self' reference
-
-        self.reader = UKBReader()
-        self.tokenizer = self.reader.tokenizer
-
-        participants_path = Path(DELPHI_DATA_DIR) / "ukb_real_data" / subject_list
-        self.participants = np.fromfile(participants_path, dtype=np.uint32)
-
-        self.seed = seed
-        self.rng = np.random.default_rng(seed)
-        self.deterministic = deterministic
-
-        self.token_transform = TokenTransform(
-            no_event_interval=no_event_interval,
-            no_event_mode=no_event_mode,
-            block_size=block_size,
-            perturb_tokens=perturb_list,
-            blacklist_tokens=exclude_list,
-            crop_mode=crop_mode,
-            deterministic=deterministic,
-            seed=seed,
-            break_clusters=break_clusters,
-            dx_token=self.vocab_size if additional_dx_token else 1,
-            whitelist_tokens=np.concatenate(
-                (np.array([NO_EVENT_TOKEN]), self.sex_tokens, self.lifestyle_tokens)
-            ),
-        )
-
-    def __len__(self):
-        return self.participants.size
-
-    @property
-    def vocab_size(self):
-        return len(self.tokenizer)
-
-    @cached_property
-    def detokenizer(self):
-        return {v: k for k, v in self.tokenizer.items()}
-
-    @property
-    def lifestyle_tokens(self):
-        return np.array([self.tokenizer[i] for i in LIFESTYLE])
-
-    @property
-    def sex_tokens(self):
-        return np.array([self.tokenizer[i] for i in SEX])
-
-    def __getitem__(self, idx: int):
-
-        pid = self.participants[idx]
-        x_pid, t_pid = self.reader[pid]
-
-        x_pid, t_pid = self.token_transform(x_pid, t_pid)
-
-        return x_pid[:-1], t_pid[:-1], x_pid[1:], t_pid[1:]
-
-    def subset_participants_for_prompt(
-        self, prompt_age: None | float, prompt_tokens: None | np.ndarray
-    ):
-        keep_lst = list()
-        for i in range(self.participants.size):
-            x_pid, t_pid, _, _ = self[i]
-            tokens = x_pid.copy()
-            age = t_pid.copy()
-            if prompt_age is not None:
-                if age.min() > prompt_age:
-                    continue
-                tokens = tokens[age <= prompt_age]
-            if prompt_tokens is not None:
-                if not np.isin(tokens, prompt_tokens).any():
-                    continue
-            keep_lst.append(i)
-        print(f"{len(keep_lst)}/{self.participants.size} participants remaining")
-        self.participants = self.participants[keep_lst]
-
-    def get_batch(self, batch_idx: Iterable):
-
-        X0, T0, X1, T1 = list(), list(), list(), list()
-        for idx in batch_idx:
-            x0, t0, x1, t1 = self[idx]
-            X0.append(x0)
-            X1.append(x1)
-            T0.append(t0)
-            T1.append(t1)
-
-        X0 = collate_batch(X0)
-        T0 = collate_batch(T0, fill_value=-1e4)
-        X1 = collate_batch(X1)
-        T1 = collate_batch(T1, fill_value=-1e4)
-
-        X0 = torch.tensor(X0, dtype=torch.long)
-        T0 = torch.tensor(T0, dtype=torch.float32)
-        X1 = torch.tensor(X1, dtype=torch.long)
-        T1 = torch.tensor(T1, dtype=torch.float32)
-
-        return X0, T0, X1, T1
-
-
 class Biomarker:
+
+    base_dir = Path(DELPHI_DATA_DIR) / "ukb_real_data" / "biomarkers"
 
     def __init__(
         self,
         name: str,
-        stats_subjects: None | np.ndarray = None,
         memmap: bool = False,
         first_time_only: bool = True,
-        z_score: bool = False,
     ):
 
-        biomarker_dir = Path(DELPHI_DATA_DIR) / "ukb_real_data" / "biomarkers"
-        path = biomarker_dir / name
+        path = self.base_dir / name
         assert os.path.exists(path), FileNotFoundError(f"biomarker {path} not found")
         self.path = path
         data_path = os.path.join(path, "data.bin")
@@ -414,10 +198,30 @@ class Biomarker:
         self.pid2cnt = dict(zip(self.uniq_pids, ct))
 
         self.first_time_only = first_time_only
-        self.z_score = z_score
-        if stats_subjects is None:
-            stats_subjects = self.uniq_pids
-        self.mean, self.std = self.stats(stats_subjects)
+
+    @classmethod
+    def input_size(cls, name: str):
+        with open(cls.base_dir / name / "features.yaml", "r") as f:
+            features = yaml.safe_load(f)
+        return len(features)
+
+    @classmethod
+    def participants(cls, name: str) -> np.ndarray:
+        p2i = pd.read_csv(cls.base_dir / name / "p2i.csv")
+        return p2i["pid"].unique()  # type: ignore
+
+    @classmethod
+    def first_occurrence_times(cls, name: str, pids: np.ndarray) -> np.ndarray:
+        """Like first_occurrence_times, but reads p2i.csv without a full instance."""
+        p2i = pd.read_csv(cls.base_dir / name / "p2i.csv").sort_values(
+            by=["pid", "time"]
+        )
+        first = p2i.groupby("pid")["time"].first()
+        result = np.full(len(pids), np.nan, dtype=np.float32)
+        for i, pid in enumerate(pids):
+            if pid in first.index:
+                result[i] = first.loc[pid]
+        return result
 
     def __repr__(self):
         return f"Biomarker(path={self.path}, n_features={self.n_features})"
@@ -440,37 +244,9 @@ class Biomarker:
         data = np.stack(data, axis=0)
         return data, np.array(subs)
 
-    @property
-    def background(self):
-        if self.z_score:
-            return np.zeros((self.n_features,))
-        else:
-            return self.mean
-
     def stats(self, subjects: np.ndarray):
         data, _ = self.to_array(subjects)
         return np.mean(data, axis=0), np.std(data, axis=0)
-
-    def transform(self, x):
-        if self.z_score:
-            return (x - self.mean) / self.std
-        return x
-
-    def untransform(self, z):
-        if self.z_score:
-            return z * self.std + self.mean
-        return z
-
-    def first_occurrence_times(self, pids: np.ndarray) -> np.ndarray:
-        """Return the timestamp of the first measurement for each pid.
-
-        Returns NaN for pids that have no measurement in this biomarker.
-        """
-        result = np.full(len(pids), np.nan, dtype=np.float32)
-        for i, pid in enumerate(pids):
-            if pid in self.pid2idx:
-                result[i] = self.time_steps[self.pid2idx[pid]]
-        return result
 
     def __getitem__(
         self, pid: int
@@ -489,7 +265,6 @@ class Biomarker:
         pid_start_pos = self.start_pos[pid_slice]
         for i, l in zip(pid_start_pos, pid_seq_len):
             x = self.data[i : i + l]
-            x = self.transform(x)
             pid_data.append(x)
             if self.first_time_only:
                 pid_time = pid_time[[0]]
@@ -499,9 +274,11 @@ class Biomarker:
 
 class ExpansionPack:
 
+    base_dir = Path(DELPHI_DATA_DIR) / "ukb_real_data" / "expansion_packs"
+
     def __init__(self, name: str, memmap: bool = False):
 
-        path = Path(DELPHI_DATA_DIR) / "ukb_real_data" / "expansion_packs" / name
+        path = self.base_dir / name
         assert os.path.exists(path), FileNotFoundError(
             f"expansion pack {path} not found"
         )
@@ -522,6 +299,11 @@ class ExpansionPack:
         with open(tokenizer_path, "r") as f:
             self.tokenizer = yaml.safe_load(f)
 
+    @classmethod
+    def participants(cls, name: str) -> np.ndarray:
+        p2i = pd.read_csv(cls.base_dir / name / "p2i.csv")
+        return p2i["pid"].unique()
+
     def __getitem__(self, pid: int) -> tuple[np.ndarray, np.ndarray]:
 
         i = self.start_pos[pid]
@@ -532,300 +314,30 @@ class ExpansionPack:
         return x_pid, t_pid
 
 
-class MultimodalUKBDataset:
+def filter_participants(pids, filter_list, any=True):
 
-    def __init__(
-        self,
-        data_dir: str = "ukb_real_data",
-        expansion_pack_dir: str = "expansion_packs",
-        expansion_packs: None | list = None,
-        biomarker_datasets: None | dict = None,
-        biomarker_dir: str = "biomarkers",
-        biomarkers: None | list = None,
-        z_score_biomarkers: bool = True,
-        first_time_only: bool = True,
-        must_have_biomarkers: None | list = None,
-        biomarker_require: str = "all",
-        stats_subject_list: None | str = None,
-        subject_list: str = "participants/train_fold.bin",
-        must_have_expansion_packs: None | list = None,
-        expansion_pack_require: str = "all",
-        no_event_interval: None | float = 5 * 365.25,
-        no_event_mode: str = "legacy-random",
-        perturb: bool = False,
-        perturb_list: None | list = None,
-        block_size: None | int = None,
-        crop_mode: Literal["left", "right", "random"] = "left",
-        biomarker_dropout: None | float = None,
-        seed: int = 42,
-        deterministic: bool = False,
-        memmap: bool = False,
-    ):
-        """
-        args:
-            data_dir: directory name of UKB dataset
-            expansion_pack_dir: sub-directory within data_dir containing data for expansion packs
-            expansion_packs: a list of expansion packs to include
-            biomarker_datasets: a list of pre-initialized Biomarkers
-            biomarker_dir: sub-directory within data_dir containing biomarker data
-            biomarkers: a list of biomarkers to load
-            z_score_biomarkers: whether to z-score biomarker values
-            first_time_only: if True only use the first occurrence of each biomarker
-            must_have_biomarkers: a list of biomarkers that each participant must have to be included
-            biomarker_require: "all" to keep participants with all listed biomarkers, "any" to keep those with at least one
-            stats_subject_list: sub-path within data_dir to an array of subjects for computing Biomarker stats
-            subject_list: sub-path within data_dir to an array of subjects for loading
-            no_event_interval: average time intervals for introducing no-event tokens
-            no_event_mode: mode for introducing no-event tokens
-                refer to append_no_event for more details
-            perturb: whether to perturb timestamps of tokens in perturb_list
-            perturb_list: a list of tokens whose timestamps are perturbed for data augmentation
-                default is the lifestyle tokens in the UKB
-            block_size: maximum sequence length
-            crop_mode: where to start cropping a sequence that exceeds block_size
-                "left": start from the beginning
-                "right": start from the end
-                "random": start from a random position in the middle
-            biomarker_dropout: if not None, each biomarker measurement is independently dropped
-                with this probability during __getitem__
-            seed: random seed for reproducibility
-            deterministic: if True, the same participant will always receive the same augmentations.
-            memmap: whether to load data files in memmap mode
-        note: the following defaults differ from UKBDataset
-            - crop_mode
-            - perturb
-        """
+    if any:
+        union = np.concatenate([f for f in filter_list])
+        pids = pids[np.isin(pids, union)]
+    else:
+        for f in filter_list:
+            pids = pids[np.isin(pids, f)]
+    return pids
 
-        self._init_args = locals().copy()
-        self._init_args.pop("self")  # Remove 'self' reference
 
-        self.reader = MultimodalUKBReader(
-            expansion_packs=expansion_packs, biomarkers=biomarkers, memmap=memmap
-        )
-        self.tokenizer = self.reader.tokenizer
+def filter_participants_with_biomarkers(pids, biomarkers, any=True):
 
-        participants_path = Path(DELPHI_DATA_DIR) / "ukb_real_data" / subject_list
-        self.participants = np.fromfile(participants_path, dtype=np.uint32)
+    filter_list = list()
+    for biomarker in biomarkers:
+        filter_list.append(Biomarker.participants(biomarker))
 
-        self.seed = seed
-        self.rng = np.random.default_rng(seed)
-        self.deterministic = deterministic
+    return filter_participants(pids, filter_list, any)
 
-        self.expansion_pack_dir = os.path.join(
-            DELPHI_DATA_DIR, data_dir, expansion_pack_dir
-        )
-        self.expansion_packs = dict()
-        self.expansion_pack_tokenizers = dict()
-        if expansion_packs is not None:
-            expansion_packs.sort()
-            for pack in expansion_packs:
-                pack_path = os.path.join(self.expansion_pack_dir, pack)
-                assert os.path.exists(pack_path), FileNotFoundError(
-                    f"expansion pack {pack_path} not found"
-                )
-                tokenizer_path = os.path.join(pack_path, "tokenizer.yaml")
-                with open(tokenizer_path, "r") as f:
-                    add_tokenizer = yaml.safe_load(f)
 
-                self.tokenizer, offset = update_tokenizer(
-                    base_tokenizer=self.tokenizer, add_tokenizer=add_tokenizer  # type: ignore
-                )
-                self.expansion_pack_tokenizers[pack] = add_tokenizer
-                self.expansion_packs[pack] = ExpansionPack(
-                    path=pack_path, offset=offset, memmap=memmap
-                )
+def filter_participants_with_expansion_packs(pids, expansion_packs, any=True):
 
-        self.biomarker_dir = os.path.join(DELPHI_DATA_DIR, data_dir, biomarker_dir)
-        if biomarker_datasets is not None:
-            assert biomarkers is None
-            self.mod_ds = biomarker_datasets
-        else:
-            if stats_subject_list is None:
-                stats_subjects = self.participants
-            else:
-                stats_subjects = np.fromfile(
-                    os.path.join(DELPHI_DATA_DIR, data_dir, stats_subject_list),
-                    dtype=np.uint32,
-                )
+    filter_list = list()
+    for pack in expansion_packs:
+        filter_list.append(ExpansionPack.participants(pack))
 
-            self.mod_ds = {}
-            if biomarkers is not None:
-                for modality in biomarkers:
-                    modality = Modality[modality.upper()]
-                    biomarker_path = os.path.join(
-                        self.biomarker_dir, modality.name.lower()
-                    )
-                    dataset = Biomarker(
-                        path=biomarker_path,
-                        stats_subjects=stats_subjects,
-                        memmap=memmap,
-                        first_time_only=first_time_only,
-                        z_score=z_score_biomarkers,
-                    )
-                    self.mod_ds[modality] = dataset
-
-        if must_have_biomarkers is not None:
-            print(
-                f"keeping participants with {biomarker_require} of: {must_have_biomarkers}"
-            )
-            old_n = self.participants.size
-            if biomarker_require == "all":
-                for mod in must_have_biomarkers:
-                    mod_pids = self.get_modality_participants(mod)
-                    self.participants = self.participants[
-                        np.isin(self.participants, mod_pids)
-                    ]
-            elif biomarker_require == "any":
-                union_pids = np.concatenate(
-                    [
-                        self.get_modality_participants(mod)
-                        for mod in must_have_biomarkers
-                    ]
-                )
-                self.participants = self.participants[
-                    np.isin(self.participants, union_pids)
-                ]
-            else:
-                raise ValueError(
-                    f"biomarker_require must be 'all' or 'any', got '{biomarker_require}'"
-                )
-            print(f"{self.participants.size}/{old_n} remaining")
-
-        if must_have_expansion_packs is not None:
-            old_n = self.participants.size
-            if expansion_pack_require == "all":
-                for pack in must_have_expansion_packs:
-                    exp_pids = self.get_expansion_pack_participants(pack)
-                    self.participants = self.participants[
-                        np.isin(self.participants, exp_pids)
-                    ]
-            elif expansion_pack_require == "any":
-                union_pids = np.concatenate(
-                    [
-                        self.get_expansion_pack_participants(pack)
-                        for pack in must_have_expansion_packs
-                    ]
-                )
-                self.participants = self.participants[
-                    np.isin(self.participants, union_pids)
-                ]
-            else:
-                raise ValueError(
-                    f"expansion_pack_require must be 'all' or 'any', got '{biomarker_require}'"
-                )
-            print(f"{self.participants.size}/{old_n} remaining")
-
-        self.token_transform = TokenTransform(
-            no_event_interval=no_event_interval,
-            no_event_mode=no_event_mode,
-            block_size=block_size,
-            crop_mode=crop_mode,
-            perturb_tokens=perturb_list,
-            deterministic=deterministic,
-            seed=seed,
-            break_clusters=False,
-        )
-
-        if biomarker_dropout is not None:
-            self.dropout_biomarkers = functools.partial(
-                dropout_biomarkers,
-                p=biomarker_dropout,
-            )
-        else:
-            self.dropout_biomarkers = identity_transform
-
-    def get_modality_participants(self, modality) -> np.ndarray:
-        if isinstance(modality, str):
-            modality = Modality[modality.upper()]
-        return pd.read_csv(
-            os.path.join(self.biomarker_dir, modality.name.lower(), "p2i.csv")
-        )["pid"].to_numpy()
-
-    def get_expansion_pack_participants(self, expansion_pack) -> np.ndarray:
-        return pd.read_csv(
-            os.path.join(self.expansion_pack_dir, expansion_pack.lower(), "p2i.csv")
-        )["pid"].to_numpy()
-
-    def first_occurrence_times(self, modality):
-        if isinstance(modality, str):
-            modality = Modality[modality.upper()]
-        p2i = pd.read_csv(
-            os.path.join(self.biomarker_dir, modality.name.lower(), "p2i.csv")
-        ).sort_values(by=["pid", "time"])
-        first = p2i.groupby("pid")["time"].first()
-        result = np.full(len(self.participants), np.nan, dtype=np.float32)
-        mask = np.isin(self.participants, first.index)
-        result[mask] = first.reindex(self.participants[mask]).to_numpy()
-        return result
-
-    def __len__(self):
-        return self.participants.size
-
-    @property
-    def vocab_size(self):
-        return len(self.tokenizer)
-
-    @property
-    def detokenizer(self):
-        return {v: k for k, v in self.tokenizer.items()}
-
-    @property
-    def expansion_tokens(self):
-        tokens = list()
-        for exp_pack in self.expansion_packs.values():
-            tokens.extend([v + exp_pack.offset for v in exp_pack.tokenizer.values()])
-        return tokens
-
-    def __getitem__(self, idx: int):
-
-        pid = self.participants[idx]
-        x, t, bio_x_dict, bio_t, bio_m = self.reader[pid]
-
-        if self.deterministic:
-            rng = np.random.default_rng(pid + self.seed)
-        else:
-            rng = self.rng
-
-        x, t = self.token_transform(x, t)
-        bio_x_dict, bio_t, bio_m = self.dropout_biomarkers(
-            bio_x_dict, bio_t, bio_m, rng=rng
-        )
-
-        x0, x1 = x[:-1].copy(), x[1:].copy()
-        t0, t1 = t[:-1].copy(), t[1:].copy()
-
-        return x0, t0, bio_x_dict, bio_t, bio_m, x1, t1
-
-    def get_batch(self, batch_idx: Iterable):
-
-        X0, T0, X1, T1 = list(), list(), list(), list()
-        bio_X_dict, bio_T, bio_M = defaultdict(list), list(), list()
-        for idx in batch_idx:
-            x0, t0, bio_x_dict, bio_t, bio_m, x1, t1 = self[idx]
-            X0.append(x0)
-            T0.append(t0)
-            X1.append(x1)
-            T1.append(t1)
-
-            for modality in bio_x_dict.keys():
-                bio_X_dict[modality].extend(bio_x_dict[modality])
-            bio_T.append(bio_t)
-            bio_M.append(bio_m)
-
-        X0 = collate_batch(X0)
-        X0 = torch.tensor(X0, dtype=torch.long)
-        T0 = collate_batch(T0, fill_value=-1e4)
-        T0 = torch.tensor(T0, dtype=torch.float32)
-        X1 = collate_batch(X1)
-        X1 = torch.tensor(X1, dtype=torch.long)
-        T1 = collate_batch(T1, fill_value=-1e4)
-        T1 = torch.tensor(T1, dtype=torch.float32)
-
-        for modality, bio_x_lst in bio_X_dict.items():
-            bio_X_dict[modality] = torch.from_numpy(np.stack(bio_x_lst))  # type: ignore
-        bio_T = collate_batch(bio_T, fill_value=-1e4)
-        bio_T = torch.tensor(bio_T, dtype=torch.float32)
-        bio_M = collate_batch(bio_M)
-        bio_M = torch.tensor(bio_M, dtype=torch.long)
-
-        return X0, T0, bio_X_dict, bio_T, bio_M, X1, T1
+    return filter_participants(pids, filter_list, any)
