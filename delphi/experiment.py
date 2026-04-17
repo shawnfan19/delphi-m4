@@ -16,7 +16,7 @@ from omegaconf import OmegaConf
 
 from delphi import distributed
 from delphi.env import DELPHI_CKPT_DIR
-from delphi.log import TrainLogConfig, TrainLogger
+from delphi.log import Checkpointer, Logger
 from delphi.model.multimodal import DelphiM4, DelphiM4Config
 from delphi.model.transformer import Delphi2M, Delphi2MConfig
 from delphi.optim import (
@@ -143,7 +143,11 @@ class TrainBaseConfig:
     warmup_iters: float | int = 1000  # how many steps to warm up for
     min_lr: float = 0.1
 
-    log: TrainLogConfig = field(default_factory=TrainLogConfig)
+    wandb_log: bool = True
+    wandb_project: str = "delphi"
+    run_name: None | str = None
+    ckpt_interval: None | int = None
+    log_interval: int = 250
 
 
 class BaseTrainer:
@@ -155,6 +159,8 @@ class BaseTrainer:
         model: torch.nn.Module,
         train_ds: Any,
         val_ds: Any,
+        logger: Logger,
+        checkpointer: Checkpointer,
         optimizer: None | torch.optim.Optimizer = None,
     ):
         self.backend = backend
@@ -204,22 +210,19 @@ class BaseTrainer:
         self.scaler = torch.GradScaler(
             device=self.device_type, enabled=(cfg.dtype == "float16")
         )
-        run_dir = os.path.normpath(
-            os.path.join(DELPHI_CKPT_DIR, cfg.ckpt_dir, cfg.log.run_name)
-        )
-        ckpt_path = os.path.join(run_dir, "ckpt.pt")
-        if os.path.exists(ckpt_path) and cfg.auto_resume:
-            ckpt_dict = torch.load(ckpt_path, map_location=torch.device("cpu"))
-            self.model.load_state_dict(ckpt_dict["model"])
-            self.optimizer.load_state_dict(ckpt_dict["optimizer"])
-            self.scheduler.load_state_dict(ckpt_dict["scheduler"])
-            self.iter_num = ckpt_dict["iter_num"]
-            if self.backend.is_master_process():
-                print(
-                    f"found and loaded existing checkpoint; starting from iter {self.iter_num}"
-                )
-        else:
-            self.iter_num = 0
+
+        self.iter_num = 0
+        if cfg.auto_resume:
+            ckpt_dict = checkpointer.load()
+            if ckpt_dict is not None:
+                self.model.load_state_dict(ckpt_dict["model"])
+                self.optimizer.load_state_dict(ckpt_dict["optimizer"])
+                self.scheduler.load_state_dict(ckpt_dict["scheduler"])
+                self.iter_num = ckpt_dict["iter_num"]
+                if self.backend.is_master_process():
+                    print(
+                        f"found and loaded existing checkpoint; starting from iter {self.iter_num}"
+                    )
         self.model = self.backend.transform_model(self.model)
 
         if dist.is_initialized():
@@ -244,17 +247,9 @@ class BaseTrainer:
                 step=self.iter_num,
             )
 
-        self.logger = TrainLogger(
-            cfg=cfg.log,
-            exp_cfg=asdict(cfg),
-            data_cfg=getattr(train_ds, "_init_args", dict()),
-            dump_dir=run_dir,
-            tokenizer=train_ds.tokenizer,
-            model=self.model,  # type: ignore
-            optimizer=self.optimizer,
-            scheduler=self.scheduler,
-            backend=self.backend,
-        )
+        self.logger = logger
+        self.checkpointer = checkpointer
+        self.best_val_loss = float("inf")
 
     def mini_step(
         self, batch_data: Iterable, *args, **kwargs
@@ -314,6 +309,16 @@ class BaseTrainer:
 
         return eval_loss
 
+    def _save_ckpt(self, step: int, ckpt_fname: str = "ckpt.pt"):
+        self.checkpointer.save(
+            model=self.model,
+            optimizer=self.optimizer,
+            scheduler=self.scheduler,
+            step=step,
+            best_val_loss=self.best_val_loss,
+            ckpt_fname=ckpt_fname,
+        )
+
     def train(self):
 
         if self.cfg.compile:
@@ -324,16 +329,30 @@ class BaseTrainer:
 
             # evaluate the loss on train/val sets and write checkpoints
             if self.iter_num % self.cfg.eval_interval == 0:
-                loss = self.estimate_loss()
-                self.logger.eval_step(step=self.iter_num, loss=loss)
+                eval_loss = self.estimate_loss()
+                metrics = {"step": self.iter_num} | eval_loss
+                self.logger.log(metrics)
+                self.logger.print(
+                    f"iter {self.iter_num}: "
+                    f"train loss {eval_loss['train/loss']:.4f}, "
+                    f"val loss {eval_loss['val/loss']:.4f}"
+                )
+                self._save_ckpt(self.iter_num, ckpt_fname="ckpt.pt")
+                if eval_loss["val/loss"] < self.best_val_loss:
+                    self._save_ckpt(self.iter_num, ckpt_fname="ckpt_best.pt")
+                self.best_val_loss = min(eval_loss["val/loss"], self.best_val_loss)
 
-            self.logger.ckpt_step(step=self.iter_num)
+            if self.cfg.ckpt_interval is not None:
+                if self.iter_num % self.cfg.ckpt_interval == 0:
+                    self._save_ckpt(
+                        self.iter_num, ckpt_fname=f"ckpt_{self.iter_num}.pt"
+                    )
 
             if self.iter_num == 0 and self.cfg.eval_only:
                 break
 
             # forward backward update, with optional gradient accumulation to simulate larger batch size
-            # and using the GradScaler if data type is float16``
+            # and using the GradScaler if data type is float16
             for i in range(self.cfg.gradient_accumulation_steps):
                 with self.backend.get_context_for_microstep_forward(
                     model=self.model,
@@ -355,7 +374,22 @@ class BaseTrainer:
                     self.model.parameters(), self.cfg.grad_clip
                 )
 
-            self.logger.train_step(step=self.iter_num, loss=loss)
+            # log training metrics
+            if self.iter_num % self.cfg.log_interval == 0:
+                metrics = {
+                    "step": self.iter_num,
+                    "lr": self.scheduler.get_last_lr()[0],
+                }
+                lossf = 0.0
+                for loss_key, loss_pt in loss.items():
+                    metrics[loss_key] = loss_pt.item()
+                    lossf += loss_pt.item()
+                metrics["loss"] = lossf
+
+                self.logger.print(f"iter {self.iter_num}: loss {lossf:.4f}")
+                self.logger.log(metrics)
+                self.logger.log_grad(self.model)
+
             # step the optimizer and scaler if training in fp16
             self.scaler.step(self.optimizer)
             self.scaler.update()
@@ -427,7 +461,9 @@ def load_ckpt(ckpt_path):
         raise ValueError
 
     pprint.pp(ckpt_dict["model_args"])
-    model_cfg = model_cfg_cls(**ckpt_dict["model_args"])
+    valid_fields = {f.name for f in fields(model_cfg_cls)}
+    model_args = {k: v for k, v in ckpt_dict["model_args"].items() if k in valid_fields}
+    model_cfg = model_cfg_cls(**model_args)
     model = model_cls(model_cfg)  # type: ignore
     model.load_state_dict(ckpt_dict["model"], strict=False)
     missing, unexpected = model.load_state_dict(ckpt_dict["model"], strict=False)
