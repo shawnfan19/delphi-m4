@@ -7,7 +7,7 @@ from collections import defaultdict
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Optional
+from typing import Any, Iterable, Iterator, Optional, Self
 
 import numpy as np
 import torch
@@ -406,9 +406,9 @@ class BaseTrainer:
 @dataclass
 class GenerateConfig:
     ckpt: str = "delphi-2m-og/ckpt.pt"
-    prompt_age: None | int = None
+    prompt_age: None | int | float = None
     prompt_lifestyle: bool = True
-    interval: float = 1.0
+    interval: float = 365.25
     batch_size: int = 512
     subsample: None | int = None
     n_repeats: int = 1
@@ -417,7 +417,7 @@ class GenerateConfig:
     prompt_no_event: bool = False
 
     @classmethod
-    def from_cli(cls):
+    def from_cli(cls) -> Self:
         """Parse from command line arguments"""
         # Create structured config from dataclass defaults
         schema = OmegaConf.structured(cls)
@@ -426,10 +426,10 @@ class GenerateConfig:
         # Merge: CLI overrides defaults
         merged = OmegaConf.merge(schema, cli)
         # Convert back to dataclass instance
-        return OmegaConf.to_object(merged)
+        return OmegaConf.to_object(merged)  # type: ignore[return-value]
 
     @classmethod
-    def auto(cls, **overrides):
+    def auto(cls, **overrides) -> Self:
         """
         Automatically choose:
         - Interactive env → use defaults + overrides
@@ -440,7 +440,7 @@ class GenerateConfig:
             schema = OmegaConf.structured(cls)
             override_conf = OmegaConf.create(overrides)
             merged = OmegaConf.merge(schema, override_conf)
-            return OmegaConf.to_object(merged)
+            return OmegaConf.to_object(merged)  # type: ignore[return-value]
         else:
             return cls.from_cli()
 
