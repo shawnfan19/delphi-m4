@@ -70,6 +70,15 @@ class UKBReader:
 
         return x_pid, t_pid
 
+    def is_female(self, pids: np.ndarray) -> np.ndarray:
+        female_token = self.tokenizer["female"]
+        out = np.zeros(len(pids), dtype=bool)
+        for i, pid in enumerate(pids):
+            start = self.start_pos[int(pid)]
+            length = self.seq_len[int(pid)]
+            out[i] = (self.tokens[start : start + length] == female_token).any()
+        return out
+
 
 class MultimodalUKBReader:
     lifestyle_keys = UKBReader.lifestyle_keys
@@ -98,9 +107,9 @@ class MultimodalUKBReader:
             expansion_packs.sort()
             for name in expansion_packs:
                 self.expansion_packs[name] = ExpansionPack(name=name, memmap=memmap)
-                add_tokenizer = self.expansion_packs[name]
                 self.tokenizer, offset = update_tokenizer(
-                    base_tokenizer=self.tokenizer, add_tokenizer=add_tokenizer  # type: ignore
+                    base_tokenizer=self.tokenizer,
+                    add_tokenizer=self.expansion_packs[name].tokenizer,
                 )
                 self.expansion_offset[name] = offset
         self.vocab_size = len(self.tokenizer)
@@ -124,6 +133,9 @@ class MultimodalUKBReader:
     @property
     def expansion_tokens(self):
         return list(set(self.tokenizer.values()) - set(self.base_tokenizer.values()))
+
+    def is_female(self, pids: np.ndarray) -> np.ndarray:
+        return self.token_reader.is_female(pids)
 
     def __getitem__(self, pid: int):
 
@@ -293,7 +305,7 @@ class ExpansionPack:
             self.time_steps = np.memmap(time_path, dtype=np.uint32, mode="r")
         else:
             self.tokens = np.fromfile(data_path, dtype=np.uint32)
-            self.time_steps = np.fromfile(data_path, dtype=np.uint32)
+            self.time_steps = np.fromfile(time_path, dtype=np.uint32)
 
         tokenizer_path = os.path.join(path, "tokenizer.yaml")
         with open(tokenizer_path, "r") as f:
@@ -304,7 +316,19 @@ class ExpansionPack:
         p2i = pd.read_csv(cls.base_dir / name / "p2i.csv")
         return p2i["pid"].unique()
 
+    @classmethod
+    def first_occurrence_times(cls, name: str, pids: np.ndarray) -> np.ndarray:
+        pack = cls(name=name, memmap=True)
+        result = np.full(len(pids), np.nan, dtype=np.float32)
+        for i, pid in enumerate(pids):
+            if pid in pack.start_pos:
+                result[i] = pack.time_steps[pack.start_pos[pid]]
+        return result
+
     def __getitem__(self, pid: int) -> tuple[np.ndarray, np.ndarray]:
+
+        if pid not in self.start_pos:
+            return np.empty(0, dtype=np.uint32), np.empty(0, dtype=np.uint32)
 
         i = self.start_pos[pid]
         l = self.seq_len[pid]
