@@ -1,4 +1,5 @@
 import os
+from functools import cached_property
 from pathlib import Path
 
 import numpy as np
@@ -61,6 +62,10 @@ class UKBReader:
         """Load disease label metadata (ICD chapters, colors)."""
         return pd.read_csv(cls.base_dir / "labels_chapters_colours.csv")
 
+    @cached_property
+    def detokenizer(self):
+        return {v: k for k, v in self.tokenizer.items()}
+
     def __getitem__(self, pid: int):
 
         i = self.start_pos[pid]
@@ -77,6 +82,27 @@ class UKBReader:
             start = self.start_pos[int(pid)]
             length = self.seq_len[int(pid)]
             out[i] = (self.tokens[start : start + length] == female_token).any()
+        return out
+
+    def event_times(self, pids: np.ndarray) -> np.ndarray:
+        """N by V array of first-occurrence times; NaN where a token never occurs."""
+        out = np.full((len(pids), self.vocab_size), np.nan, dtype=np.float32)
+        for i, pid in enumerate(pids):
+            start = self.start_pos[int(pid)]
+            length = self.seq_len[int(pid)]
+            x = self.tokens[start : start + length]
+            t = self.timesteps[start : start + length].astype(np.float32)
+            uniq, first_idx = np.unique(x, return_index=True)
+            out[i, uniq] = t[first_idx]
+        return out
+
+    def exit_times(self, pids: np.ndarray) -> np.ndarray:
+        """N array of last token times (exit / censoring time)."""
+        out = np.empty(len(pids), dtype=np.float32)
+        for i, pid in enumerate(pids):
+            start = self.start_pos[int(pid)]
+            length = self.seq_len[int(pid)]
+            out[i] = self.timesteps[start + length - 1]
         return out
 
 
@@ -130,12 +156,22 @@ class MultimodalUKBReader:
     def labels(cls):
         return UKBReader.labels()
 
+    @cached_property
+    def detokenizer(self):
+        return {v: k for k, v in self.tokenizer.items()}
+
     @property
     def expansion_tokens(self):
         return list(set(self.tokenizer.values()) - set(self.base_tokenizer.values()))
 
     def is_female(self, pids: np.ndarray) -> np.ndarray:
         return self.token_reader.is_female(pids)
+
+    def event_times(self, pids: np.ndarray) -> np.ndarray:
+        return self.token_reader.event_times(pids)
+
+    def exit_times(self, pids: np.ndarray) -> np.ndarray:
+        return self.token_reader.exit_times(pids)
 
     def __getitem__(self, pid: int):
 
