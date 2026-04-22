@@ -95,6 +95,23 @@ def untie(
     return outputs, age
 
 
+def nearest_input_pos(age, targets_age):
+    """
+    for each target, find the position of the nearest input strictly before it;
+    on ties, pick the latest tied position (last in sequence order)
+
+    """
+
+    L = age.shape[-1]
+    targets_age = targets_age.view(*targets_age.shape, 1)
+    age = age.view(age.shape[0], 1, age.shape[1])
+    age_diff = targets_age - age  # B, L1, L0
+    age_diff = age_diff.masked_fill(age_diff <= 0, float("inf"))
+    pos = L - 1 - torch.argmin(age_diff.flip(-1), dim=-1)
+
+    return pos
+
+
 def multi_hot(
     targets: torch.Tensor, targets_age: torch.Tensor, vocab_size: int
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -158,7 +175,7 @@ def self_terminate(
     # Cumsum: mask[b, j, v] = True if token v appeared in positions 0..j
     mask = one_hot.cumsum(dim=1) > 0
 
-    return estimator.masked_fill(mask, fill_val)
+    return estimator.masked_fill(mask, fill_val), mask
 
 
 def exponential_nll(

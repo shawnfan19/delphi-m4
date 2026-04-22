@@ -15,9 +15,9 @@ from delphi.model.transformer import (
 )
 from delphi.model.utils import (
     incremental_attention_mask,
+    nearest_input_pos,
     sample_competing_exponentials,
     self_terminate_single,
-    untie_idx,
 )
 from delphi.multimodal import Modality, module_name
 
@@ -158,7 +158,7 @@ def fuse_embed(
     emb: torch.Tensor,
     age: torch.Tensor,
     idx: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     fuse modality embeddings and base embeddings, sorted by age.
 
@@ -166,7 +166,8 @@ def fuse_embed(
     then apply the time-sort index to the whole block at once.
 
     disease token positions get mod_idx=1 only when idx > 0 (non-padding),
-    so that fused_mod_idx > 0 can be used as a padding mask.
+    so that fused_mod_idx > 0 can be used as a padding mask. fused_idx carries
+    the disease token ids (0 at biomarker and padding positions).
     """
     _, _, n_embd = emb.shape
     device = emb.device
@@ -184,7 +185,10 @@ def fuse_embed(
 
     fused_emb_unsorted = torch.cat((mod_emb_dense, emb), dim=1)
     disease_mod_idx = (idx > 0).to(mod_idx.dtype)
-    fused_idx_unsorted = torch.cat((mod_idx, disease_mod_idx), dim=1)
+    fused_mod_idx_unsorted = torch.cat((mod_idx, disease_mod_idx), dim=1)
+    fused_idx_unsorted = torch.cat(
+        (torch.zeros_like(mod_idx, dtype=idx.dtype), idx), dim=1
+    )
     fused_age_unsorted = torch.cat((mod_age, age), dim=1)
 
     # stable=True ensures biomarkers (mod_emb) precede disease tokens (emb) when ages are equal
@@ -193,19 +197,10 @@ def fuse_embed(
         fused_emb_unsorted, sort_indices.unsqueeze(-1), dim=1
     )
     fused_age = torch.take_along_dim(fused_age_unsorted, sort_indices, dim=1)
-    fused_mod_idx = torch.take_along_dim(fused_idx_unsorted, sort_indices, dim=1)
+    fused_mod_idx = torch.take_along_dim(fused_mod_idx_unsorted, sort_indices, dim=1)
+    fused_idx = torch.take_along_dim(fused_idx_unsorted, sort_indices, dim=1)
 
-    return fused_emb, fused_age, fused_mod_idx
-
-
-def fuse_targets_mask(targets_age: torch.Tensor, mod_age: torch.Tensor):
-    fused_age = torch.cat((mod_age, targets_age), dim=1)
-    time_sort = torch.argsort(fused_age, stable=True, dim=1)
-    is_target = torch.cat(
-        (torch.zeros_like(mod_age), torch.ones_like(targets_age)), dim=1
-    )
-    is_target = torch.take_along_dim(is_target, time_sort, dim=1)
-    return is_target
+    return fused_emb, fused_age, fused_mod_idx, fused_idx
 
 
 @dataclass
@@ -248,7 +243,7 @@ class DelphiM4Config:
     bias: bool = True
     mask_ties: bool = True
     attn_mask: str = "time"
-    weight_tying: bool = True
+    weight_tying: bool = False
     ignore_tokens: list = field(
         default_factory=lambda: [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     )
@@ -307,17 +302,17 @@ class DelphiM4(torch.nn.Module):
 
     def loss(
         self,
-        logits: torch.Tensor,
+        outputs: dict[str, torch.Tensor],
         targets: torch.Tensor,
-        age: torch.Tensor,
         targets_age: torch.Tensor,
+        reduce: bool = True,
     ):
-        if self.config.mask_ties:
-            corr_idx = untie_idx(age, targets_age)
-            age = torch.take_along_dim(input=age, indices=corr_idx, dim=1)
-            logits = torch.take_along_dim(
-                input=logits, indices=corr_idx.unsqueeze(-1), dim=1
-            )
+
+        age = outputs["age"]
+        logits = outputs["logits"]
+        pos = nearest_input_pos(age, targets_age)
+        logits = torch.take_along_dim(logits, dim=1, indices=pos.unsqueeze(-1))
+        age = torch.take_along_dim(age, dim=1, indices=pos)
 
         loss_ce = F.cross_entropy(
             # (b, l, n_vocab) -> (b, n_vocab, l)
@@ -334,7 +329,22 @@ class DelphiM4(torch.nn.Module):
             t_min=self.config.t_min,
         )
 
-        return loss_ce, loss_dt
+        is_valid_target = targets != 0
+        for k in self.config.ignore_tokens:
+            is_valid_target *= targets != k
+        loss_ce[~is_valid_target] = torch.nan
+        loss_dt[~is_valid_target] = torch.nan
+
+        if reduce:
+            loss_ce = torch.nanmean(loss_ce)
+            loss_dt = torch.nanmean(loss_dt)
+
+        loss = {
+            "loss_ce": loss_ce,
+            "loss_dt": loss_dt,
+        }
+
+        return loss
 
     @torch.no_grad()
     def sample_next(self, outputs: dict[str, torch.Tensor], idx: torch.Tensor):
@@ -373,7 +383,7 @@ class DelphiM4(torch.nn.Module):
         )
 
         if mod_emb is not None:
-            x, fused_age, fused_mod_idx = fuse_embed(
+            x, fused_age, fused_mod_idx, fused_idx = fuse_embed(
                 emb=x,
                 age=age,
                 mod_idx=mod_idx,
@@ -381,13 +391,14 @@ class DelphiM4(torch.nn.Module):
                 mod_emb=mod_emb,
                 idx=idx,
             )
+            pad = fused_mod_idx > 0
         else:
             fused_age = age
-            fused_mod_idx = (idx > 0).to(idx.dtype)
-
-        pad = fused_mod_idx > 0
+            fused_idx = idx
+            pad = (idx > 0).to(idx.dtype)
 
         if past_kvs is not None:
+            assert past_pad is not None
             attn_mask = incremental_attention_mask(new_pad=pad, past_pad=past_pad)
         elif self.config.attn_mask == "triangular":
             attn_mask = causal_attention_mask(pad=pad)
@@ -412,34 +423,13 @@ class DelphiM4(torch.nn.Module):
         misc["cur_pad"] = pad
 
         outputs = dict()
-        logits = self.lm_head(x)
+        outputs["age"] = fused_age
+        outputs["idx"] = fused_idx
+        outputs["logits"] = self.lm_head(x)
 
-        if (targets is not None) and (targets_age is not None):
-            is_target = fuse_targets_mask(
-                targets_age=targets_age, mod_age=mod_age
-            ).bool()
-            logits = logits[is_target].view(*idx.shape, -1)
-            age = fused_age[is_target].view(*idx.shape)
-            outputs["age"] = age
-
-            is_valid_target = targets != 0
-            for k in self.config.ignore_tokens:
-                is_valid_target *= targets != k
-            loss_ce, loss_dt = self.loss(
-                logits=logits,
-                targets=targets,
-                age=age,
-                targets_age=targets_age,
-            )
-            loss_ce = torch.mean(loss_ce[is_valid_target])
-            loss_dt = torch.mean(loss_dt[is_valid_target])
-            loss = {
-                "loss_ce": loss_ce * self.config.ce_beta,
-                "loss_dt": loss_dt * self.config.dt_beta,
-            }
+        if targets is not None and targets_age is not None:
+            loss = self.loss(outputs, targets=targets, targets_age=targets_age)
         else:
             loss = None
-
-        outputs["logits"] = logits
 
         return outputs, loss, misc
