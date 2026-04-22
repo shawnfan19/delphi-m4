@@ -213,29 +213,24 @@ class Prompt:
     """Instance-level prompt cutting for token sequences.
 
     Splits a full sequence into prompt and ground truth at a cutoff age.
-    Exactly one of prompt_age or prompt_tokens must be set.
+    `prompt_age` may be a scalar shared across participants, or a dict
+    mapping pid -> age.
     """
 
     def __init__(
         self,
-        prompt_age: None | float = None,
-        prompt_tokens: None | np.ndarray = None,
+        prompt_age: float | dict,
         append_no_event: bool = False,
     ):
-        n_set = sum(x is not None for x in [prompt_age, prompt_tokens])
-        assert n_set == 1, f"exactly one cutting criterion must be set, got {n_set}"
-
         self._init_args = {k: v for k, v in locals().items() if k != "self"}
 
         self.prompt_age = prompt_age
-        self.prompt_tokens = prompt_tokens
         self.append_no_event = append_no_event
 
-    def __call__(self, x, t):
-        if self.prompt_tokens is not None:
-            is_prompt = np.isin(x, self.prompt_tokens)
-            assert is_prompt.any(), "sequence has no prompt_tokens"
-            cutoff = t[is_prompt].max()
+    def __call__(self, x, t, pid=None):
+        if isinstance(self.prompt_age, dict):
+            assert pid is not None, "pid is required when prompt_age is a mapping"
+            cutoff = self.prompt_age[pid]
         else:
             cutoff = self.prompt_age
 
@@ -254,48 +249,26 @@ class MultimodalPrompt:
     """instance-level prompt cutting for multimodal data.
 
     splits a full sequence into prompt and ground truth, and removes
-    biomarker measurements after the prompt cutoff.
-
-    exactly one of prompt_age, prompt_tokens, or prompt_biomarkers must be set.
+    biomarker measurements after the prompt cutoff. `prompt_age` may be a
+    scalar shared across participants, or a dict mapping pid -> age.
     """
 
     def __init__(
         self,
-        prompt_age: None | float = None,
-        prompt_tokens: None | np.ndarray = None,
-        prompt_biomarkers: None | list = None,
+        prompt_age: float | dict,
         append_no_event: bool = False,
     ):
-        n_set = sum(
-            x is not None for x in [prompt_age, prompt_tokens, prompt_biomarkers]
-        )
-        assert n_set == 1, f"exactly one cutting criterion must be set, got {n_set}"
-
         self._init_args = {k: v for k, v in locals().items() if k != "self"}
 
         self.prompt_age = prompt_age
-        self.prompt_tokens = prompt_tokens
-        self.prompt_biomarkers = prompt_biomarkers
         self.append_no_event = append_no_event
 
-    def _resolve_prompt_age(self, x, t, bio_t, bio_m):
-        if self.prompt_age is not None:
-            return self.prompt_age
-
-        if self.prompt_tokens is not None:
-            is_prompt = np.isin(x, self.prompt_tokens)
-            assert is_prompt.any(), "sequence has no prompt_tokens"
-            return t[is_prompt].max()
-
-        pmt_bio_m = np.array(
-            [m.value if hasattr(m, "value") else m for m in self.prompt_biomarkers]
-        )
-        is_pmt_bio = np.isin(bio_m, pmt_bio_m)
-        assert is_pmt_bio.any(), "sequence has no measurements for prompt_modalities"
-        return bio_t[is_pmt_bio].max()
-
-    def __call__(self, x, t, bio_x_dict, bio_t, bio_m):
-        cutoff = self._resolve_prompt_age(x, t, bio_t, bio_m)
+    def __call__(self, x, t, bio_x_dict, bio_t, bio_m, pid=None):
+        if isinstance(self.prompt_age, dict):
+            assert pid is not None, "pid is required when prompt_age is a mapping"
+            cutoff = self.prompt_age[pid]
+        else:
+            cutoff = self.prompt_age
 
         # prompt tokens: everything up to cutoff
         pmt_mask = t <= cutoff
