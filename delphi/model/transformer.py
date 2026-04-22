@@ -453,7 +453,7 @@ def generate(
     age: torch.Tensor,
     termination_tokens: list | torch.Tensor,
     max_new_tokens: None | int | float = None,
-    max_age: float | torch.Tensor = 85 * 365.25,
+    max_age: None | float | torch.Tensor = 85 * 365.25,
     stop_at_block_size: bool = True,
     exclude_pad: bool = True,
     cached: bool = True,
@@ -467,12 +467,14 @@ def generate(
     if max_new_tokens is None:
         max_new_tokens = float("inf")
 
-    if isinstance(max_age, torch.Tensor):
+    if max_age is None:
+        pass
+    elif isinstance(max_age, torch.Tensor):
         assert len(max_age.shape) == 1
         assert max_age.shape[0] == age.shape[0]
+        max_age = max_age.unsqueeze(1)
     else:
-        max_age = torch.full((age.shape[0],), fill_value=max_age).to(idx.device)  # type: ignore
-    max_age = max_age.unsqueeze(1)  # type: ignore
+        max_age = torch.full((age.shape[0], 1), fill_value=max_age).to(idx.device)
 
     batch_size = idx.shape[0]
     active_indices = torch.arange(batch_size, device=idx.device)
@@ -517,7 +519,10 @@ def generate(
         cur_age = torch.cat((cur_age, age_next), dim=1)
 
         terminated = torch.isin(idx_next, termination_tokens).any(-1)
-        aged_out = (age_next > max_age[active_indices]).any(-1)
+        if max_age is None:
+            aged_out = torch.zeros_like(terminated)
+        else:
+            aged_out = (age_next > max_age[active_indices]).any(-1)
         if stop_at_block_size and (model.config.block_size is not None):
             # cur_idx includes the newly added token
             if exclude_pad:
@@ -562,8 +567,9 @@ def generate(
         final_idx[i, -idx_i.numel() :] = idx_i
         final_age[i, -age_i.numel() :] = age_i
 
-    final_idx[final_age > max_age] = 1
-    final_age = torch.clamp(final_age, max=max_age)
+    if max_age is not None:
+        final_idx[final_age > max_age] = 1
+        final_age = torch.clamp(final_age, max=max_age)
 
     sort_by_age = torch.argsort(final_age, dim=1)
     age = torch.take_along_dim(input=final_age, indices=sort_by_age, dim=1)
