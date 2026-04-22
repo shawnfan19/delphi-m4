@@ -310,7 +310,9 @@ class DelphiM4(torch.nn.Module):
 
         age = outputs["age"]
         logits = outputs["logits"]
-        pos = nearest_input_pos(age, targets_age)
+        # clamp the -1 sentinel (no earlier input) to 0; training targets are
+        # expected to come after at least one input token
+        pos = nearest_input_pos(age, targets_age).clamp(min=0)
         logits = torch.take_along_dim(logits, dim=1, indices=pos.unsqueeze(-1))
         age = torch.take_along_dim(age, dim=1, indices=pos)
 

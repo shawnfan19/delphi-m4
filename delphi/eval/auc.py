@@ -176,12 +176,16 @@ class ConcordanceCollator:
             chunk_participants = self.case_participants[e_start:e_end]
             chunk_scores = self.case_scores[e_start:e_end]
 
-            # Batched searchsorted: (B, L) sorted × (B, E_c) queries → (B, E_c) indices
+            # Batched searchsorted: (B, L) sorted × (B, E_c) queries → (B, E_c) indices.
+            # right=False gives the last index with age[idx] < query_time (strict),
+            # matching the strict-less-than semantics of nearest_input_pos used on
+            # the case side; avoids using a score conditioned on a token at the
+            # query time itself.
             idx_mat = (
                 torch.searchsorted(
                     age.contiguous(),
                     chunk_query_times.unsqueeze(0).expand(B, -1).contiguous(),
-                    right=True,
+                    right=False,
                 )
                 - 1
             )

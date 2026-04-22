@@ -1,4 +1,5 @@
 import functools
+import pprint
 from typing import Literal
 
 import numpy as np
@@ -177,6 +178,26 @@ class BiomarkerTransform:
             return {k.name.lower(): v for k, v in d.items()}
 
         return {"mean": keys_to_str(self.mean), "std": keys_to_str(self.std)}
+
+    def describe(self) -> None:
+        print(f"{type(self).__name__}:")
+        pprint.pp(self.config)
+
+        mean = self.mean or {}
+        std = self.std or {}
+        modalities = sorted(set(mean) | set(std), key=lambda m: m.name)
+        if not modalities:
+            return
+        width = max(len(m.name.lower()) for m in modalities)
+        print("stats:")
+        with np.printoptions(precision=4, linewidth=120):
+            for m in modalities:
+                mu = np.asarray(mean.get(m)) if m in mean else None
+                sigma = np.asarray(std.get(m)) if m in std else None
+                shape = mu.shape if mu is not None else sigma.shape
+                print(f"  {m.name.lower():<{width}}  shape={shape}")
+                print(f"    mean: {mu}")
+                print(f"    std:  {sigma}")
 
     def __call__(self, bio_x_dict, bio_t, bio_m):
 

@@ -17,6 +17,12 @@ def corrective_indices(T0: torch.Tensor, T1: torch.Tensor, offset: float):
 def correct_time_offset(
     T0: torch.Tensor, T1: torch.Tensor, logits: torch.Tensor, offset: float
 ):
+    """Shift T0/logits to approximate predictions at ``T1 - offset``.
+
+    For each target j, gather ``T0``/``logits`` at the nearest input position
+    strictly earlier than ``T1[j] - offset``. Targets with no such position get
+    NaN (both T0 and logits), so downstream NaN-aware collators drop them.
+    """
     corr_idx = nearest_input_pos(age=T0, targets_age=T1 - offset)
     invalid = corr_idx == -1
     corr_idx = torch.clamp(corr_idx, min=0)
@@ -27,8 +33,8 @@ def correct_time_offset(
         dim=1,
     )
 
-    T0[invalid] = -10000
-    logits[invalid] = -torch.inf
+    T0[invalid] = torch.nan
+    logits[invalid] = torch.nan
 
     return T0, logits
 

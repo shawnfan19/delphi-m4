@@ -97,9 +97,11 @@ def untie(
 
 def nearest_input_pos(age, targets_age):
     """
-    for each target, find the position of the nearest input strictly before it;
-    on ties, pick the latest tied position (last in sequence order)
+    For each target, find the position of the nearest input strictly before it;
+    on ties, pick the latest tied position (last in sequence order).
 
+    Returns -1 for targets with no strictly-earlier input position. Callers that
+    cannot tolerate -1 should clamp after calling (e.g., ``.clamp(min=0)``).
     """
 
     L = age.shape[-1]
@@ -108,6 +110,10 @@ def nearest_input_pos(age, targets_age):
     age_diff = targets_age - age  # B, L1, L0
     age_diff = age_diff.masked_fill(age_diff <= 0, float("inf"))
     pos = L - 1 - torch.argmin(age_diff.flip(-1), dim=-1)
+    # argmin on an all-inf row returns 0 (→ pos = L-1), which is indistinguishable
+    # from a valid match at the last position. Emit -1 for those rows instead.
+    no_valid = torch.isinf(age_diff).all(dim=-1)
+    pos = pos.masked_fill(no_valid, -1)
 
     return pos
 

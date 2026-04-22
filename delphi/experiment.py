@@ -106,6 +106,31 @@ def eval_iter(total_size: int, batch_size: int) -> Iterator[np.ndarray]:
 
 
 @dataclass
+class CliConfig:
+    """Dataclass base providing OmegaConf-based CLI/config-file parsing.
+
+    Subclasses get ``from_cli()`` for free. CLI syntax:
+
+        python script.py config=foo.yaml key=value nested.key=value
+
+    Precedence (low → high): dataclass defaults → YAML file → CLI args.
+    The ``config`` key is reserved and cannot be used as a dataclass field.
+    """
+
+    @classmethod
+    def from_cli(cls) -> Self:
+        schema = OmegaConf.structured(cls)
+        cli = OmegaConf.from_cli()
+        if hasattr(cli, "config"):
+            file_cfg = OmegaConf.load(cli.config)
+            del cli.config
+        else:
+            file_cfg = OmegaConf.create({})
+        merged = OmegaConf.merge(schema, file_cfg, cli)
+        return OmegaConf.to_object(merged)  # type: ignore[return-value]
+
+
+@dataclass
 class TrainBaseConfig:
     ckpt_dir: str = "debug"
     eval_interval: int = 2000
@@ -404,7 +429,7 @@ class BaseTrainer:
 
 
 @dataclass
-class GenerateConfig:
+class GenerateConfig(CliConfig):
     ckpt: str = "delphi-2m-og/ckpt.pt"
     prompt_age: None | int | float = None
     prompt_lifestyle: bool = True
@@ -415,34 +440,6 @@ class GenerateConfig:
     stop_at_block_size: bool = True
     max_new_tokens: int = 128
     prompt_no_event: bool = False
-
-    @classmethod
-    def from_cli(cls) -> Self:
-        """Parse from command line arguments"""
-        # Create structured config from dataclass defaults
-        schema = OmegaConf.structured(cls)
-        # Parse CLI args (format: key=value)
-        cli = OmegaConf.from_cli()
-        # Merge: CLI overrides defaults
-        merged = OmegaConf.merge(schema, cli)
-        # Convert back to dataclass instance
-        return OmegaConf.to_object(merged)  # type: ignore[return-value]
-
-    @classmethod
-    def auto(cls, **overrides) -> Self:
-        """
-        Automatically choose:
-        - Interactive env → use defaults + overrides
-        - CLI → parse arguments
-        """
-        if "ipykernel" in sys.modules or "IPython" in sys.modules:
-            print("Running in interactive environment")
-            schema = OmegaConf.structured(cls)
-            override_conf = OmegaConf.create(overrides)
-            merged = OmegaConf.merge(schema, override_conf)
-            return OmegaConf.to_object(merged)  # type: ignore[return-value]
-        else:
-            return cls.from_cli()
 
 
 def load_ckpt(ckpt_path):
