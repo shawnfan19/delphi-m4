@@ -1,64 +1,28 @@
 from collections import defaultdict
-from functools import cached_property
-from pathlib import Path
-from typing import Any, Callable, Iterable, Literal
+from typing import Any, Callable, Iterable
 
 import numpy as np
 import torch
 
-from delphi.data.transform import TokenTransform
-from delphi.data.ukb import UKBReader
-from delphi.data.utils import (
-    collate_batch,
-)
-from delphi.env import DELPHI_DATA_READ as DELPHI_DATA_DIR
+from delphi.data.utils import collate_batch
 
 
 class Dataset:
 
     def __init__(
         self,
-        subject_list: str = "participants/train_fold.bin",
-        no_event_interval: None | float = 5 * 365.25,
-        no_event_mode: str = "legacy-random",
-        block_size: None | int = None,
-        perturb_list: None | list = None,
-        exclude_list: None | list = None,
-        crop_mode: Literal["left", "right", "random"] = "right",
-        break_clusters: bool = False,
-        additional_dx_token: bool = True,
-        seed: int = 42,
-        deterministic: bool = False,
+        reader: Any,
+        pids: np.ndarray,
+        token_transform: None | Callable = None,
+        prompt_transform: None | Callable = None,
     ):
 
-        self._init_args = locals().copy()
-        self._init_args.pop("self")  # Remove 'self' reference
-
-        self.reader = UKBReader()
+        self.reader = reader
         self.tokenizer = self.reader.tokenizer
 
-        participants_path = Path(DELPHI_DATA_DIR) / "ukb_real_data" / subject_list
-        self.participants = np.fromfile(participants_path, dtype=np.uint32)
-
-        self.seed = seed
-        self.rng = np.random.default_rng(seed)
-        self.deterministic = deterministic
-
-        self.token_transform = TokenTransform(
-            no_event_interval=no_event_interval,
-            no_event_mode=no_event_mode,
-            block_size=block_size,
-            perturb_tokens=perturb_list,
-            blacklist_tokens=exclude_list,
-            crop_mode=crop_mode,
-            deterministic=deterministic,
-            seed=seed,
-            break_clusters=break_clusters,
-            dx_token=self.vocab_size if additional_dx_token else 1,
-            whitelist_tokens=np.concatenate(
-                (np.array([NO_EVENT_TOKEN]), self.sex_tokens, self.lifestyle_tokens)
-            ),
-        )
+        self.participants = pids
+        self.token_transform = token_transform
+        self.prompt_transform = prompt_transform
 
     def __len__(self):
         return self.participants.size
@@ -67,26 +31,21 @@ class Dataset:
     def vocab_size(self):
         return len(self.tokenizer)
 
-    @cached_property
-    def detokenizer(self):
-        return {v: k for k, v in self.tokenizer.items()}
-
-    @property
-    def lifestyle_tokens(self):
-        return np.array([self.tokenizer[i] for i in LIFESTYLE])
-
-    @property
-    def sex_tokens(self):
-        return np.array([self.tokenizer[i] for i in SEX])
-
     def __getitem__(self, idx: int):
 
         pid = self.participants[idx]
-        x_pid, t_pid = self.reader[pid]
+        x, t = self.reader[pid]
 
-        x_pid, t_pid = self.token_transform(x_pid, t_pid)
+        if self.token_transform is not None:
+            x, t = self.token_transform(x, t)
 
-        return x_pid[:-1], t_pid[:-1], x_pid[1:], t_pid[1:]
+        if self.prompt_transform is not None:
+            x0, t0, x1, t1 = self.prompt_transform(x, t, pid=pid)
+        else:
+            x0, x1 = x[:-1].copy(), x[1:].copy()
+            t0, t1 = t[:-1].copy(), t[1:].copy()
+
+        return x0, t0, x1, t1
 
     def subset_participants_for_prompt(
         self, prompt_age: None | float, prompt_tokens: None | np.ndarray
@@ -156,17 +115,6 @@ class MultimodalDataset:
     def vocab_size(self):
         return len(self.tokenizer)
 
-    @property
-    def detokenizer(self):
-        return {v: k for k, v in self.tokenizer.items()}
-
-    @property
-    def expansion_tokens(self):
-        tokens = list()
-        for exp_pack in self.reader.expansion_packs.values():
-            tokens.extend([v + exp_pack.offset for v in exp_pack.tokenizer.values()])
-        return tokens
-
     def __getitem__(self, idx: int):
 
         pid = self.participants[idx]
@@ -182,7 +130,7 @@ class MultimodalDataset:
 
         if self.prompt_transform is not None:
             x0, t0, bio_x_dict, bio_t, bio_m, x1, t1 = self.prompt_transform(
-                x, t, bio_x_dict, bio_t, bio_m
+                x, t, bio_x_dict, bio_t, bio_m, pid=pid
             )
         else:
             x0, x1 = x[:-1].copy(), x[1:].copy()
