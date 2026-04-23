@@ -19,6 +19,27 @@ from delphi.model.utils import (
 )
 
 
+def _mask_invalid(
+    loss: dict[str, torch.Tensor],
+    is_valid: torch.Tensor,
+    reduce: bool,
+) -> dict[str, torch.Tensor]:
+    """
+    Nan-fill invalid positions on each per-position loss tensor, then optionally
+    reduce with nanmean. Broadcasts ``is_valid`` up to match each tensor's rank.
+    """
+    out = {}
+    for key, tensor in loss.items():
+        mask = is_valid
+        while mask.dim() < tensor.dim():
+            mask = mask.unsqueeze(-1)
+        value = tensor.masked_fill(~mask.expand_as(tensor), torch.nan)
+        if reduce:
+            value = torch.nanmean(value)
+        out[key] = value
+    return out
+
+
 class AgeEncoding(nn.Module):
 
     def __init__(
@@ -257,11 +278,14 @@ class Delphi2M(nn.Module):
     def loss(
         self,
         outputs: dict[str, torch.Tensor],
-        idx: torch.Tensor,
         targets: torch.Tensor,
-        age: torch.Tensor,
         targets_age: torch.Tensor,
+        reduce: bool = True,
     ):
+        age = outputs["age"]
+        # read idx before untie: poisson/hawkes self_terminate uses the original
+        # input history, not the tie-collapsed one (matches prior behavior)
+        idx = outputs["idx"]
         terminate_except = torch.tensor(
             self.config.self_terminate_except, device=idx.device
         )
@@ -274,6 +298,7 @@ class Delphi2M(nn.Module):
             targets_age = targets_age / self.config.time_unit
             age = age / self.config.time_unit
 
+        cooccur = None
         if self.config.loss == "default":
             logits = outputs["logits"]
             loss_ce = F.cross_entropy(
@@ -289,8 +314,7 @@ class Delphi2M(nn.Module):
                 log_lambda=torch.logsumexp(logits, -1),
                 t_min=self.config.t_min,
             )
-
-            return {"loss_ce": loss_ce, "loss_dt": loss_dt}
+            loss = {"loss_ce": loss_ce, "loss_dt": loss_dt}
         elif self.config.loss == "homo_poisson":
             nll = nll_homogeneous_poisson(
                 log_intensity=outputs["logits"],
@@ -301,8 +325,7 @@ class Delphi2M(nn.Module):
                 terminate=self.config.self_terminate,
                 terminate_except=terminate_except,
             )
-
-            return {"loss_nll": nll}
+            loss = {"loss_nll": nll}
         elif self.config.loss == "homo_cluster_poisson":
             logits, thresh_logits = outputs["logits"], outputs["aux_rates"]
             nll, nll_cluster, cooccur = nll_homogeneous_cluster_poisson(
@@ -312,7 +335,7 @@ class Delphi2M(nn.Module):
                 targets_age=targets_age,
                 age=age,
             )
-            return {"loss_nll": nll, "loss_cluster": nll_cluster, "mask": ~cooccur}
+            loss = {"loss_nll": nll, "loss_cluster": nll_cluster}
         elif self.config.loss == "hawkes":
             nll = nll_hawkes(
                 mu=outputs["mu"],
@@ -323,7 +346,7 @@ class Delphi2M(nn.Module):
                 targets_age=targets_age,
                 targets=targets,
             )
-            return {"loss_nll": nll}
+            loss = {"loss_nll": nll}
         elif self.config.loss == "neural_tpp":
             nll = self.neural_tpp_head.nll(
                 h=outputs["h"],
@@ -332,9 +355,18 @@ class Delphi2M(nn.Module):
                 targets_age=targets_age,
                 idx=idx,
             )
-            return {"loss_nll": nll}
+            loss = {"loss_nll": nll}
         else:
             raise NotImplementedError
+
+        is_valid = targets != 0
+        if self.config.ignore_tokens is not None:
+            for k in self.config.ignore_tokens:
+                is_valid &= targets != k
+        if cooccur is not None:
+            is_valid &= ~cooccur
+
+        return _mask_invalid(loss, is_valid, reduce=reduce)
 
     def forward(
         self, idx, age, targets=None, targets_age=None, past_kvs=None, past_pad=None
@@ -373,6 +405,8 @@ class Delphi2M(nn.Module):
         misc["cur_pad"] = pad
 
         outputs = dict()
+        outputs["age"] = age
+        outputs["idx"] = idx
 
         if hasattr(self, "lm_head"):
             logits = self.lm_head(x)
@@ -392,26 +426,7 @@ class Delphi2M(nn.Module):
             outputs["h"] = x
 
         if (targets is not None) and (targets_age is not None):
-
-            ignored_tokens = [0]
-            if self.config.ignore_tokens is not None:
-                ignored_tokens += self.config.ignore_tokens.copy()
-            is_valid_target = targets != 0
-            for k in ignored_tokens:
-                is_valid_target *= targets != k
-            loss = self.loss(
-                outputs=outputs,
-                idx=idx,
-                targets=targets,
-                age=age,
-                targets_age=targets_age,
-            )
-            loss_mask = is_valid_target
-            if "mask" in loss:
-                loss_mask *= loss["mask"]
-                del loss["mask"]
-            for loss_key in loss.keys():
-                loss[loss_key] = torch.mean(loss[loss_key][loss_mask])
+            loss = self.loss(outputs, targets=targets, targets_age=targets_age)
         else:
             loss = None
 

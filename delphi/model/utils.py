@@ -218,7 +218,7 @@ def nll_homogeneous_poisson(
     part1 = torch.gather(input=log_intensity, dim=-1, index=targets.unsqueeze(-1))
 
     if terminate:
-        log_intensity = self_terminate(
+        log_intensity, _ = self_terminate(
             idx=idx,
             estimator=log_intensity,
             terminate_except=terminate_except,

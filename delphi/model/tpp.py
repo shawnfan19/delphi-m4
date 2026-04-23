@@ -104,7 +104,7 @@ def nll_hawkes(
     integral = (alpha / beta) * (-torch.expm1(-beta * delta_t_exp))
 
     compensator = integral + mu_integral
-    compensator = self_terminate(
+    compensator, _ = self_terminate(
         idx=idx,
         estimator=compensator,
         terminate_except=torch.tensor([1], device=idx.device),
@@ -220,7 +220,7 @@ class NeuralTPPHead(nn.Module):
             # We replicate idx for each grid point and flatten
             intensity_flat = intensity_grid.reshape(B, L * G, V)
             idx_expanded = idx.unsqueeze(-1).expand(B, L, G).reshape(B, L * G)
-            intensity_flat = self_terminate(
+            intensity_flat, _ = self_terminate(
                 idx=idx_expanded,
                 estimator=intensity_flat,
                 terminate_except=self.terminate_except,
