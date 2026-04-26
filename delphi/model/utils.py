@@ -95,20 +95,33 @@ def untie(
     return outputs, age
 
 
-def nearest_input_pos(age, targets_age):
+def nearest_input_pos(age, targets_age, include_ties: bool = False):
     """
-    For each target, find the position of the nearest input strictly before it;
-    on ties, pick the latest tied position (last in sequence order).
+    For each target, find the position of the nearest input earlier than it;
+    on ties (multiple inputs at the same time), pick the latest tied position
+    (last in sequence order).
 
-    Returns -1 for targets with no strictly-earlier input position. Callers that
-    cannot tolerate -1 should clamp after calling (e.g., ``.clamp(min=0)``).
+    Args:
+        age: (B, L0) input timestamps.
+        targets_age: (B, *Q) target timestamps.
+        include_ties: if False (default), "strictly before" — only inputs with
+            age < target count; returns -1 if no such input exists.
+            If True, "at or before" — inputs with age <= target count;
+            returns -1 only if no input satisfies age <= target.
+
+    Callers that cannot tolerate -1 should clamp after calling (e.g.,
+    ``.clamp(min=0)``).
     """
 
     L = age.shape[-1]
     targets_age = targets_age.view(*targets_age.shape, 1)
     age = age.view(age.shape[0], 1, age.shape[1])
     age_diff = targets_age - age  # B, L1, L0
-    age_diff = age_diff.masked_fill(age_diff <= 0, float("inf"))
+    if include_ties:
+        fill_mask = age_diff < 0
+    else:
+        fill_mask = age_diff <= 0
+    age_diff = age_diff.masked_fill(fill_mask, float("inf"))
     pos = L - 1 - torch.argmin(age_diff.flip(-1), dim=-1)
     # argmin on an all-inf row returns 0 (→ pos = L-1), which is indistinguishable
     # from a valid match at the last position. Emit -1 for those rows instead.
@@ -160,6 +173,25 @@ def self_terminate_single(
     mask.scatter_(1, fill, True)
 
     return logits.masked_fill(mask, float("-inf"))
+
+
+def have_occurred(
+    history_x: torch.Tensor,
+    terminate_except: torch.Tensor,
+    vocab_size: int,
+) -> torch.Tensor:
+    """
+    Per-history cumulative-seen mask. cum_mask[b, j, v] is True iff token v
+    has appeared in history_x[b, 0..j] (ignoring tokens in terminate_except).
+
+    Depends only on history, so can be cached across queries.
+    """
+    fill = history_x.clone()
+    fill[torch.isin(fill, terminate_except.to(fill.device))] = 0
+    B, L_hist = fill.shape
+    one_hot = torch.zeros(B, L_hist, vocab_size, device=fill.device)
+    one_hot.scatter_(2, fill.unsqueeze(-1), 1.0)
+    return one_hot.cumsum(dim=1) > 0
 
 
 def self_terminate(

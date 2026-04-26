@@ -5,13 +5,18 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-from delphi.model.tpp import HawkesHead, NeuralTPPHead, nll_hawkes
+from delphi.model.tpp import (
+    HomoPoissonTPP,
+    NeuralDecayEmbedding,
+    NeuralDecayTPP,
+    NeuralIntensity,
+    NeuralTPP,
+)
 from delphi.model.utils import (
     causal_attention_mask,
     exponential_nll,
     incremental_attention_mask,
     nll_homogeneous_cluster_poisson,
-    nll_homogeneous_poisson,
     sample_competing_exponentials,
     sample_homo_cluster_poisson,
     self_terminate_single,
@@ -226,20 +231,17 @@ class Delphi2M(nn.Module):
             if self.config.weight_tying:
                 self.transformer.wte.weight = self.lm_head.weight
 
-        if config.loss == "hawkes":
-            self.param_head = HawkesHead(
-                n_embd=config.n_embd, vocab_size=config.vocab_size
-            )
-
         if config.loss == "neural_tpp":
-            self.neural_tpp_head = NeuralTPPHead(
+            self.neural_tpp_head = NeuralIntensity(
                 n_embd=config.n_embd,
                 vocab_size=config.vocab_size,
                 time_encoder=AgeEncoding(n_embd=config.n_embd),
-                n_integrate_grid=config.n_integrate_grid,
-                self_terminate=config.self_terminate,
-                self_terminate_except=config.self_terminate_except,
-                time_unit=config.time_unit,
+            )
+
+        if config.loss == "neural_decay_tpp":
+            self.neural_decay_head = NeuralDecayEmbedding(
+                n_embd=config.n_embd,
+                vocab_size=config.vocab_size,
             )
 
         if "cluster" in config.loss:
@@ -282,24 +284,17 @@ class Delphi2M(nn.Module):
         targets_age: torch.Tensor,
         reduce: bool = True,
     ):
-        age = outputs["age"]
-        # read idx before untie: poisson/hawkes self_terminate uses the original
-        # input history, not the tie-collapsed one (matches prior behavior)
-        idx = outputs["idx"]
         terminate_except = torch.tensor(
-            self.config.self_terminate_except, device=idx.device
+            self.config.self_terminate_except, device=targets.device
         )
-
-        if self.config.mask_ties:
-            outputs, age = untie(outputs, age, targets_age)
-
-        # neural_tpp receives raw days and normalizes internally
-        if self.config.loss != "neural_tpp":
-            targets_age = targets_age / self.config.time_unit
-            age = age / self.config.time_unit
 
         cooccur = None
         if self.config.loss == "default":
+            if self.config.mask_ties:
+                outputs, age = untie(outputs, outputs["age"], targets_age)
+            else:
+                age = outputs["age"]
+
             logits = outputs["logits"]
             loss_ce = F.cross_entropy(
                 # (b, l, n_vocab) -> (b, n_vocab, l)
@@ -316,16 +311,14 @@ class Delphi2M(nn.Module):
             )
             loss = {"loss_ce": loss_ce, "loss_dt": loss_dt}
         elif self.config.loss == "homo_poisson":
-            nll = nll_homogeneous_poisson(
-                log_intensity=outputs["logits"],
-                targets=targets,
-                idx=idx,
-                targets_age=targets_age,
-                age=age,
-                terminate=self.config.self_terminate,
+            tpp = HomoPoissonTPP(
+                logits=outputs["logits"],
+                timesteps=outputs["age"],
+                tokens=outputs["idx"],
                 terminate_except=terminate_except,
             )
-            loss = {"loss_nll": nll}
+            log_p = tpp.log_likelihood(x1=targets, t1=targets_age)
+            loss = {"loss_nll": -log_p}
         elif self.config.loss == "homo_cluster_poisson":
             logits, thresh_logits = outputs["logits"], outputs["aux_rates"]
             nll, nll_cluster, cooccur = nll_homogeneous_cluster_poisson(
@@ -333,29 +326,35 @@ class Delphi2M(nn.Module):
                 log_aux_intensity=thresh_logits,
                 targets=targets,
                 targets_age=targets_age,
-                age=age,
+                age=outputs["age"],
             )
             loss = {"loss_nll": nll, "loss_cluster": nll_cluster}
-        elif self.config.loss == "hawkes":
-            nll = nll_hawkes(
-                mu=outputs["mu"],
-                alpha=outputs["alpha"],
-                beta=outputs["beta"],
-                age=age,
-                idx=idx,
-                targets_age=targets_age,
-                targets=targets,
-            )
-            loss = {"loss_nll": nll}
         elif self.config.loss == "neural_tpp":
-            nll = self.neural_tpp_head.nll(
-                h=outputs["h"],
-                targets=targets,
-                age=age,
-                targets_age=targets_age,
-                idx=idx,
+            tpp = NeuralTPP(
+                hidden_states=outputs["h"],
+                intensity_func=self.neural_tpp_head,
+                timesteps=outputs["age"],
+                tokens=outputs["idx"],
             )
-            loss = {"loss_nll": nll}
+            log_p = tpp.log_likelihood(
+                x1=targets,
+                t1=targets_age,
+                n_grid=self.config.n_integrate_grid,
+            )
+            loss = {"loss_nll": -log_p}
+        elif self.config.loss == "neural_decay_tpp":
+            tpp = NeuralDecayTPP(
+                hidden_states=outputs["h"],
+                intensity_func=self.neural_decay_head,
+                timesteps=outputs["age"],
+                tokens=outputs["idx"],
+            )
+            log_p = tpp.log_likelihood(
+                x1=targets,
+                t1=targets_age,
+                n_grid=self.config.n_integrate_grid,
+            )
+            loss = {"loss_nll": -log_p}
         else:
             raise NotImplementedError
 
@@ -407,6 +406,7 @@ class Delphi2M(nn.Module):
         outputs = dict()
         outputs["age"] = age
         outputs["idx"] = idx
+        outputs["h"] = x
 
         if hasattr(self, "lm_head"):
             logits = self.lm_head(x)
@@ -417,13 +417,6 @@ class Delphi2M(nn.Module):
         if hasattr(self, "aux_head"):
             aux_rates = self.aux_head(x)
             outputs["aux_rates"] = aux_rates.squeeze(-1)
-
-        if hasattr(self, "param_head"):
-            params = self.param_head(x)
-            outputs.update(params)
-
-        if hasattr(self, "neural_tpp_head"):
-            outputs["h"] = x
 
         if (targets is not None) and (targets_age is not None):
             loss = self.loss(outputs, targets=targets, targets_age=targets_age)
