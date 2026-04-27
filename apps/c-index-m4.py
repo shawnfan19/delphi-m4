@@ -3,9 +3,8 @@ import json
 import math
 import os
 import pprint
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import torch
@@ -32,16 +31,47 @@ from delphi.experiment import CliConfig, eval_iter, load_ckpt, move_batch_to_dev
 from delphi.multimodal import Modality
 
 
-def parse_biomarkers(biomarkers):
-    if biomarkers is None:
-        return None, None
-    if isinstance(biomarkers, str):
-        if biomarkers.endswith(".yaml"):
-            path = Path(biomarkers)
-            with open(path) as f:
-                return yaml.safe_load(f), path.stem
-        return [biomarkers], None
-    return list(biomarkers), None
+def parse_panel(path):
+    with open(path) as f:
+        panel = yaml.safe_load(f)
+    biomarkers, expansion_packs = list(), list()
+    all_biomarkers = [m.name for m in Modality]
+    for modality in panel:
+        if modality.upper() in all_biomarkers:
+            biomarkers.append(modality)
+        else:
+            expansion_packs.append(modality)
+    return biomarkers or None, expansion_packs or None, Path(path).stem
+
+
+def filter_participants(pids, biomarkers, expansion_packs):
+    if biomarkers is not None:
+        total = pids.size
+        pids = filter_participants_with_biomarkers(
+            pids, biomarkers=biomarkers, any=True
+        )
+        print(f"{pids.size} / {total} val pids (biomarker filter)")
+    if expansion_packs is not None:
+        total = pids.size
+        pids = filter_participants_with_expansion_packs(
+            pids, expansion_packs=expansion_packs, any=True
+        )
+        print(f"{pids.size} / {total} val pids (expansion pack filter)")
+
+    return pids
+
+
+def first_modality_timestep(pids, biomarkers, expansion_packs):
+
+    cutoff = np.full(len(pids), -np.inf, dtype=np.float32)
+    for mod_name in biomarkers or []:
+        first = Biomarker.first_occurrence_times(mod_name, pids)
+        cutoff = np.fmin(cutoff, first)
+    for pack_name in expansion_packs or []:
+        first = ExpansionPack.first_occurrence_times(pack_name, pids)
+        cutoff = np.fmin(cutoff, first)
+
+    return cutoff
 
 
 @dataclass
@@ -49,23 +79,28 @@ class TaskConfig(CliConfig):
     ckpt: str = "delphi-m4/delphi-m4/ckpt.pt"
     batch_size: int = 64
     min_time_gap: float = 0
-    biomarkers: Any = None
+    panel: None | str = None
+    biomarkers: None | list = None
     expansion_packs: None | list[str] = None
     max_gap: float = 5
-    after_only: bool = False
+    after_only: bool = True
     fname: None | str = None
     panel_name: None | str = None
 
     def __post_init__(self):
-        self.biomarkers, self.panel_name = parse_biomarkers(self.biomarkers)
+        if self.panel:
+            self.biomarkers, self.expansion_packs, self.panel_name = parse_panel(
+                self.panel
+            )
         if self.fname is None:
             self.fname = "cindex"
             if self.panel_name is not None:
                 self.fname += f"_{self.panel_name}"
-            elif self.biomarkers is not None:
-                self.fname += f"-{'-'.join(self.biomarkers)}"
-            if self.expansion_packs is not None:
-                self.fname += f"-{'-'.join(self.expansion_packs)}"
+            else:
+                if self.biomarkers is not None:
+                    self.fname += f"-{'-'.join(self.biomarkers)}"
+                if self.expansion_packs is not None:
+                    self.fname += f"-{'-'.join(self.expansion_packs)}"
 
 
 args = TaskConfig.from_cli()
@@ -84,30 +119,26 @@ biomarker_transform_args = ckpt_dict.get("biomarker_transform_args")
 biomarker_stats = ckpt_dict.get("biomarker_stats")
 
 val_pids = MultimodalUKBReader.participants("val")
-if args.biomarkers is not None:
-    total_val = val_pids.size
-    val_pids = filter_participants_with_biomarkers(
-        val_pids, biomarkers=args.biomarkers, any=True
-    )
-    print(f"{val_pids.size} / {total_val} val pids (biomarker filter)")
-if args.expansion_packs is not None:
-    total_val = val_pids.size
-    val_pids = filter_participants_with_expansion_packs(
-        val_pids, expansion_packs=args.expansion_packs, any=True
-    )
-    print(f"{val_pids.size} / {total_val} val pids (expansion pack filter)")
+val_pids = filter_participants(val_pids, args.biomarkers, args.expansion_packs)
 
-pprint.pp(
-    {
-        "reader_args": reader_args,
-        "token_transform_args": token_transform_args,
-    }
-)
 # -
+biomarkers = list(
+    set(reader_args["biomarkers"] or []).intersection(set(args.biomarkers or []))
+)
+expansion_packs = list(
+    set(reader_args["expansion_packs"] or []).intersection(
+        set(args.expansion_packs or [])
+    )
+)
+reader = MultimodalUKBReader(
+    biomarkers=biomarkers, expansion_packs=expansion_packs, memmap=False
+)
+reader.describe()
 
-reader = MultimodalUKBReader(**reader_args)
 token_transform = TokenTransform(**token_transform_args)
-if biomarker_transform_args is not None:
+token_transform.describe()
+
+if biomarker_transform_args and biomarkers:
     mean = biomarker_stats["mean"] if biomarker_stats else None
     std = biomarker_stats["std"] if biomarker_stats else None
     if mean is not None:
@@ -161,16 +192,8 @@ is_female = torch.from_numpy(reader.is_female(val_pids))  # (N,)
 onset_times, _ = onset_collator.finalize()
 onset_times = torch.from_numpy(onset_times)  # (N, V)
 
-# Restrict to time points after first occurrence of any specified biomarker
-# or expansion-pack token
-if args.after_only and (args.biomarkers or args.expansion_packs):
-    cutoff = np.full(len(ds), np.inf, dtype=np.float32)
-    for mod_name in args.biomarkers or []:
-        first = Biomarker.first_occurrence_times(mod_name, val_pids)
-        cutoff = np.fmin(cutoff, first)
-    for pack_name in args.expansion_packs or []:
-        first = ExpansionPack.first_occurrence_times(pack_name, val_pids)
-        cutoff = np.fmin(cutoff, first)
+if args.after_only:
+    cutoff = first_modality_timestep(val_pids, biomarkers, expansion_packs)
     # mask case events before the cutoff
     before_cutoff = dis_times.numpy() < cutoff[:, None]
     dis_rates[torch.from_numpy(before_cutoff)] = torch.nan
@@ -213,7 +236,7 @@ case_sex, case_tokens, total_pairs, concordant = concordance_collator.finalize()
 # -
 
 # Aggregate C-index per disease per sex
-result = {}
+result = {"config": asdict(args)}
 for d_int in np.unique(case_tokens):
     d_mask = case_tokens == d_int
     icd = reader.detokenizer.get(int(d_int), str(d_int))

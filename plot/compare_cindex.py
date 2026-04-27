@@ -19,48 +19,55 @@
 # Scatter plot: x-axis = checkpoint A, y-axis = checkpoint B.
 # Each point is one disease. Color = ICD-10 chapter. Size = log(n_events).
 
-# %%
 import json
+
+# %%
+from dataclasses import dataclass
 from pathlib import Path
 
+# %%
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from delphi.data.ukb import UKBReader
 from delphi.env import DELPHI_CKPT_READ as DELPHI_CKPT_DIR
+from delphi.experiment import CliConfig
 from delphi.plot import plot_diff_by_chapter
 
-# %% [markdown]
-# ## Config — edit these paths
+mpl.rcParams["figure.dpi"] = 300
+
+
+@dataclass(kw_only=True)
+class TaskConfig(CliConfig):
+    json: str
+    baseline_json: str
+
+
+args = TaskConfig.from_cli()
 
 # %%
-# ckpt_a_json = Path(DELPHI_CKPT_DIR) / "delphi-m4/baseline/cindex-modalities_nmr.json"
-# ckpt_b_json = Path(DELPHI_CKPT_DIR) / "delphi-m4/nmr/cindex-modalities_nmr.json"
+ckpt_a_json = Path(DELPHI_CKPT_DIR) / args.baseline_json
+ckpt_b_json = Path(DELPHI_CKPT_DIR) / args.json
 
-# ckpt_a_json = Path(DELPHI_CKPT_DIR) / "bug_age/baseline_seed43/cindex.json"
-# ckpt_b_json = Path(DELPHI_CKPT_DIR) / "bug_age/blood_seed43/cindex.json"
-
-# ckpt_a_json = Path(DELPHI_CKPT_DIR) / "bug_age/baseline/cindex.json"
-# ckpt_b_json = Path(DELPHI_CKPT_DIR) / "bug_age/blood/cindex.json"
-
-ckpt_a_json = Path(DELPHI_CKPT_DIR) / "delphi-m4/baseline/cindex_blood.json"
-# ckpt_b_json = Path(DELPHI_CKPT_DIR) / "delphi-m4/blood/cindex-min_time_gap-0-max_gap-5-ckpt-ckpt.json"
-# ckpt_b_json = Path(DELPHI_CKPT_DIR) / "delphi-m4/urine/cindex.json"
-ckpt_b_json = Path(DELPHI_CKPT_DIR) / "interpret/blood/cindex_blood.json"
-
-label_a = "delphi-m4 (full)"
-label_b = "delphi-m4 (blood)"
+label_a = str(ckpt_a_json.parent)
+label_b = str(ckpt_b_json.parent)
 
 sex = "either"  # "female" | "male" | "either"
 
-min_events = 100  # drop diseases with fewer events in either checkpoint
+min_events = 50  # drop diseases with fewer events in either checkpoint
 
 # %%
 with open(ckpt_a_json) as f:
     data_a = json.load(f)
+    if "config" in data_a.keys():
+        del data_a["config"]
 
 with open(ckpt_b_json) as f:
     data_b = json.load(f)
+    if "config" in data_b.keys():
+        del data_b["config"]
 
 
 # %%
@@ -168,7 +175,7 @@ for _, row in df_either.nlargest(k, "diff")[
         f"  {row['key']}: {row['val_a']:.3f} → {row['val_b']:.3f} (Δ {row['diff']:+.3f})"
     )
 
-print(f"\nTop {k} most degraded diseases:")
+print(f"\nTop K most degraded diseases:")
 for _, row in df_either.nsmallest(k, "diff")[
     ["key", "val_a", "val_b", "diff"]
 ].iterrows():
@@ -178,14 +185,53 @@ for _, row in df_either.nsmallest(k, "diff")[
 
 
 # %%
-plot_diff_by_chapter(df_either, label_a, label_b, title="C-index difference by disease")
+plot_diff_by_chapter(
+    df_either, label_a=label_a, label_b=label_b, title="C-index difference by disease"
+)
 plt.show()
 
 # %%
-import yaml
+# Top 10 improved diseases — horizontal bar plot
 
-with open("diseases.yaml", "w") as f:
-    yaml.dump(df_either[df_either["diff"] >= 0.02].key.tolist(), f)
-df_either[df_either["diff"] >= 0.02].key.tolist()
+_labels_df = UKBReader.labels()
+_labels_df["icd"] = _labels_df["name"].str.split().str[0].str.upper()
+_icd_meta = (
+    _labels_df.drop_duplicates("icd")
+    .set_index("icd")[["name", "color"]]
+    .rename(columns={"name": "disease_name"})
+)
+
+_top10 = df_either.nlargest(20, "diff").copy()
+_top10["icd"] = _top10["key"].map(lambda k: k.split("_")[0].upper())
+_top10 = _top10.join(_icd_meta, on="icd")
+_top10["disease_name"] = _top10["disease_name"].fillna(_top10["key"])
+_top10["color"] = _top10["color"].fillna("#888888")
+_top10 = _top10.sort_values("diff", ascending=True)  # largest at top for barh
+
+fig, ax = plt.subplots(figsize=(8, 5))
+ax.barh(
+    _top10["disease_name"],
+    _top10["diff"],
+    color=_top10["color"],
+    edgecolor="white",
+    linewidth=0.5,
+)
+for y, val in enumerate(_top10["diff"]):
+    ax.text(val + 0.001, y, f"{val:+.3f}", va="center", fontsize=8)
+ax.set_xlabel(f"Δ C-index ({label_b} − {label_a})")
+ax.set_title("Top 10 improved diseases")
+ax.spines["top"].set_visible(False)
+ax.spines["right"].set_visible(False)
+fig.tight_layout()
+plt.show()
+
+# %%
+# import yaml
+#
+# with open("diseases.yaml", "w") as f:
+#     yaml.dump(df_either[df_either["diff"] >= 0.02].key.tolist(), f)
+# df_either[df_either["diff"] >= 0.02].key.tolist()
+
+# %%
 
 # %%

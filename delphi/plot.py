@@ -1,11 +1,55 @@
-"""Shared plotting utilities for Delphi."""
+"""Shared plotting utilities for Delphi.
+
+Also registers a matplotlib backend that renders figures inline via the Kitty
+graphics protocol. Enable with:
+
+    export MPLBACKEND="module://delphi.plot"
+
+Works in any terminal speaking the Kitty graphics protocol (Ghostty, Kitty,
+WezTerm). Inside tmux, requires tmux >= 3.3 with `set -g allow-passthrough on`.
+"""
+
+import base64
+import sys
+from io import BytesIO
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib._pylab_helpers import Gcf
+from matplotlib.backend_bases import FigureManagerBase, _Backend
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.lines import Line2D
 
-from delphi.data.ukb import load_label_meta
+from delphi.data.ukb import UKBReader
+
+
+def _emit_kitty(fig, dpi=100):
+    buf = BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight", dpi=dpi)
+    data = base64.b64encode(buf.getvalue()).decode()
+    chunk_size = 4096
+    chunks = [data[i : i + chunk_size] for i in range(0, len(data), chunk_size)]
+    for i, chunk in enumerate(chunks):
+        m = 1 if i < len(chunks) - 1 else 0
+        if i == 0:
+            sys.stdout.write(f"\x1b_Ga=T,f=100,m={m};{chunk}\x1b\\")
+        else:
+            sys.stdout.write(f"\x1b_Gm={m};{chunk}\x1b\\")
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+
+
+@_Backend.export
+class _BackendKittyAgg(_Backend):
+    FigureCanvas = FigureCanvasAgg
+    FigureManager = FigureManagerBase
+
+    @staticmethod
+    def show(*args, **kwargs):
+        for manager in Gcf.get_all_fig_managers():
+            _emit_kitty(manager.canvas.figure)
+        Gcf.destroy_all()
 
 
 def _icd_from_key(key: str) -> str:
@@ -44,7 +88,7 @@ def plot_diff_by_chapter(
     fig, ax
     """
     # Join with label metadata to get chapter + color
-    labels_df = load_label_meta()
+    labels_df = UKBReader.labels()
     labels_df["icd"] = labels_df["name"].str.split().str[0].str.upper()
     icd_meta = (
         labels_df.drop_duplicates("icd")
@@ -112,12 +156,12 @@ def plot_diff_by_chapter(
 
     if ylim:
         ax.set_ylim(ylim)
-    ax.set_ylabel(f"Δ ({label_b} − {label_a})")
-    title = f"{title}\nmean diff {df['diff'].mean():.3f}"
+    ax.set_ylabel(f"Δ concordance")
+    # title = f"{title}\nmean diff {df['diff'].mean():.3f}"
     ax.set_title(title, y=1.15)
 
     # Size legend
-    legend_tokens = np.array([100, 1000, 10000])
+    legend_tokens = np.array([500, 2000, 10000])
     legend_handles = [
         Line2D(
             [0],
