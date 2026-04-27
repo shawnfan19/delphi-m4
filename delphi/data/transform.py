@@ -109,6 +109,18 @@ class TokenTransform:
     def config(self) -> dict:
         return dict(self._init_args)
 
+    def describe(self) -> None:
+        print(f"{type(self).__name__}:")
+        heavy_keys = {"perturb_tokens", "blacklist_tokens", "whitelist_tokens"}
+        display = {}
+        for k, v in self.config.items():
+            if k in heavy_keys and v is not None:
+                arr = np.asarray(v)
+                display[k] = f"<array shape={arr.shape}>"
+            else:
+                display[k] = v
+        pprint.pp(display)
+
     def __call__(self, x_pid, t_pid):
 
         if self.deterministic:

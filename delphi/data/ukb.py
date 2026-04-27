@@ -1,4 +1,5 @@
 import os
+import pprint
 from functools import cached_property
 from pathlib import Path
 
@@ -155,6 +156,14 @@ class MultimodalUKBReader:
     @classmethod
     def labels(cls):
         return UKBReader.labels()
+
+    def describe(self) -> None:
+        print(f"{type(self).__name__}:")
+        config = {
+            "expansion_packs": sorted(self.expansion_packs.keys()),
+            "biomarkers": sorted(m.name.lower() for m in self.biomarkers),
+        }
+        pprint.pp(config)
 
     @cached_property
     def detokenizer(self):
