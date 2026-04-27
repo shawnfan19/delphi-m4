@@ -1,6 +1,0 @@
-biomarkers:
-  - prs
-expansion_packs:
-  - family_hx
-log:
-  run_name: family_hx+prs

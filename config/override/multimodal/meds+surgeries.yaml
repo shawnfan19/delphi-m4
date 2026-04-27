@@ -1,7 +1,0 @@
-batch_size: 128
-expansion_packs:
-  - meds
-  - ops
-  - summary_ops
-log:
-  run_name: meds+surgeries

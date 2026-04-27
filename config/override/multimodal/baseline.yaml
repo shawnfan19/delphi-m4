@@ -1,6 +1,0 @@
-model:
-  modality_emb: false
-log:
-  run_name: baseline
-ckpt_dir:
-  uncertain/baseline

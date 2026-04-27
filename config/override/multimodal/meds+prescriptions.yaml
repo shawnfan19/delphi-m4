@@ -1,6 +1,0 @@
-batch_size: 128
-expansion_packs:
-  - meds
-  - prescriptions
-log:
-  run_name: meds+prescriptions

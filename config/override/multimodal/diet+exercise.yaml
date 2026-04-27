@@ -1,5 +1,0 @@
-biomarkers:
-  - diet
-  - met
-log:
-  run_name: diet+exercise
