@@ -66,7 +66,7 @@ class HomoPoissonTPP:
         invalid = idx == -1
         idx = idx.clamp(min=0)
         nearest_t = torch.take_along_dim(self.timesteps, indices=idx, dim=1)
-        # invalid = invalid | (nearest_t == -1e4)
+        invalid = invalid | (nearest_t == -1e4)
         nearest_t = nearest_t.masked_fill(invalid, -1e4)
 
         B = self.logits.shape[0]
@@ -80,8 +80,7 @@ class HomoPoissonTPP:
         log_intensity = self.logits[flat_b, flat_idx, flat_tok].reshape(idx.shape)
         mask = self.occurred_mask[flat_b, flat_idx, flat_tok].reshape(idx.shape)
         log_intensity = log_intensity.masked_fill(mask, float("-inf"))
-        # intensity = log_intensity.exp().masked_fill(invalid, torch.nan)
-        intensity = log_intensity.exp()
+        intensity = log_intensity.exp().masked_fill(invalid, torch.nan)
         return intensity, nearest_t
 
     def integral(self, t0: torch.Tensor, t1: torch.Tensor):

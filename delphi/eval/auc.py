@@ -191,8 +191,7 @@ class ConcordanceCollator:
                 )  # (B, E_c)
 
             # Validity: within timeline and not padding
-            # valid = ~torch.isnan(ctrl_scores)
-            valid = t_at > 0
+            valid = t_at >= 0
             # Max gap: control score must be within max_gap of query time
             valid &= (chunk_case_times.unsqueeze(0) - t_at) < self.max_gap_days
             # Control score must be after control's biomarker cutoff
