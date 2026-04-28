@@ -29,21 +29,60 @@ class HomoPoissonTPP:
             vocab_size=logits.shape[-1],
         )
 
+    @property
+    def shape(self):
+        return self.timesteps.shape
+
     def intensity(self, t: torch.Tensor):
         assert t.shape[0] == self.timesteps.shape[0]
-        # broadcast (B,) first_timesteps up to match t's trailing query dims
-        first = self.first_timesteps.view(-1, *([1] * (t.dim() - 1)))
-        assert (t > first).all(), "t must be strictly > first non-padding timestep"
 
-        # clamp the -1 sentinel (no earlier input) to 0; the t > first assertion
-        # guarantees this fallback is never actually read at a meaningful slot
-        idx = nearest_input_pos(age=self.timesteps, targets_age=t).clamp(min=0)
+        idx = nearest_input_pos(age=self.timesteps, targets_age=t)
+        invalid = idx == -1
+        idx = idx.clamp(min=0)
+        nearest_t = torch.take_along_dim(self.timesteps, indices=idx, dim=1)
+        # also invalid when strict-before lands on a padding row (nearest_t == -1e4)
+        invalid = invalid | (nearest_t == -1e4)
+        nearest_t = nearest_t.masked_fill(invalid, -1e4)
+
         log_intensity = torch.take_along_dim(
             self.logits, indices=idx.unsqueeze(-1), dim=1
         )
         mask = torch.take_along_dim(self.occurred_mask, idx.unsqueeze(-1), dim=1)
         log_intensity = log_intensity.masked_fill(mask, float("-inf"))
-        return log_intensity.exp()
+        intensity = log_intensity.exp().masked_fill(invalid.unsqueeze(-1), torch.nan)
+        return intensity, nearest_t
+
+    def intensity_at(self, t: torch.Tensor, tokens: torch.Tensor):
+        """Per-pair scalar intensity λ_v(t) at the queried token v.
+
+        t: (B, *Q) query timesteps; tokens: broadcastable to (B, *Q).
+        Returns intensity (B, *Q) and nearest_t (B, *Q); invalid positions
+        (no input strictly before t, or strict-before lands on a padding row)
+        get NaN intensity and -1e4 nearest_t. Avoids the (B, *Q, V) intermediate.
+        """
+        assert t.shape[0] == self.timesteps.shape[0]
+
+        idx = nearest_input_pos(age=self.timesteps, targets_age=t)
+        invalid = idx == -1
+        idx = idx.clamp(min=0)
+        nearest_t = torch.take_along_dim(self.timesteps, indices=idx, dim=1)
+        # invalid = invalid | (nearest_t == -1e4)
+        nearest_t = nearest_t.masked_fill(invalid, -1e4)
+
+        B = self.logits.shape[0]
+        tokens_b = torch.broadcast_to(tokens, idx.shape)
+        flat_idx = idx.reshape(B, -1)
+        flat_tok = tokens_b.reshape(B, -1)
+        flat_b = (
+            torch.arange(B, device=self.logits.device).unsqueeze(1).expand_as(flat_idx)
+        )
+
+        log_intensity = self.logits[flat_b, flat_idx, flat_tok].reshape(idx.shape)
+        mask = self.occurred_mask[flat_b, flat_idx, flat_tok].reshape(idx.shape)
+        log_intensity = log_intensity.masked_fill(mask, float("-inf"))
+        # intensity = log_intensity.exp().masked_fill(invalid, torch.nan)
+        intensity = log_intensity.exp()
+        return intensity, nearest_t
 
     def integral(self, t0: torch.Tensor, t1: torch.Tensor):
         # require t0 to lie within the timeline (>= first non-padding event per sequence)

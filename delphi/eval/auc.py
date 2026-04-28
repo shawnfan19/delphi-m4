@@ -132,9 +132,8 @@ class ConcordanceCollator:
     def __init__(
         self,
         dis_rates,
-        onset_times,
+        case_times,
         is_female,
-        offset,
         chunk_size=8192,
         max_gap_days=1826.25,
         cutoff=None,
@@ -144,13 +143,12 @@ class ConcordanceCollator:
             as_tuple=True
         )
         self.case_scores = dis_rates[case_participants, case_tokens].float()
-        self.case_times = onset_times[case_participants, case_tokens].float()
+        self.case_times_mat = case_times
+        self.case_times = case_times[case_participants, case_tokens].float()
         self.case_tokens = case_tokens
         self.case_participants = case_participants
         self.case_sex = is_female[case_participants].cpu().numpy()
 
-        self.query_times = self.case_times - offset
-        self.onset_times = onset_times
         self.chunk_size = chunk_size
         self.max_gap_days = max_gap_days
         self.cutoff = cutoff
@@ -160,57 +158,48 @@ class ConcordanceCollator:
         self.total_pairs = np.zeros(E, dtype=np.float64)
         self.participant_offset = 0
 
-    def step(self, age, scores):
-        B, L, V = scores.shape
-        device = scores.device
+        self.device = self.case_scores.device
+
+    def step(self, tpp):
+        B = tpp.shape[0]
         E_total = len(self.case_tokens)
-        j_globals = torch.arange(B, device=device) + self.participant_offset
+        j_globals = torch.arange(B, device=self.device) + self.participant_offset
 
         for e_start in range(0, E_total, self.chunk_size):
             e_end = min(e_start + self.chunk_size, E_total)
-            E_c = e_end - e_start
 
-            chunk_query_times = self.query_times[e_start:e_end]
             chunk_case_times = self.case_times[e_start:e_end]
             chunk_tokens = self.case_tokens[e_start:e_end]
             chunk_participants = self.case_participants[e_start:e_end]
             chunk_scores = self.case_scores[e_start:e_end]
 
-            # Batched searchsorted: (B, L) sorted × (B, E_c) queries → (B, E_c) indices.
-            # right=False gives the last index with age[idx] < query_time (strict),
-            # matching the strict-less-than semantics of nearest_input_pos used on
-            # the case side; avoids using a score conditioned on a token at the
-            # query time itself.
-            idx_mat = (
-                torch.searchsorted(
-                    age.contiguous(),
-                    chunk_query_times.unsqueeze(0).expand(B, -1).contiguous(),
-                    right=False,
-                )
-                - 1
-            )
-            idx_c = idx_mat.clamp(0, L - 1)
-
-            # Timestamps and scores at each found position
-            t_at = age.gather(1, idx_c)
-            flat_b = (
-                torch.arange(B, device=device).unsqueeze(1).expand(-1, E_c).reshape(-1)
-            )
-            ctrl_scores = scores[
-                flat_b,
-                idx_c.reshape(-1),
-                chunk_tokens.unsqueeze(0).expand(B, -1).reshape(-1),
-            ].reshape(B, E_c)
+            intensity_at = getattr(tpp, "intensity_at", None)
+            if callable(intensity_at):
+                ctrl_scores, t_at = tpp.intensity_at(
+                    t=chunk_case_times.unsqueeze(0).expand(B, -1),  # (B, E_c)
+                    tokens=chunk_tokens,  # (E_c,)
+                )  # both (B, E_c)
+            else:
+                ctrl_full, t_at = tpp.intensity(
+                    t=chunk_case_times.unsqueeze(0).expand(B, -1),  # (B, E_c)
+                )  # ctrl_full: (B, E_c, V), t_at: (B, E_c)
+                ctrl_scores = ctrl_full.gather(
+                    -1,
+                    chunk_tokens.view(1, -1, 1).expand(B, -1, 1),
+                ).squeeze(
+                    -1
+                )  # (B, E_c)
 
             # Validity: within timeline and not padding
-            valid = (idx_mat >= 0) & (t_at > 0)
+            # valid = ~torch.isnan(ctrl_scores)
+            valid = t_at > 0
             # Max gap: control score must be within max_gap of query time
-            valid &= (chunk_query_times.unsqueeze(0) - t_at) < self.max_gap_days
+            valid &= (chunk_case_times.unsqueeze(0) - t_at) < self.max_gap_days
             # Control score must be after control's biomarker cutoff
             if self.cutoff is not None:
                 valid &= t_at >= self.cutoff[j_globals].unsqueeze(1)
             # At-risk: control had not yet developed disease at the case's event time
-            j_onset = self.onset_times[
+            j_onset = self.case_times_mat[
                 j_globals.unsqueeze(1), chunk_tokens.unsqueeze(0).expand(B, -1)
             ]
             valid &= j_onset.isnan() | (j_onset > chunk_case_times.unsqueeze(0))

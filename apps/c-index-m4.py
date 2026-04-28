@@ -25,9 +25,9 @@ from delphi.eval import (
     ConcordanceCollator,
     DiseaseRatesCollator,
     EventTimeCollator,
-    correct_time_offset,
 )
 from delphi.experiment import CliConfig, eval_iter, load_ckpt, move_batch_to_device
+from delphi.model.tpp import HomoPoissonTPP
 from delphi.multimodal import Modality
 
 
@@ -78,6 +78,7 @@ def first_modality_timestep(pids, biomarkers, expansion_packs):
 class TaskConfig(CliConfig):
     ckpt: str = "delphi-m4/delphi-m4/ckpt.pt"
     batch_size: int = 64
+    chunk_size: int = 8192
     min_time_gap: float = 0
     panel: None | str = None
     biomarkers: None | list = None
@@ -180,14 +181,21 @@ with torch.no_grad():
         x0, t0, _, _, _, x1, t1 = batch_input
 
         out_dict, _, _ = model(*batch_input[:5])
-        logits = out_dict["logits"].half()
-        t0 = out_dict["age"]
+        tpp = HomoPoissonTPP(
+            logits=out_dict["logits"],
+            tokens=out_dict["idx"],
+            timesteps=out_dict["age"],
+            terminate_except=torch.tensor(
+                model.config.self_terminate_except, device=device
+            ),
+        )
 
-        t0_off, logits_off = correct_time_offset(t0, t1, logits, offset=offset_days)
-        dis_collator.step(tokens=x1, timesteps=t0_off, logits=logits_off)
+        intensity, nearest_t0 = tpp.intensity(t1 - offset_days)
+
+        dis_collator.step(tokens=x1, timesteps=nearest_t0, logits=intensity)
         onset_collator.step(tokens=x1.cpu(), timestep=t1.cpu())
 
-dis_rates, dis_times = dis_collator.finalize()  # (N, V)
+dis_rates, nearest_t0 = dis_collator.finalize()  # (N, V)
 is_female = torch.from_numpy(reader.is_female(val_pids))  # (N,)
 onset_times, _ = onset_collator.finalize()
 onset_times = torch.from_numpy(onset_times)  # (N, V)
@@ -195,7 +203,7 @@ onset_times = torch.from_numpy(onset_times)  # (N, V)
 if args.after_only:
     cutoff = first_modality_timestep(val_pids, biomarkers, expansion_packs)
     # mask case events before the cutoff
-    before_cutoff = dis_times.numpy() < cutoff[:, None]
+    before_cutoff = nearest_t0.numpy() < cutoff[:, None]
     dis_rates[torch.from_numpy(before_cutoff)] = torch.nan
     cutoff = torch.from_numpy(cutoff).to(device)
 else:
@@ -209,10 +217,10 @@ is_female = is_female.to(device)
 # +
 concordance_collator = ConcordanceCollator(
     dis_rates=dis_rates,
-    onset_times=onset_times,
+    case_times=onset_times - offset_days,
     is_female=is_female,
-    offset=offset_days,
     max_gap_days=args.max_gap * 365.25,
+    chunk_size=args.chunk_size,
     cutoff=cutoff,
 )
 
@@ -226,11 +234,16 @@ with torch.no_grad():
     for batch_idx in it2:
         batch_input = ds.get_batch(batch_idx)
         batch_input = move_batch_to_device(batch_input, device=device)
-
         out_dict, _, _ = model(*batch_input[:5])
-        scores = out_dict["logits"].half()
-        age = out_dict["age"]
-        concordance_collator.step(age=age, scores=scores)
+        tpp = HomoPoissonTPP(
+            logits=out_dict["logits"],
+            tokens=out_dict["idx"],
+            timesteps=out_dict["age"],
+            terminate_except=torch.tensor(
+                model.config.self_terminate_except, device=device
+            ),
+        )
+        concordance_collator.step(tpp=tpp)
 
 case_sex, case_tokens, total_pairs, concordant = concordance_collator.finalize()
 # -
