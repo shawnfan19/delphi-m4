@@ -28,20 +28,7 @@ from delphi.eval import (
 )
 from delphi.experiment import CliConfig, eval_iter, load_ckpt, move_batch_to_device
 from delphi.model.tpp import HomoPoissonTPP
-from delphi.multimodal import Modality
-
-
-def parse_panel(path):
-    with open(path) as f:
-        panel = yaml.safe_load(f)
-    biomarkers, expansion_packs = list(), list()
-    all_biomarkers = [m.name for m in Modality]
-    for modality in panel:
-        if modality.upper() in all_biomarkers:
-            biomarkers.append(modality)
-        else:
-            expansion_packs.append(modality)
-    return biomarkers or None, expansion_packs or None, Path(path).stem
+from delphi.multimodal import Modality, parse_panel
 
 
 def filter_participants(pids, biomarkers, expansion_packs):

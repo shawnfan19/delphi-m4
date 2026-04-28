@@ -125,7 +125,7 @@ class HomoPoissonTPP:
         compensator = -torch.exp(log_sum_intensity) * delta_t.unsqueeze(-1)
 
         ll = log_intensity_k + compensator
-        return ll.masked_fill(invalid.unsqueeze(-1), torch.nan)
+        return ll.masked_fill(invalid.unsqueeze(-1), torch.nan).squeeze(-1)
 
 
 class NeuralIntensity(nn.Module):

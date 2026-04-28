@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from delphi.model.tpp import HomoPoissonTPP
 from delphi.model.transformer import (
     AgeEncoding,
     Block,
@@ -307,46 +308,27 @@ class DelphiM4(torch.nn.Module):
         targets_age: torch.Tensor,
         reduce: bool = True,
     ):
-
-        age = outputs["age"]
-        logits = outputs["logits"]
-        # clamp the -1 sentinel (no earlier input) to 0; training targets are
-        # expected to come after at least one input token
-        pos = nearest_input_pos(age, targets_age).clamp(min=0)
-        logits = torch.take_along_dim(logits, dim=1, indices=pos.unsqueeze(-1))
-        age = torch.take_along_dim(age, dim=1, indices=pos)
-
-        loss_ce = F.cross_entropy(
-            # (b, l, n_vocab) -> (b, n_vocab, l)
-            logits.permute(0, 2, 1),
-            targets,
-            reduction="none",
+        terminate_except = torch.tensor(
+            self.config.self_terminate_except, device=targets.device
         )
-
-        dt = targets_age - age
-        dt = torch.clamp(dt, min=self.config.t_min)
-        loss_dt = exponential_nll(
-            delta_t=dt,
-            log_lambda=torch.logsumexp(logits, -1),
-            t_min=self.config.t_min,
+        tpp = HomoPoissonTPP(
+            logits=outputs["logits"],
+            timesteps=outputs["age"],
+            tokens=outputs["idx"],
+            terminate_except=terminate_except,
         )
+        log_p = tpp.log_likelihood(x1=targets, t1=targets_age)
+        nll = -log_p
 
-        is_valid_target = targets != 0
-        for k in self.config.ignore_tokens:
-            is_valid_target *= targets != k
-        loss_ce[~is_valid_target] = torch.nan
-        loss_dt[~is_valid_target] = torch.nan
-
+        is_valid = targets != 0
+        if self.config.ignore_tokens is not None:
+            for k in self.config.ignore_tokens:
+                is_valid &= targets != k
+            nll = nll.masked_fill(~is_valid, torch.nan)
         if reduce:
-            loss_ce = torch.nanmean(loss_ce)
-            loss_dt = torch.nanmean(loss_dt)
+            nll = torch.nanmean(nll)
 
-        loss = {
-            "loss_ce": loss_ce,
-            "loss_dt": loss_dt,
-        }
-
-        return loss
+        return {"loss_nll": nll}
 
     @torch.no_grad()
     def sample_next(self, outputs: dict[str, torch.Tensor], idx: torch.Tensor):
