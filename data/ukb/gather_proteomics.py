@@ -12,38 +12,41 @@
 #     name: python3
 # ---
 
-# %%
-import dxdata
-import pandas as pd
-import numpy as np
-from pyspark.sql import SparkSession
-import pyspark.sql.functions as F
-from pyspark.sql.types import DateType, DoubleType
 import os
-from pathlib import Path
-import time
-import yaml
 import re
 import subprocess
+import time
+from pathlib import Path
 
-import pandas as pd
+# %%
+import dxdata
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import pyspark.sql.functions as F
+import yaml
+from pyspark.sql import SparkSession
+from pyspark.sql.types import DateType, DoubleType
+from utils_rap import build_biomarker
 
 from delphi.env import DELPHI_DATA_WRITE as DELPHI_DATA_DIR
 
-from utils_rap import build_biomarker
-
-spark = SparkSession.builder \
-    .config("spark.driver.maxResultSize", "4g") \
-    .config("spark.driver.memory", "8g") \
+spark = (
+    SparkSession.builder.config("spark.driver.maxResultSize", "4g")
+    .config("spark.driver.memory", "8g")
     .getOrCreate()
+)
 spark.conf.set("spark.sql.execution.arrow.pyspark.enabled", "true")
 
 # %%
 engine = dxdata.connect(dialect="hive+pyspark")
-project = os.getenv('DX_PROJECT_CONTEXT_ID')
-record = os.popen("dx find data --type Dataset --delimiter ',' | awk -F ',' '{print $5}'").read().rstrip()
-record = record.split('\n')[0]
+project = os.getenv("DX_PROJECT_CONTEXT_ID")
+record = (
+    os.popen("dx find data --type Dataset --delimiter ',' | awk -F ',' '{print $5}'")
+    .read()
+    .rstrip()
+)
+record = record.split("\n")[0]
 DATASET_ID = project + ":" + record
 dataset = dxdata.load_dataset(id=DATASET_ID)
 print(f"DATASET_ID: {DATASET_ID}")
@@ -57,14 +60,14 @@ instance0 = dataset["olink_instance_0"]
 # %%
 spark_df = instance0.retrieve_fields(fields=instance0.fields, engine=engine)
 non_id_cols = spark_df.columns[1:]
-spark_df = spark_df.dropna(how='all', subset=non_id_cols)
+spark_df = spark_df.dropna(how="all", subset=non_id_cols)
 protein0 = spark_df.toPandas()
 
 # %%
 protein0.shape
 
 # %%
-pd.isna(protein0).sum(axis=1).hist(bins=20);
+pd.isna(protein0).sum(axis=1).hist(bins=20)
 plt.xlabel("number of missing proteins")
 
 # %%
@@ -76,7 +79,7 @@ proteins_to_keep = missing_fractions[missing_fractions <= 0.20].index.tolist()
 dropped_count = len(non_id_cols) - len(proteins_to_keep)
 print(f"Dropping {dropped_count} proteins due to >20% missingness.")
 # Keep only 'eid' and the valid proteins
-protein0 = protein0[['eid'] + proteins_to_keep]
+protein0 = protein0[["eid"] + proteins_to_keep]
 # ==========================================
 
 # %%
@@ -117,7 +120,7 @@ build_biomarker(
 instance = dataset["olink_instance_2"]
 spark_df = instance.retrieve_fields(fields=instance.fields, engine=engine)
 non_id_cols = spark_df.columns[1:]
-spark_df_filtered = spark_df.dropna(how='all', subset=non_id_cols)
+spark_df_filtered = spark_df.dropna(how="all", subset=non_id_cols)
 protein = spark_df_filtered.toPandas()
 
 # %%
@@ -133,7 +136,7 @@ protein.to_csv(out_dir / "instance2.csv")
 # %%
 instance = dataset["olink_instance_3"]
 spark_df = instance.retrieve_fields(fields=instance.fields, engine=engine)
-spark_df_filtered = spark_df.dropna(how='all', subset=non_id_cols)
+spark_df_filtered = spark_df.dropna(how="all", subset=non_id_cols)
 protein = spark_df_filtered.toPandas()
 
 # %%

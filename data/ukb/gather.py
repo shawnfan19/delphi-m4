@@ -5,17 +5,25 @@ from pathlib import Path
 # %%
 import numpy as np
 import yaml
-from utils_rap import (
-    build_biomarker,
-    load_biomarker_df,
-    load_fids,
-)
+
+from delphi.env import IN_RAP
+
+if IN_RAP:
+    from utils_rap import (
+        build_biomarker,
+        load_biomarker_df,
+    )
+else:
+    from utils_codon import (
+        build_biomarker,
+        load_biomarker_df,
+    )
 
 # %%
-from delphi.env import DELPHI_DATA_WRITE
+from delphi.env import DELPHI_DATA_DIR
 
 # %%
-odir = Path(DELPHI_DATA_WRITE) / "ukb_real_data" / "biomarkers"
+odir = Path(DELPHI_DATA_DIR) / "ukb_real_data" / "biomarkers"
 odir
 
 # %%
@@ -42,5 +50,6 @@ for biomarker, params in biomarkers.items():
     )
 
 # %%
+biomarker_df["26501"].isna().sum()
 
 # %%

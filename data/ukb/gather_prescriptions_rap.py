@@ -12,21 +12,22 @@
 #     name: python3
 # ---
 
+import os
+
 # %%
 from datetime import datetime
+from pathlib import Path
+
+import dxdata
 import numpy as np
 import pandas as pd
-import dxdata
-import os
-from pathlib import Path
+from utils import dataset, month_of_birth
 
 from delphi.env import DELPHI_DATA_DIR
 
-from utils import dataset, month_of_birth
-
 # %%
 for _ in dataset.entities:
-    print('-> ' + _.entity_label_singular + ' [' + _.name + ']' )
+    print("-> " + _.entity_label_singular + " [" + _.name + "]")
     print(_.entity_description)
 
 # %%
@@ -71,17 +72,24 @@ mob_participants = mob_df.index.astype(int).to_numpy()
 # %%
 
 # %%
-df = gp_scripts.retrieve_fields(engine=engine, fields=[gp_scripts.fields[0], gp_scripts.fields[2], gp_scripts.fields[3], gp_scripts.fields[4], gp_scripts.fields[6]])
-df = df.filter(
-    (df.issue_date >= '2010-01-01') & 
-    (df.issue_date < '2019-12-31')
+df = gp_scripts.retrieve_fields(
+    engine=engine,
+    fields=[
+        gp_scripts.fields[0],
+        gp_scripts.fields[2],
+        gp_scripts.fields[3],
+        gp_scripts.fields[4],
+        gp_scripts.fields[6],
+    ],
 )
+df = df.filter((df.issue_date >= "2010-01-01") & (df.issue_date < "2019-12-31"))
+
+from pyspark.sql.functions import col, row_number
 
 # %%
 from pyspark.sql.window import Window
-from pyspark.sql.functions import col, row_number
 
-window = Window.orderBy("eid","issue_date")
+window = Window.orderBy("eid", "issue_date")
 df_with_row_num = df.withColumn("row_num", row_number().over(window))
 df_with_row_num.cache()
 print("Caching dataframe with row numbers...")
@@ -90,6 +98,7 @@ print(f"Total rows: {total_rows}")
 
 # %%
 import math
+
 chunk_size = 500000
 n_chunks = math.ceil(total_rows / chunk_size)
 n_chunks
@@ -103,7 +112,7 @@ pbar = tqdm(range(n_chunks), total=n_chunks, leave=False)
 for i in pbar:
     start_row = i * chunk_size + 1
     end_row = (i + 1) * chunk_size
-    
+
     if i == n_chunks - 1:
         # Last chunk - no upper limit
         chunk = df_with_row_num.filter(col("row_num") >= start_row)
@@ -113,7 +122,7 @@ for i in pbar:
         )
     chunk = chunk.drop("row_num").toPandas()
     chunk = chunk[chunk["eid"].isin(included_subjects)]
-    
+
     # first occurrence only
     chunk = chunk.drop_duplicates(subset=["eid", "bnf_code"], keep="first")
 
