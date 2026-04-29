@@ -8,7 +8,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import yaml
 from tqdm import tqdm
 
 from delphi.data import MultimodalDataset
@@ -50,7 +49,7 @@ def filter_participants(pids, biomarkers, expansion_packs):
 
 def first_modality_timestep(pids, biomarkers, expansion_packs):
 
-    cutoff = np.full(len(pids), -np.inf, dtype=np.float32)
+    cutoff = np.full(len(pids), np.nan, dtype=np.float32)
     for mod_name in biomarkers or []:
         first = Biomarker.first_occurrence_times(mod_name, pids)
         cutoff = np.fmin(cutoff, first)
@@ -108,6 +107,11 @@ biomarker_stats = ckpt_dict.get("biomarker_stats")
 
 val_pids = MultimodalUKBReader.participants("val")
 val_pids = filter_participants(val_pids, args.biomarkers, args.expansion_packs)
+
+if args.after_only:
+    cutoff = first_modality_timestep(val_pids, args.biomarkers, args.expansion_packs)
+else:
+    cutoff = None
 
 # -
 biomarkers = list(
@@ -187,14 +191,11 @@ is_female = torch.from_numpy(reader.is_female(val_pids))  # (N,)
 onset_times, _ = onset_collator.finalize()
 onset_times = torch.from_numpy(onset_times)  # (N, V)
 
-if args.after_only:
-    cutoff = first_modality_timestep(val_pids, biomarkers, expansion_packs)
-    # mask case events before the cutoff
-    before_cutoff = nearest_t0.numpy() < cutoff[:, None]
-    dis_rates[torch.from_numpy(before_cutoff)] = torch.nan
+if cutoff is not None:
+    reject = nearest_t0.numpy() < cutoff[:, None]
+    reject = reject | np.isnan(cutoff[:, None])
+    dis_rates[torch.from_numpy(reject)] = torch.nan
     cutoff = torch.from_numpy(cutoff).to(device)
-else:
-    cutoff = None
 
 # Move tensors to device for Phase 2
 dis_rates = dis_rates.to(device)
