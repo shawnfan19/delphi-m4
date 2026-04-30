@@ -16,7 +16,7 @@ from omegaconf import OmegaConf
 
 from delphi import distributed
 from delphi.env import DELPHI_CKPT_DIR
-from delphi.log import Checkpointer, Logger
+from delphi.log import Checkpointer, Logger, _format_for_display
 from delphi.model.multimodal import DelphiM4, DelphiM4Config
 from delphi.model.transformer import Delphi2M, Delphi2MConfig
 from delphi.optim import (
@@ -128,6 +128,9 @@ class CliConfig:
             file_cfg = OmegaConf.create({})
         merged = OmegaConf.merge(schema, file_cfg, cli)
         return OmegaConf.to_object(merged)  # type: ignore[return-value]
+
+    def print(self):
+        pprint.pprint(_format_for_display(asdict(self)))
 
 
 @dataclass

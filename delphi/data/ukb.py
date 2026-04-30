@@ -97,6 +97,17 @@ class UKBReader:
             out[i, uniq] = t[first_idx]
         return out
 
+    def participants_with_event(self, pids: np.ndarray, event: str) -> np.ndarray:
+        token = self.tokenizer[event]
+        pids_with_event = list()
+        for i, pid in enumerate(pids):
+            start = self.start_pos[int(pid)]
+            length = self.seq_len[int(pid)]
+            x = self.tokens[start : start + length]
+            if token in x:
+                pids_with_event.append(pid)
+        return np.array(pids_with_event)
+
     def exit_times(self, pids: np.ndarray) -> np.ndarray:
         """N array of last token times (exit / censoring time)."""
         out = np.empty(len(pids), dtype=np.float32)

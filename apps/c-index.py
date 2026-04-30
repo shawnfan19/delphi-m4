@@ -20,35 +20,7 @@ from delphi.eval import (
     EventTimeCollator,
 )
 from delphi.experiment import CliConfig, eval_iter, load_ckpt, move_batch_to_device
-from delphi.model.tpp import HomoPoissonTPP, NeuralDecayTPP, NeuralTPP
-
-
-def make_tpp(model, out_dict, device):
-    loss = model.config.loss
-    if loss == "homo_poisson":
-        return HomoPoissonTPP(
-            logits=out_dict["logits"],
-            tokens=out_dict["idx"],
-            timesteps=out_dict["age"],
-            terminate_except=torch.tensor(
-                model.config.self_terminate_except, device=device
-            ),
-        )
-    if loss == "neural_tpp":
-        return NeuralTPP(
-            hidden_states=out_dict["h"],
-            intensity_func=model.neural_tpp_head,
-            timesteps=out_dict["age"],
-            tokens=out_dict["idx"],
-        )
-    if loss == "neural_decay_tpp":
-        return NeuralDecayTPP(
-            hidden_states=out_dict["h"],
-            intensity_func=model.neural_decay_head,
-            timesteps=out_dict["age"],
-            tokens=out_dict["idx"],
-        )
-    raise ValueError(f"c-index unsupported for model.config.loss={loss!r}")
+from delphi.model.tpp import tpp_dispatch
 
 
 @dataclass
@@ -71,20 +43,17 @@ ckpt = Path(DELPHI_CKPT_READ) / args.ckpt
 model, ckpt_dict = load_ckpt(ckpt)
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-reader_args = ckpt_dict.get("reader_args", {})
 token_transform_args = ckpt_dict["token_transform_args"]
-
 val_pids = UKBReader.participants("val")
 
 pprint.pp(
     {
-        "reader_args": reader_args,
         "token_transform_args": token_transform_args,
     }
 )
 # -
 
-reader = UKBReader(**reader_args)
+reader = UKBReader()
 token_transform = TokenTransform(**token_transform_args)
 
 ds = Dataset(
@@ -114,7 +83,7 @@ with torch.no_grad():
         x0, t0, x1, t1 = batch_input
 
         out_dict, _, _ = model(x0, t0)
-        tpp = make_tpp(model, out_dict, device)
+        tpp = tpp_dispatch(model, out_dict, device)
 
         intensity, nearest_t0 = tpp.intensity(t1 - offset_days)
 
@@ -152,7 +121,7 @@ with torch.no_grad():
         x0, t0, _, _ = batch_input
 
         out_dict, _, _ = model(x0, t0)
-        tpp = make_tpp(model, out_dict, device)
+        tpp = tpp_dispatch(model, out_dict, device)
         concordance_collator.step(tpp=tpp)
 
 case_sex, case_tokens, total_pairs, concordant = concordance_collator.finalize()

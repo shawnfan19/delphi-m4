@@ -439,3 +439,31 @@ class NeuralDecayTPP:
         ll = log_intensity_k - compensator
         ll = ll.masked_fill(invalid, torch.nan)
         return ll, {"log_intensity_k": log_intensity_k, "compensator": compensator}
+
+
+def tpp_dispatch(model, out_dict, device):
+    loss = model.config.loss
+    if loss == "homo_poisson":
+        return HomoPoissonTPP(
+            logits=out_dict["logits"],
+            tokens=out_dict["idx"],
+            timesteps=out_dict["age"],
+            terminate_except=torch.tensor(
+                model.config.self_terminate_except, device=device
+            ),
+        )
+    if loss == "neural_tpp":
+        return NeuralTPP(
+            hidden_states=out_dict["h"],
+            intensity_func=model.neural_tpp_head,
+            timesteps=out_dict["age"],
+            tokens=out_dict["idx"],
+        )
+    if loss == "neural_decay_tpp":
+        return NeuralDecayTPP(
+            hidden_states=out_dict["h"],
+            intensity_func=model.neural_decay_head,
+            timesteps=out_dict["age"],
+            tokens=out_dict["idx"],
+        )
+    raise ValueError(f"c-index unsupported for model.config.loss={loss!r}")

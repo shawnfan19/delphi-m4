@@ -10,6 +10,29 @@ from delphi import distributed
 from delphi.env import DELPHI_CKPT_DIR
 
 
+def _compress_int_runs(lst: list) -> list:
+    if not lst or not all(type(x) is int for x in lst):
+        return lst
+    runs = []
+    start = prev = lst[0]
+    for x in lst[1:]:
+        if x == prev + 1:
+            prev = x
+            continue
+        runs.append(str(start) if start == prev else f"{start}-{prev}")
+        start = prev = x
+    runs.append(str(start) if start == prev else f"{start}-{prev}")
+    return runs
+
+
+def _format_for_display(obj):
+    if isinstance(obj, dict):
+        return {k: _format_for_display(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return _compress_int_runs(obj)
+    return obj
+
+
 class Logger:
     """Receives metric dicts and sends them to wandb / stdout."""
 
@@ -30,7 +53,7 @@ class Logger:
 
         if backend.is_master_process():
             print("=== config ===")
-            pprint(config, indent=2, width=60)
+            pprint(_format_for_display(config), indent=2, width=60)
 
             if self.wandb:
                 import re
@@ -46,6 +69,8 @@ class Logger:
                 wandb.define_metric("val/*", step_metric="step")
                 wandb.define_metric("train/*", step_metric="step")
                 wandb.define_metric("grad_norm/*", step_metric="step")
+                wandb.define_metric("output/*", step_metric="step")
+                wandb.define_metric("param/*", step_metric="step")
 
                 if summary is not None:
                     for k, v in summary.items():
@@ -56,7 +81,7 @@ class Logger:
             if self.wandb:
                 wandb.log(metrics)
 
-    def log_grad(self, model: torch.nn.Module):
+    def log_grad_norm(self, model: torch.nn.Module):
         if self.backend.is_master_process():
             if self.wandb:
                 for name, param in model.named_parameters():
@@ -65,6 +90,38 @@ class Logger:
                             {f"grad_norm/{name}": param.grad.norm().item()},
                             commit=False,
                         )
+
+    def log_param_stats(self, model: torch.nn.Module):
+        if self.backend.is_master_process():
+            if self.wandb:
+                for name, param in model.named_parameters():
+                    tensor = param.detach().float()
+                    wandb.log(
+                        {
+                            f"param/{name}/mean": tensor.mean().item(),
+                            f"param/{name}/median": tensor.median().item(),
+                            f"param/{name}/max": tensor.max().item(),
+                            f"param/{name}/min": tensor.min().item(),
+                        },
+                        commit=False,
+                    )
+
+    def log_output(self, output: dict[str, torch.Tensor]):
+        if self.backend.is_master_process():
+            if self.wandb:
+                for name, tensor in output.items():
+                    if not torch.is_floating_point(tensor):
+                        continue
+                    tensor = tensor.detach().float()
+                    wandb.log(
+                        {
+                            f"output/{name}/mean": tensor.mean().item(),
+                            f"output/{name}/median": tensor.median().item(),
+                            f"output/{name}/max": tensor.max().item(),
+                            f"output/{name}/min": tensor.min().item(),
+                        },
+                        commit=False,
+                    )
 
     def print(self, msg: str):
         if self.backend.is_master_process():
