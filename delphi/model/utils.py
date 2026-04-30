@@ -102,8 +102,9 @@ def nearest_input_pos(age, targets_age, include_ties: bool = False):
     (last in sequence order).
 
     Args:
-        age: (B, L0) input timestamps.
-        targets_age: (B, *Q) target timestamps.
+        age: (B, L0) input timestamps, sorted along dim=-1 (the codebase's
+            convention: left-padded with -1e4, then monotone real ages).
+        targets_age: (B, *Q) target timestamps; arbitrary trailing query dims.
         include_ties: if False (default), "strictly before" — only inputs with
             age < target count; returns -1 if no such input exists.
             If True, "at or before" — inputs with age <= target count;
@@ -112,23 +113,14 @@ def nearest_input_pos(age, targets_age, include_ties: bool = False):
     Callers that cannot tolerate -1 should clamp after calling (e.g.,
     ``.clamp(min=0)``).
     """
-
-    L = age.shape[-1]
-    targets_age = targets_age.view(*targets_age.shape, 1)
-    age = age.view(age.shape[0], 1, age.shape[1])
-    age_diff = targets_age - age  # B, L1, L0
-    if include_ties:
-        fill_mask = age_diff < 0
-    else:
-        fill_mask = age_diff <= 0
-    age_diff = age_diff.masked_fill(fill_mask, float("inf"))
-    pos = L - 1 - torch.argmin(age_diff.flip(-1), dim=-1)
-    # argmin on an all-inf row returns 0 (→ pos = L-1), which is indistinguishable
-    # from a valid match at the last position. Emit -1 for those rows instead.
-    no_valid = torch.isinf(age_diff).all(dim=-1)
-    pos = pos.masked_fill(no_valid, -1)
-
-    return pos
+    B = age.shape[0]
+    q_shape = targets_age.shape[1:]
+    age = age.contiguous()
+    t_flat = targets_age.reshape(B, -1).contiguous()
+    # right=False → first i with age[i] >= t  → idx-1 = last age[i] < t   (strict)
+    # right=True  → first i with age[i] > t   → idx-1 = last age[i] <= t  (with ties)
+    pos = torch.searchsorted(age, t_flat, right=include_ties) - 1
+    return pos.reshape(B, *q_shape)
 
 
 def multi_hot(
