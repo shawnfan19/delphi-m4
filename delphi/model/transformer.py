@@ -189,7 +189,7 @@ class Delphi2MConfig:
     attn_mask: str = "time"
     weight_tying: bool = True
     ignore_tokens: None | list = field(
-        default_factory=lambda: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        default_factory=lambda: [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     )  # 0 always ignored
     no_event_rate: None | float = None
     mask_no_event_attention: bool = False
@@ -289,6 +289,7 @@ class Delphi2M(nn.Module):
         )
 
         cooccur = None
+        aux = None
         if self.config.loss == "default":
             if self.config.mask_ties:
                 outputs, age = untie(outputs, outputs["age"], targets_age)
@@ -316,6 +317,7 @@ class Delphi2M(nn.Module):
                 timesteps=outputs["age"],
                 tokens=outputs["idx"],
                 terminate_except=terminate_except,
+                time_unit=self.config.time_unit,
             )
             log_p = tpp.log_likelihood(x1=targets, t1=targets_age)
             loss = {"loss_nll": -log_p}
@@ -349,7 +351,7 @@ class Delphi2M(nn.Module):
                 timesteps=outputs["age"],
                 tokens=outputs["idx"],
             )
-            log_p = tpp.log_likelihood(
+            log_p, aux = tpp.log_likelihood(
                 x1=targets,
                 t1=targets_age,
                 n_grid=self.config.n_integrate_grid,
@@ -365,7 +367,7 @@ class Delphi2M(nn.Module):
         if cooccur is not None:
             is_valid &= ~cooccur
 
-        return _mask_invalid(loss, is_valid, reduce=reduce)
+        return _mask_invalid(loss, is_valid, reduce=reduce), aux
 
     def forward(
         self, idx, age, targets=None, targets_age=None, past_kvs=None, past_pad=None
@@ -419,7 +421,9 @@ class Delphi2M(nn.Module):
             outputs["aux_rates"] = aux_rates.squeeze(-1)
 
         if (targets is not None) and (targets_age is not None):
-            loss = self.loss(outputs, targets=targets, targets_age=targets_age)
+            loss, aux = self.loss(outputs, targets=targets, targets_age=targets_age)
+            if aux:
+                outputs = outputs | aux
         else:
             loss = None
 

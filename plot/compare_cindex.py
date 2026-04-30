@@ -43,6 +43,7 @@ mpl.rcParams["figure.dpi"] = 300
 class TaskConfig(CliConfig):
     json: str
     baseline_json: str
+    min: int = 50
 
 
 args = TaskConfig.from_cli()
@@ -56,7 +57,7 @@ label_b = str(ckpt_b_json.parent)
 
 sex = "either"  # "female" | "male" | "either"
 
-min_events = 50  # drop diseases with fewer events in either checkpoint
+min_events = args.min  # drop diseases with fewer events in either checkpoint
 
 # %%
 with open(ckpt_a_json) as f:

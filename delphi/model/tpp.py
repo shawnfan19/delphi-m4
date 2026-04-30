@@ -15,6 +15,7 @@ class HomoPoissonTPP:
         timesteps: torch.Tensor,
         tokens: torch.Tensor,
         terminate_except: torch.Tensor,
+        time_unit: float = 1.0,
     ):
         self.timesteps = timesteps
         self.first_timesteps = (
@@ -28,6 +29,7 @@ class HomoPoissonTPP:
             terminate_except=terminate_except,
             vocab_size=logits.shape[-1],
         )
+        self.time_unit = time_unit
 
     @property
     def shape(self):
@@ -122,7 +124,9 @@ class HomoPoissonTPP:
         t0 = torch.take_along_dim(self.timesteps, indices=idx, dim=1)
         delta_t = t1 - t0
         log_sum_intensity = torch.logsumexp(log_intensity, dim=-1, keepdim=True)
-        compensator = -torch.exp(log_sum_intensity) * delta_t.unsqueeze(-1)
+        compensator = (
+            -torch.exp(log_sum_intensity) * delta_t.unsqueeze(-1) / self.time_unit
+        )
 
         ll = log_intensity_k + compensator
         return ll.masked_fill(invalid.unsqueeze(-1), torch.nan).squeeze(-1)
@@ -204,22 +208,31 @@ class NeuralTPP:
             vocab_size=self.f.vocab_size,
         )
 
+    @property
+    def shape(self):
+        return self.timesteps.shape
+
     def intensity(self, t: torch.Tensor):
         assert t.shape[0] == self.timesteps.shape[0]
-        # broadcast (B,) first_timesteps up to match t's trailing query dims
-        first = self.first_timesteps.view(-1, *([1] * (t.dim() - 1)))
-        assert (t > first).all(), "t must be strictly > first non-padding timestep"
 
-        # the t > first assertion guarantees nearest_input_pos returns a valid
-        # (non -1) index, so the clamp is purely defensive
-        idx = nearest_input_pos(age=self.timesteps, targets_age=t).clamp(min=0)
+        idx = nearest_input_pos(age=self.timesteps, targets_age=t)
+        invalid = idx == -1
+        idx = idx.clamp(min=0)
+        nearest_t = torch.take_along_dim(self.timesteps, indices=idx, dim=1)
+        invalid = invalid | (nearest_t == -1e4)
+        nearest_t = nearest_t.masked_fill(invalid, -1e4)
+
         h = torch.take_along_dim(self.h, indices=idx.unsqueeze(-1), dim=1)
-        t0 = torch.take_along_dim(self.timesteps, indices=idx, dim=1)
-        delta_t = t - t0
+        delta_t = (t - nearest_t).clamp(
+            min=0
+        )  # invalid rows have nonsense delta_t; NaN-fill below
         intensity = self.f(h, delta_t)
 
         mask = torch.take_along_dim(self.occurred_mask, idx.unsqueeze(-1), dim=1)
-        return intensity.masked_fill(mask, 0)
+        intensity = intensity.masked_fill(mask, 0).masked_fill(
+            invalid.unsqueeze(-1), torch.nan
+        )
+        return intensity, nearest_t
 
     def integral(self, t0: torch.Tensor, t1: torch.Tensor, n_grid: int):
         assert (
@@ -301,11 +314,6 @@ class NeuralDecayEmbedding(nn.Module):
         super().__init__()
         self.vocab_size = vocab_size
         self.intensity_projector = nn.Linear(n_embd, vocab_size)
-        # self.log_beta_projector = nn.Sequential(
-        #     nn.Linear(n_embd, n_embd),
-        #     nn.GELU(),
-        #     nn.Linear(n_embd, n_embd),
-        # )
         # per-dim decay rate (1/year units after the /365.25 in forward)
         # init at log(0.05) ≈ -3 → decay timescale ~20 years per dim,
         # giving a slow, well-conditioned default state evolution
@@ -326,7 +334,6 @@ class NeuralDecayEmbedding(nn.Module):
             Log-intensity log λ_v(τ), shape (B, L, V) or (B, L, G, V).
         """
         destination = self.destination_projector(h)  # (B, L, n_embd)
-        # beta = self.log_beta_projector(h).exp()              # (B, L, n_embd)
         beta = self.log_beta.exp()
 
         # broadcast h / destination / beta across the G grid axis when delta_t is 3D
@@ -369,21 +376,26 @@ class NeuralDecayTPP:
 
     def intensity(self, t: torch.Tensor):
         assert t.shape[0] == self.timesteps.shape[0]
-        # broadcast (B,) first_timesteps up to match t's trailing query dims
-        first = self.first_timesteps.view(-1, *([1] * (t.dim() - 1)))
-        assert (t > first).all(), "t must be strictly > first non-padding timestep"
 
-        # the t > first assertion guarantees nearest_input_pos returns a valid
-        # (non -1) index, so the clamp is purely defensive
-        idx = nearest_input_pos(age=self.timesteps, targets_age=t).clamp(min=0)
+        idx = nearest_input_pos(age=self.timesteps, targets_age=t)
+        invalid = idx == -1
+        idx = idx.clamp(min=0)
+        nearest_t = torch.take_along_dim(self.timesteps, indices=idx, dim=1)
+        invalid = invalid | (nearest_t == -1e4)
+        nearest_t = nearest_t.masked_fill(invalid, -1e4)
+
         h = torch.take_along_dim(self.h, indices=idx.unsqueeze(-1), dim=1)
-        t0 = torch.take_along_dim(self.timesteps, indices=idx, dim=1)
-        delta_t = t - t0
+        delta_t = (t - nearest_t).clamp(
+            min=0
+        )  # invalid rows have nonsense delta_t; NaN-fill below
         log_intensity = self.f(h, delta_t)
         intensity = log_intensity.exp()
 
         mask = torch.take_along_dim(self.occurred_mask, idx.unsqueeze(-1), dim=1)
-        return intensity.masked_fill(mask, 0)
+        intensity = intensity.masked_fill(mask, 0).masked_fill(
+            invalid.unsqueeze(-1), torch.nan
+        )
+        return intensity, nearest_t
 
     def integral(self, t0: torch.Tensor, t1: torch.Tensor, n_grid: int):
         assert (
@@ -402,7 +414,7 @@ class NeuralDecayTPP:
 
         log_intensity = self.f(h, delta_t)  # (B, L, V)
         mask = torch.take_along_dim(self.occurred_mask, idx.unsqueeze(-1), dim=1)
-        log_intensity = log_intensity.masked_fill(mask, -torch.inf).clamp(max=10)
+        log_intensity = log_intensity.masked_fill(mask, -torch.inf)
         log_intensity_k = torch.gather(
             log_intensity, dim=-1, index=x1.unsqueeze(-1)
         ).squeeze(-1)
@@ -414,7 +426,7 @@ class NeuralDecayTPP:
         t_unit = torch.linspace(0.0, 1.0, n_grid, device=h.device, dtype=h.dtype)
         grid_delta_t = t_unit * delta_t.unsqueeze(-1)  # (B, L, G)
 
-        log_intensity_grid = self.f(h, grid_delta_t).clamp(max=10)  # (B, L, G, V)
+        log_intensity_grid = self.f(h, grid_delta_t)  # (B, L, G, V)
         log_intensity_grid = log_intensity_grid.masked_fill(
             mask.unsqueeze(-2), -torch.inf
         )
@@ -425,4 +437,5 @@ class NeuralDecayTPP:
         )  # (B, L)
 
         ll = log_intensity_k - compensator
-        return ll.masked_fill(invalid, torch.nan)
+        ll = ll.masked_fill(invalid, torch.nan)
+        return ll, {"log_intensity_k": log_intensity_k, "compensator": compensator}

@@ -278,13 +278,13 @@ class BaseTrainer:
 
     def mini_step(
         self, batch_data: Iterable, *args, **kwargs
-    ) -> dict[str, torch.Tensor]:
+    ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
 
         batch_data = move_batch_to_device(args=batch_data, device=self.device)
         with self.ctx:
-            _, loss, _ = self.model(*batch_data)
+            output, loss, _ = self.model(*batch_data)
 
-        return loss
+        return output, loss
 
     @torch.no_grad()
     def estimate_loss(self, *args, **kwargs) -> dict:
@@ -319,7 +319,7 @@ class BaseTrainer:
 
                 batch_idx = next(estimate_iter)
                 batch_data = eval_ds.get_batch(batch_idx)
-                loss = self.mini_step(batch_data=batch_data)
+                _, loss = self.mini_step(batch_data=batch_data)
 
                 for key in loss.keys():
                     split_loss[key] += loss[key].item()
@@ -386,7 +386,7 @@ class BaseTrainer:
                 ):
                     batch_idx = next(self.train_iter)
                     batch_data = self.train_ds.get_batch(batch_idx)
-                    loss = self.mini_step(batch_data=batch_data)
+                    output, loss = self.mini_step(batch_data=batch_data)
 
                 # backward pass, with gradient scaling if training in fp16
                 loss_agg = sum([loss[key] for key in loss.keys()])
@@ -413,7 +413,9 @@ class BaseTrainer:
 
                 self.logger.print(f"iter {self.iter_num}: loss {lossf:.4f}")
                 self.logger.log(metrics)
-                self.logger.log_grad(self.model)
+                self.logger.log_grad_norm(self.model)
+                self.logger.log_param_stats(self.model)
+                self.logger.log_output(output)
 
             # step the optimizer and scaler if training in fp16
             self.scaler.step(self.optimizer)
