@@ -45,16 +45,11 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 token_transform_args = ckpt_dict["token_transform_args"]
 val_pids = UKBReader.participants("val")
-
-pprint.pp(
-    {
-        "token_transform_args": token_transform_args,
-    }
-)
 # -
 
 reader = UKBReader()
 token_transform = TokenTransform(**token_transform_args)
+token_transform.describe()
 
 ds = Dataset(
     reader=reader,

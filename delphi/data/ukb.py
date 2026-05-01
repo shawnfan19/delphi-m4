@@ -108,6 +108,11 @@ class UKBReader:
                 pids_with_event.append(pid)
         return np.array(pids_with_event)
 
+    def recruitment_times(self, pids: np.ndarray) -> np.ndarray:
+        event_times = self.event_times(pids)
+        lifestyle_tokens = np.array([self.tokenizer[e] for e in self.lifestyle_keys])
+        return np.nanmin(event_times[:, lifestyle_tokens], axis=1)
+
     def exit_times(self, pids: np.ndarray) -> np.ndarray:
         """N array of last token times (exit / censoring time)."""
         out = np.empty(len(pids), dtype=np.float32)

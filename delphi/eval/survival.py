@@ -2,7 +2,7 @@ import numpy as np
 import torch
 
 
-class KaplanMeierEstimator:
+class PopulationKaplanMeierEstimator:
 
     def __init__(self, timestep: np.ndarray, tokens: np.ndarray, vocab_size: int):
 
@@ -57,6 +57,28 @@ class KaplanMeierEstimator:
                 end_surv = self.surv_percent[token][end_mask].min()
                 incidence.append((start_surv - end_surv) / start_surv)
         return np.array(incidence)
+
+
+class KaplanMeierEstimator:
+
+    def __init__(self, surv_timesteps: np.ndarray, occur: np.ndarray):
+
+        n_subjects = surv_timesteps.size
+        uniq_time, inverse_indices, n_exit = np.unique(
+            surv_timesteps, return_inverse=True, return_counts=True
+        )
+        n_exit = np.concatenate(([0], n_exit[:-1]))
+        n_occur = np.bincount(inverse_indices, weights=occur)
+        n_surv = n_subjects - np.cumsum(n_exit)
+        self.surv_percent = np.cumprod(1 - n_occur / n_surv)
+        self.surv_time = uniq_time
+
+    def incidence(self, start_age, end_age):
+        start_idx = np.searchsorted(self.surv_time, start_age, side="right") - 1
+        end_idx = np.searchsorted(self.surv_time, end_age, side="right") - 1
+        start_surv = 1.0 if start_idx < 0 else self.surv_percent[start_idx]
+        end_surv = 1.0 if end_idx < 0 else self.surv_percent[end_idx]
+        return (start_surv - end_surv) / start_surv
 
 
 class NelsonAalenEstimator:

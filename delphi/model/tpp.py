@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from delphi.model.utils import (
     have_occurred,
@@ -54,7 +55,7 @@ class HomoPoissonTPP:
         intensity = log_intensity.exp().masked_fill(invalid.unsqueeze(-1), torch.nan)
         return intensity, nearest_t
 
-    def intensity_at(self, t: torch.Tensor, tokens: torch.Tensor):
+    def intensity_at(self, t: torch.Tensor, tokens: torch.Tensor, n_grid: int):
         """Per-pair scalar intensity λ_v(t) at the queried token v.
 
         t: (B, *Q) query timesteps; tokens: broadcastable to (B, *Q).
@@ -85,7 +86,7 @@ class HomoPoissonTPP:
         intensity = log_intensity.exp().masked_fill(invalid, torch.nan)
         return intensity, nearest_t
 
-    def integral(self, t0: torch.Tensor, t1: torch.Tensor):
+    def integral(self, t0: torch.Tensor, t1: torch.Tensor, n_grid: int):
         # require t0 to lie within the timeline (>= first non-padding event per sequence)
         assert t0.shape[0] == t1.shape[0] == self.timesteps.shape[0]
         assert (
@@ -100,8 +101,9 @@ class HomoPoissonTPP:
         max_age = self.timesteps.max(dim=1).values
         right = torch.maximum(t1, max_age).unsqueeze(-1)
         _timesteps = torch.cat([self.timesteps, right], dim=1)
-        _timesteps = torch.clamp(_timesteps, min=t0, max=t1)
+        _timesteps = torch.clamp(_timesteps, min=t0.unsqueeze(-1), max=t1.unsqueeze(-1))
         delta_t = torch.diff(_timesteps, dim=1)  # (B, L) — one gap per λ
+        delta_t /= self.time_unit
         _cap_lambda = torch.sum(_lambda * delta_t.unsqueeze(-1), dim=1)
         return _cap_lambda, delta_t.sum(dim=1)
 
@@ -189,6 +191,7 @@ class NeuralTPP:
         intensity_func: NeuralIntensity,
         timesteps: torch.Tensor,
         tokens: torch.Tensor,
+        time_unit: float = 365.25,
     ):
         self.timesteps = timesteps
         self.first_timesteps = (
@@ -207,6 +210,7 @@ class NeuralTPP:
             terminate_except=self.terminate_except,
             vocab_size=self.f.vocab_size,
         )
+        self.time_unit = time_unit
 
     @property
     def shape(self):
@@ -234,11 +238,24 @@ class NeuralTPP:
         )
         return intensity, nearest_t
 
-    def integral(self, t0: torch.Tensor, t1: torch.Tensor, n_grid: int):
-        assert (
-            t0 >= self.first_timesteps
-        ).all(), "t0 must be >= first non-padding timestep"
-        raise NotImplementedError
+    def integral(
+        self, t0: torch.Tensor, t1: torch.Tensor, n_grid: int, method: str = "trapezoid"
+    ):
+        t = torch.stack((t0, t1), dim=1)
+        t_grid = F.interpolate(
+            t.unsqueeze(0), size=n_grid, mode="linear", align_corners=True
+        )
+        t_grid = t_grid.squeeze(0)
+        intensity, _ = self.intensity(t_grid)
+        t_grid = t_grid[..., None].expand_as(intensity).clone()
+        t_grid /= self.time_unit
+
+        if method == "trapezoid":
+            return torch.trapezoid(intensity, t_grid, dim=1), None
+        elif method == "monte-carlo":
+            raise NotImplementedError
+        else:
+            raise ValueError
 
     def log_likelihood(self, x1: torch.Tensor, t1: torch.Tensor, n_grid: int):
         # mark queries with no valid strict-before non-padding history; these
@@ -284,7 +301,7 @@ class NeuralTPP:
 
         total_intensity = intensity_grid.sum(dim=-1)  # (B, L, G) = Σ_v λ_v
         compensator = torch.trapezoid(
-            total_intensity, grid_delta_t / 365.25, dim=-1
+            total_intensity, grid_delta_t / self.time_unit, dim=-1
         )  # (B, L)
 
         ll = log_intensity_k - compensator
@@ -441,7 +458,7 @@ class NeuralDecayTPP:
         return ll, {"log_intensity_k": log_intensity_k, "compensator": compensator}
 
 
-def tpp_dispatch(model, out_dict, device):
+def tpp_dispatch(model, out_dict, device, time_unit):
     loss = model.config.loss
     if loss == "homo_poisson":
         return HomoPoissonTPP(
@@ -451,6 +468,7 @@ def tpp_dispatch(model, out_dict, device):
             terminate_except=torch.tensor(
                 model.config.self_terminate_except, device=device
             ),
+            time_unit=time_unit,
         )
     if loss == "neural_tpp":
         return NeuralTPP(

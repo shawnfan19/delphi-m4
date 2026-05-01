@@ -1,5 +1,6 @@
 # +
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -7,20 +8,29 @@ import numpy as np
 import pandas as pd
 from matplotlib.patches import Patch
 
-from delphi.env import DELPHI_CKPT_READ
+from delphi.env import DELPHI_CKPT_READ as DELPHI_CKPT_DIR
+from delphi.experiment import CliConfig
 from delphi.plot import plot_diff_by_chapter
 
 plt.rcParams["figure.dpi"] = 150
 # -
 
 
-json_path = Path(DELPHI_CKPT_READ) / "m4/blood/forecast_n32.json"
-bl_json_path = Path(DELPHI_CKPT_READ) / "m4/baseline/forecast_n32.json"
+@dataclass(kw_only=True)
+class TaskConfig(CliConfig):
+    json: str
+    baseline_json: str
+    min: int = 50
 
-with open(json_path, "r") as f:
+
+args = TaskConfig.from_cli()
+ckpt_a_json = Path(DELPHI_CKPT_DIR) / args.baseline_json
+ckpt_b_json = Path(DELPHI_CKPT_DIR) / args.json
+
+with open(ckpt_a_json, "r") as f:
     results = json.load(f)
 
-with open(bl_json_path, "r") as f:
+with open(ckpt_b_json, "r") as f:
     bl_results = json.load(f)
 
 
