@@ -1,6 +1,8 @@
 import numpy as np
 import torch
 
+from delphi.model.tpp import HomoPoissonTPP
+
 
 class PopulationKaplanMeierEstimator:
 
@@ -83,55 +85,33 @@ class KaplanMeierEstimator:
 
 class NelsonAalenEstimator:
 
-    def __init__(
-        self,
-        timesteps: torch.Tensor,
-        intensities: torch.Tensor,
-        at_risk: torch.Tensor,
-    ):
-        """
-        args:
-            timesteps (B, L)
-            intensities (B, L, V)
-            at_risk (B, L, V)
-        """
+    def __init__(self, tpp: HomoPoissonTPP):
 
-        assert timesteps.shape[1] == intensities.shape[1] == at_risk.shape[1]
-        assert (intensities[~at_risk.bool()] == 0).all()
+        self.time_unit = tpp.time_unit
+        uniq_timesteps = torch.unique(tpp.timesteps[tpp.timesteps >= 0])
+        min_timestep = torch.min(uniq_timesteps)
+        self.timesteps = uniq_timesteps[uniq_timesteps > min_timestep]
+        self.intervals = self.timesteps.diff() / self.time_unit
 
-        self.timesteps = torch.unique(timesteps[timesteps >= 0])
-        self.intervals = self.timesteps.diff()
+        intensities, _ = tpp.intensity(self.timesteps[None, :].expand(tpp.shape[0], -1))
 
-        idx = (
-            torch.searchsorted(
-                timesteps,
-                self.timesteps.unsqueeze(0).expand(timesteps.shape[0], -1),
-                right=True,
-            )
-            - 1
-        )
-        idx_expanded = idx.unsqueeze(-1).expand(-1, -1, intensities.shape[-1])
-        intensities = torch.gather(intensities, 1, idx_expanded)
-        at_risk = torch.gather(at_risk, 1, idx_expanded)
+        have_exited = intensities == 0
+        intensities[have_exited] = torch.nan
 
-        denom = at_risk.sum(dim=0)
-        self.hazard_rate = torch.where(
-            denom > 0, intensities.sum(dim=0) / denom, other=0
-        )
+        self.hazard_rate = torch.nanmean(intensities, dim=0)
         areas = self.hazard_rate[:-1] * self.intervals.unsqueeze(-1)
         self.cumul_hazard = torch.zeros_like(self.hazard_rate)
         self.cumul_hazard[1:] = torch.cumsum(areas, dim=0)
-
         assert self.timesteps.shape[0] == self.cumul_hazard.shape[0]
 
-    def __call__(self, t: float | torch.Tensor):
+    def __call__(self, t: float | torch.Tensor | np.ndarray):
 
         if not isinstance(t, torch.Tensor):
             t = torch.tensor(t, device=self.timesteps.device)
         idx = torch.searchsorted(self.timesteps, t, right=True) - 1
         # assert (idx >= 0).all(), "queried time is before the first timestep"
 
-        time_in_interval = t - self.timesteps[idx]
+        time_in_interval = (t - self.timesteps[idx]) / self.time_unit
         hazard = self.cumul_hazard[idx] + (
             time_in_interval.unsqueeze(-1) * self.hazard_rate[idx]
         )
@@ -255,67 +235,6 @@ class OnlineSurvivalEstimator:
     def finalize(self):
         self.risk_per_interval /= self.counter
         return np.cumprod(1 - self.risk_per_interval, axis=-1), self.time_intervals
-
-
-class IntervalKaplanMeierCollator:
-
-    def __init__(
-        self,
-        time_horizon: list[float],
-        start_age: float,
-        time_intervals: None | list[float] = None,
-        n_repeats: int = 1,
-    ):
-        self.time_intervals = time_intervals
-        self.time_horizon = time_horizon
-        self.start_age = start_age
-        self.n_repeats = n_repeats
-        self.prob_by_horizon = defaultdict(list)
-
-    def step(self, tokens: torch.Tensor, timestep: torch.Tensor, logits: torch.Tensor):
-
-        if self.time_intervals is None:
-            time_intervals = (
-                torch.unique(torch.clamp(timestep, min=0), sorted=True)
-                .detach()
-                .cpu()
-                .numpy()
-            )
-        else:
-            time_intervals = self.time_intervals
-
-        risk_per_interval = integrate_risk(
-            logits=logits,
-            tokens=tokens,
-            timesteps=timestep,
-            time_intervals=torch.tensor(self.time_intervals).to(tokens.device),
-        )
-        risk_per_interval = torch.reshape(
-            risk_per_interval,
-            (-1, self.n_repeats, logits.shape[-1], len(time_intervals) - 1),
-        )  # participants, # repeats, # vocab_size, # time_intervals
-        risk_per_interval = torch.nanmean(risk_per_interval, dim=1)
-        # participants, # vocab_size, # time_intervals
-
-        surv_prob = torch.cumprod(1 - risk_per_interval, dim=-1)
-        surv_time = np.array(time_intervals)[1:]
-        for horizon in self.time_horizon:
-            self.prob_by_horizon[horizon].append(
-                kaplan_meier_incidence(
-                    surv_prob=surv_prob.detach().cpu().numpy(),
-                    surv_time=surv_time,
-                    start=self.start_age,
-                    end=self.start_age + horizon,
-                )
-            )
-
-    def finalize(self):
-        prob_by_horizon = dict()
-        for horizon in self.prob_by_horizon.keys():
-            prob_by_horizon[horizon] = np.concatenate(
-                self.prob_by_horizon[horizon], axis=0
-            )
-        return prob_by_horizon
 
 
 class SamplingProbCollator:

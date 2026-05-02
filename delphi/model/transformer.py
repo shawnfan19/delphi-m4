@@ -7,8 +7,6 @@ from torch.nn import functional as F
 
 from delphi.model.tpp import (
     HomoPoissonTPP,
-    NeuralDecayEmbedding,
-    NeuralDecayTPP,
     NeuralIntensity,
     NeuralTPP,
 )
@@ -238,12 +236,6 @@ class Delphi2M(nn.Module):
                 time_encoder=AgeEncoding(n_embd=config.n_embd),
             )
 
-        if config.loss == "neural_decay_tpp":
-            self.neural_decay_head = NeuralDecayEmbedding(
-                n_embd=config.n_embd,
-                vocab_size=config.vocab_size,
-            )
-
         if "cluster" in config.loss:
             if self.config.aux_head == "linear":
                 self.aux_head = nn.Linear(config.n_embd, 1, bias=True)
@@ -344,19 +336,6 @@ class Delphi2M(nn.Module):
                 n_grid=self.config.n_integrate_grid,
             )
             loss = {"loss_nll": -log_p}
-        elif self.config.loss == "neural_decay_tpp":
-            tpp = NeuralDecayTPP(
-                hidden_states=outputs["h"],
-                intensity_func=self.neural_decay_head,
-                timesteps=outputs["age"],
-                tokens=outputs["idx"],
-            )
-            log_p, aux = tpp.log_likelihood(
-                x1=targets,
-                t1=targets_age,
-                n_grid=self.config.n_integrate_grid,
-            )
-            loss = {"loss_nll": -log_p}
         else:
             raise NotImplementedError
 
@@ -441,6 +420,7 @@ class Delphi2M(nn.Module):
                 ),
             )
             idx_next, time_til_next = sample_competing_exponentials(logits=logits)
+            time_til_next *= 365.25
         elif self.config.loss == "homo_cluster_poisson":
             logits = outputs["logits"][:, -1, :]
             logits = self_terminate_single(
