@@ -1,15 +1,11 @@
 # +
 import json
 import math
-import pprint
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import matplotlib.lines as mlines
-import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 import torch
 from tqdm import tqdm
 
@@ -17,24 +13,16 @@ from delphi.data.dataset import Dataset
 from delphi.data.transform import Prompt, TokenTransform
 from delphi.data.ukb import UKBReader
 from delphi.env import DELPHI_CKPT_READ, DELPHI_CKPT_WRITE
-from delphi.eval import (
-    EventTimeCollator,
-    IntervalKaplanMeierCollator,
-    SamplingProbCollator,
-    mann_whitney_auc,
-)
 from delphi.eval.auc import batched_mann_whitney_auc
-from delphi.eval.survival import KaplanMeierEstimator
+from delphi.eval.survival import KaplanMeierEstimator, NelsonAalenEstimator
 from delphi.experiment import (
     CliConfig,
-    GenerateConfig,
     eval_iter,
     load_ckpt,
     move_batch_to_device,
 )
-from delphi.model.tpp import tpp_dispatch
+from delphi.model.tpp import HomoPoissonTPP, tpp_dispatch
 from delphi.model.transformer import generate
-from delphi.model.utils import self_terminate
 
 # -
 
@@ -54,7 +42,7 @@ class TaskConfig(CliConfig):
 
     def __post_init__(self):
 
-        assert self.method in {"hazards", "sampling_hazards", "nelson_aalen"}
+        assert self.method in {"hazards", "sampling_hazards"}
 
         if not self.suffix:
             self.suffix = self.method
@@ -131,7 +119,71 @@ if args.method == "hazards":
     for horizon in predictor_tally.keys():
         predictor[horizon] = np.concatenate(predictor_tally[horizon], axis=0)
 else:
-    raise NotImplementedError
+    predictor_tally = {horizon: list() for horizon in args.horizons}
+    horizons_tensor = torch.tensor(args.horizons, device=device) * 365.25
+
+    assert args.batch_size % args.n_repeats == 0
+    eff_batch_size = int(args.batch_size / args.n_repeats)
+    it = eval_iter(total_size=len(ds), batch_size=eff_batch_size)
+    pbar = tqdm(it, total=math.ceil(len(ds) / eff_batch_size))
+    for batch_idx in pbar:
+
+        batch_idx = np.repeat(batch_idx, args.n_repeats)
+        pmt_idx, pmt_age, X1, T1 = move_batch_to_device(
+            ds.get_batch(batch_idx), device=device
+        )
+        t0 = torch.as_tensor(
+            prompt_age[batch_idx], dtype=pmt_age.dtype, device=pmt_age.device
+        )
+
+        idx, age, stats = generate(
+            model=model,
+            idx=pmt_idx,
+            age=pmt_age,
+            max_age=t0 + max(args.horizons) * 365.25,
+            stop_at_block_size=False,
+            termination_tokens=[1269],
+            cached=True,
+        )
+        pbar.set_postfix(
+            {"n_gen": stats["n_gen"].mean(), "n_pmt": stats["n_prompt"].mean()}
+        )
+
+        with torch.no_grad():
+            out_dict, _, _ = model(idx, age)
+
+        assert model.config.loss == "homo_poisson"
+
+        n_cuts = len(batch_idx) // args.n_repeats
+        batch_predictor = {horizon: list() for horizon in args.horizons}
+        for i in range(n_cuts):
+            cut = slice(i * args.n_repeats, (i + 1) * args.n_repeats)
+            pid_idx = batch_idx[i * args.n_repeats]
+            tpp = HomoPoissonTPP(
+                logits=out_dict["logits"][cut],
+                tokens=out_dict["idx"][cut],
+                timesteps=out_dict["age"][cut],
+                terminate_except=torch.tensor(
+                    model.config.self_terminate_except, device=device
+                ),
+                time_unit=model.config.time_unit,
+            )
+            estimator = NelsonAalenEstimator(tpp=tpp)
+            hazard_at_pmt = estimator(prompt_age[pid_idx])
+            target_times = prompt_age[pid_idx] + horizons_tensor
+            hazard_at_horizon = estimator(target_times)
+            diff_hazard = hazard_at_horizon - hazard_at_pmt.unsqueeze(0)
+            probs = 1.0 - torch.exp(-diff_hazard)
+            probs = probs.detach().cpu().numpy()
+            for h_idx, horizon in enumerate(args.horizons):
+                batch_predictor[horizon].append(probs[h_idx])
+
+        for horizon in args.horizons:
+            predictor_tally[horizon].append(np.stack(batch_predictor[horizon], axis=0))
+
+    predictor = dict()
+    for horizon in predictor_tally.keys():
+        predictor[horizon] = np.concatenate(predictor_tally[horizon], axis=0)
 
 
 is_female = reader.is_female(pids=val_pids)
