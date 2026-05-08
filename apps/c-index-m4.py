@@ -12,13 +12,7 @@ from tqdm import tqdm
 
 from delphi.data import MultimodalDataset
 from delphi.data.transform import BiomarkerTransform, TokenTransform
-from delphi.data.ukb import (
-    Biomarker,
-    ExpansionPack,
-    MultimodalUKBReader,
-    filter_participants_with_biomarkers,
-    filter_participants_with_expansion_packs,
-)
+from delphi.data.ukb import MultimodalUKBReader
 from delphi.env import DELPHI_CKPT_READ, DELPHI_CKPT_WRITE
 from delphi.eval import (
     ConcordanceCollator,
@@ -26,41 +20,11 @@ from delphi.eval import (
     EventTimeCollator,
 )
 from delphi.experiment import CliConfig, eval_iter, load_ckpt, move_batch_to_device
-from delphi.model.tpp import HomoPoissonTPP
+from delphi.model.tpp import tpp_dispatch
 from delphi.multimodal import Modality, parse_panel
 
 
-def filter_participants(pids, biomarkers, expansion_packs):
-    if biomarkers is not None:
-        total = pids.size
-        pids = filter_participants_with_biomarkers(
-            pids, biomarkers=biomarkers, any=True
-        )
-        print(f"{pids.size} / {total} val pids (biomarker filter)")
-    if expansion_packs is not None:
-        total = pids.size
-        pids = filter_participants_with_expansion_packs(
-            pids, expansion_packs=expansion_packs, any=True
-        )
-        print(f"{pids.size} / {total} val pids (expansion pack filter)")
-
-    return pids
-
-
-def first_modality_timestep(pids, biomarkers, expansion_packs):
-
-    cutoff = np.full(len(pids), np.nan, dtype=np.float32)
-    for mod_name in biomarkers or []:
-        first = Biomarker.first_occurrence_times(mod_name, pids)
-        cutoff = np.fmin(cutoff, first)
-    for pack_name in expansion_packs or []:
-        first = ExpansionPack.first_occurrence_times(pack_name, pids)
-        cutoff = np.fmin(cutoff, first)
-
-    return cutoff
-
-
-@dataclass
+@dataclass(kw_only=True)
 class TaskConfig(CliConfig):
     ckpt: str = "delphi-m4/delphi-m4/ckpt.pt"
     batch_size: int = 64
@@ -70,7 +34,7 @@ class TaskConfig(CliConfig):
     biomarkers: None | list = None
     expansion_packs: None | list[str] = None
     max_gap: float = 5
-    after_only: bool = True
+    after_recruit: bool = False
     fname: None | str = None
     panel_name: None | str = None
 
@@ -88,6 +52,8 @@ class TaskConfig(CliConfig):
                     self.fname += f"-{'-'.join(self.biomarkers)}"
                 if self.expansion_packs is not None:
                     self.fname += f"-{'-'.join(self.expansion_packs)}"
+            if self.after_recruit:
+                self.fname += f"-recruit"
 
 
 args = TaskConfig.from_cli()
@@ -106,12 +72,6 @@ biomarker_transform_args = ckpt_dict.get("biomarker_transform_args")
 biomarker_stats = ckpt_dict.get("biomarker_stats")
 
 val_pids = MultimodalUKBReader.participants("val")
-val_pids = filter_participants(val_pids, args.biomarkers, args.expansion_packs)
-
-if args.after_only:
-    cutoff = first_modality_timestep(val_pids, args.biomarkers, args.expansion_packs)
-else:
-    cutoff = None
 
 # -
 biomarkers = list(
@@ -172,14 +132,7 @@ with torch.no_grad():
         x0, t0, _, _, _, x1, t1 = batch_input
 
         out_dict, _, _ = model(*batch_input[:5])
-        tpp = HomoPoissonTPP(
-            logits=out_dict["logits"],
-            tokens=out_dict["idx"],
-            timesteps=out_dict["age"],
-            terminate_except=torch.tensor(
-                model.config.self_terminate_except, device=device
-            ),
-        )
+        tpp = tpp_dispatch(model, out_dict, device)
 
         intensity, nearest_t0 = tpp.intensity(t1 - offset_days)
 
@@ -191,7 +144,8 @@ is_female = torch.from_numpy(reader.is_female(val_pids))  # (N,)
 onset_times, _ = onset_collator.finalize()
 onset_times = torch.from_numpy(onset_times)  # (N, V)
 
-if cutoff is not None:
+if args.after_recruit:
+    cutoff = reader.recruitment_times(val_pids)
     reject = nearest_t0.numpy() < cutoff[:, None]
     reject = reject | np.isnan(cutoff[:, None])
     dis_rates[torch.from_numpy(reject)] = torch.nan
@@ -209,7 +163,6 @@ concordance_collator = ConcordanceCollator(
     is_female=is_female,
     max_gap_days=args.max_gap * 365.25,
     chunk_size=args.chunk_size,
-    cutoff=cutoff,
 )
 
 it2 = tqdm(
@@ -223,14 +176,7 @@ with torch.no_grad():
         batch_input = ds.get_batch(batch_idx)
         batch_input = move_batch_to_device(batch_input, device=device)
         out_dict, _, _ = model(*batch_input[:5])
-        tpp = HomoPoissonTPP(
-            logits=out_dict["logits"],
-            tokens=out_dict["idx"],
-            timesteps=out_dict["age"],
-            terminate_except=torch.tensor(
-                model.config.self_terminate_except, device=device
-            ),
-        )
+        tpp = tpp_dispatch(model, out_dict, device)
         concordance_collator.step(tpp=tpp)
 
 case_sex, case_tokens, total_pairs, concordant = concordance_collator.finalize()

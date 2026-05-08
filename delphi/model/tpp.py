@@ -12,12 +12,14 @@ class HomoPoissonTPP:
 
     def __init__(
         self,
+        hidden_states: torch.Tensor,
         logits: torch.Tensor,
         timesteps: torch.Tensor,
         tokens: torch.Tensor,
         terminate_except: torch.Tensor,
         time_unit: float = 1.0,
     ):
+        self.h = hidden_states
         self.timesteps = timesteps
         self.first_timesteps = (
             torch.where(self.timesteps == -1e4, float("inf"), self.timesteps)
@@ -35,6 +37,20 @@ class HomoPoissonTPP:
     @property
     def shape(self):
         return self.timesteps.shape
+
+    def latent_states(self, t: torch.Tensor):
+        assert t.shape[0] == self.timesteps.shape[0]
+
+        idx = nearest_input_pos(age=self.timesteps, targets_age=t)
+        invalid = idx == -1
+        idx = idx.clamp(min=0)
+        nearest_t = torch.take_along_dim(self.timesteps, indices=idx, dim=1)
+        invalid = invalid | (nearest_t == -1e4)
+        nearest_t = nearest_t.masked_fill(invalid, -1e4)
+
+        h = torch.take_along_dim(self.h, indices=idx.unsqueeze(-1), dim=1)
+
+        return h
 
     def intensity(self, t: torch.Tensor):
         assert t.shape[0] == self.timesteps.shape[0]
@@ -55,7 +71,7 @@ class HomoPoissonTPP:
         intensity = log_intensity.exp().masked_fill(invalid.unsqueeze(-1), torch.nan)
         return intensity, nearest_t
 
-    def intensity_at(self, t: torch.Tensor, tokens: torch.Tensor, n_grid: int):
+    def intensity_at(self, t: torch.Tensor, tokens: torch.Tensor, **kwargs):
         """Per-pair scalar intensity λ_v(t) at the queried token v.
 
         t: (B, *Q) query timesteps; tokens: broadcastable to (B, *Q).
@@ -144,19 +160,31 @@ class NeuralIntensity(nn.Module):
     """
 
     def __init__(
-        self,
-        n_embd: int,
-        vocab_size: int,
-        time_encoder: nn.Module,
+        self, n_embd: int, vocab_size: int, time_encoder: nn.Module, spectral_norm: bool
     ):
         super().__init__()
         self.vocab_size = vocab_size
         self.time_encoder = time_encoder
+        if spectral_norm:
+            self.h = nn.Sequential(
+                torch.nn.utils.spectral_norm(nn.Linear(n_embd, n_embd)),
+                nn.GELU(),
+                torch.nn.utils.spectral_norm(nn.Linear(n_embd, n_embd)),
+            )
+        else:
+            self.h = nn.Sequential(
+                nn.Linear(n_embd, n_embd),
+                nn.GELU(),
+                nn.Linear(n_embd, n_embd),
+            )
         self.net = nn.Sequential(
-            nn.Linear(n_embd, n_embd),
-            nn.GELU(),
+            self.h,
             nn.Linear(n_embd, vocab_size),
         )
+
+    def latent_states(self, h: torch.Tensor, delta_t: torch.Tensor) -> torch.Tensor:
+        time_emb = self.time_encoder(delta_t.unsqueeze(-1))  # (B, L, n_embd)
+        return self.h(h + time_emb)
 
     def forward(self, h: torch.Tensor, delta_t: torch.Tensor) -> torch.Tensor:
         """
@@ -191,6 +219,8 @@ class NeuralTPP:
         intensity_func: NeuralIntensity,
         timesteps: torch.Tensor,
         tokens: torch.Tensor,
+        n_grid: int,
+        integrate_method: str = "trapezoid",
         time_unit: float = 365.25,
     ):
         self.timesteps = timesteps
@@ -210,11 +240,31 @@ class NeuralTPP:
             terminate_except=self.terminate_except,
             vocab_size=self.f.vocab_size,
         )
+
+        self.n_grid = n_grid
+        self.integrate_method = integrate_method
         self.time_unit = time_unit
 
     @property
     def shape(self):
         return self.timesteps.shape
+
+    def latent_states(self, t: torch.Tensor):
+        assert t.shape[0] == self.timesteps.shape[0]
+
+        idx = nearest_input_pos(age=self.timesteps, targets_age=t)
+        invalid = idx == -1
+        idx = idx.clamp(min=0)
+        nearest_t = torch.take_along_dim(self.timesteps, indices=idx, dim=1)
+        invalid = invalid | (nearest_t == -1e4)
+        nearest_t = nearest_t.masked_fill(invalid, -1e4)
+
+        h = torch.take_along_dim(self.h, indices=idx.unsqueeze(-1), dim=1)
+        delta_t = (t - nearest_t).clamp(
+            min=0
+        )  # invalid rows have nonsense delta_t; NaN-fill below
+
+        return self.f.latent_states(h, delta_t)
 
     def intensity(self, t: torch.Tensor):
         assert t.shape[0] == self.timesteps.shape[0]
@@ -257,7 +307,16 @@ class NeuralTPP:
         else:
             raise ValueError
 
-    def log_likelihood(self, x1: torch.Tensor, t1: torch.Tensor, n_grid: int):
+    def log_likelihood(
+        self,
+        x1: torch.Tensor,
+        t1: torch.Tensor,
+        n_grid: None | int = None,
+    ):
+
+        if n_grid is None:
+            n_grid = self.n_grid
+
         # mark queries with no valid strict-before non-padding history; these
         # positions are nan-filled at the end so they don't leak into the loss.
         # this catches both "no history" (nearest_input_pos returns -1) and the
@@ -300,25 +359,37 @@ class NeuralTPP:
         intensity_grid = intensity_grid.masked_fill(mask.unsqueeze(-2), 0)
 
         total_intensity = intensity_grid.sum(dim=-1)  # (B, L, G) = Σ_v λ_v
-        compensator = torch.trapezoid(
-            total_intensity, grid_delta_t / self.time_unit, dim=-1
-        )  # (B, L)
+        if self.integrate_method == "trapezoid":
+            compensator = torch.trapezoid(
+                total_intensity, grid_delta_t / self.time_unit, dim=-1
+            )  # (B, L)
+        elif self.integrate_method == "monte-carlo":
+            # average over random interior points only; endpoints (0 and δ)
+            # are fixed by the shared grid construction and would bias the MC mean.
+            compensator = (
+                torch.mean(total_intensity[..., 1:-1], dim=-1)
+                * delta_t
+                / self.time_unit
+            )
+        else:
+            raise ValueError
 
         ll = log_intensity_k - compensator
         return ll.masked_fill(invalid, torch.nan)
 
 
-def tpp_dispatch(model, out_dict, device, time_unit):
+def tpp_dispatch(model, out_dict, device):
     loss = model.config.loss
     if loss == "homo_poisson":
         return HomoPoissonTPP(
+            hidden_states=out_dict["h"],
             logits=out_dict["logits"],
             tokens=out_dict["idx"],
             timesteps=out_dict["age"],
             terminate_except=torch.tensor(
                 model.config.self_terminate_except, device=device
             ),
-            time_unit=time_unit,
+            time_unit=model.config.time_unit,
         )
     if loss == "neural_tpp":
         return NeuralTPP(
@@ -326,5 +397,8 @@ def tpp_dispatch(model, out_dict, device, time_unit):
             intensity_func=model.neural_tpp_head,
             timesteps=out_dict["age"],
             tokens=out_dict["idx"],
+            time_unit=model.config.time_unit,
+            n_grid=model.config.n_integrate_grid,
+            integrate_method=getattr(model.config, "integrate_method", "trapezoid"),
         )
     raise ValueError(f"c-index unsupported for model.config.loss={loss!r}")

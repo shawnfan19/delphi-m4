@@ -195,8 +195,8 @@ class ConcordanceCollator:
             # Max gap: control score must be within max_gap of query time
             valid &= (chunk_case_times.unsqueeze(0) - t_at) < self.max_gap_days
             # Control score must be after control's biomarker cutoff
-            if self.cutoff is not None:
-                valid &= t_at >= self.cutoff[j_globals].unsqueeze(1)
+            # if self.cutoff is not None:
+            #     valid &= t_at >= self.cutoff[j_globals].unsqueeze(1)
             # At-risk: control had not yet developed disease at the case's event time
             j_onset = self.case_times_mat[
                 j_globals.unsqueeze(1), chunk_tokens.unsqueeze(0).expand(B, -1)

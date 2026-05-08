@@ -305,6 +305,7 @@ class Delphi2M(nn.Module):
             loss = {"loss_ce": loss_ce, "loss_dt": loss_dt}
         elif self.config.loss == "homo_poisson":
             tpp = HomoPoissonTPP(
+                hidden_states=outputs["h"],
                 logits=outputs["logits"],
                 timesteps=outputs["age"],
                 tokens=outputs["idx"],
@@ -329,11 +330,11 @@ class Delphi2M(nn.Module):
                 intensity_func=self.neural_tpp_head,
                 timesteps=outputs["age"],
                 tokens=outputs["idx"],
+                n_grid=self.config.n_integrate_grid,
             )
             log_p = tpp.log_likelihood(
                 x1=targets,
                 t1=targets_age,
-                n_grid=self.config.n_integrate_grid,
             )
             loss = {"loss_nll": -log_p}
         else:

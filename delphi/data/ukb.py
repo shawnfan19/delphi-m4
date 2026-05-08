@@ -195,6 +195,9 @@ class MultimodalUKBReader:
     def event_times(self, pids: np.ndarray) -> np.ndarray:
         return self.token_reader.event_times(pids)
 
+    def recruitment_times(self, pids: np.ndarray) -> np.ndarray:
+        return self.token_reader.recruitment_times(pids)
+
     def exit_times(self, pids: np.ndarray) -> np.ndarray:
         return self.token_reader.exit_times(pids)
 
@@ -426,3 +429,33 @@ def filter_participants_with_expansion_packs(pids, expansion_packs, any=True):
         filter_list.append(ExpansionPack.participants(pack))
 
     return filter_participants(pids, filter_list, any)
+
+
+def filter_participants_with_modalities(pids, biomarkers, expansion_packs):
+    if biomarkers is not None:
+        total = pids.size
+        pids = filter_participants_with_biomarkers(
+            pids, biomarkers=biomarkers, any=True
+        )
+        print(f"{pids.size} / {total} val pids (biomarker filter)")
+    if expansion_packs is not None:
+        total = pids.size
+        pids = filter_participants_with_expansion_packs(
+            pids, expansion_packs=expansion_packs, any=True
+        )
+        print(f"{pids.size} / {total} val pids (expansion pack filter)")
+
+    return pids
+
+
+def first_modality_timestep(pids, biomarkers, expansion_packs):
+
+    cutoff = np.full(len(pids), np.nan, dtype=np.float32)
+    for mod_name in biomarkers or []:
+        first = Biomarker.first_occurrence_times(mod_name, pids)
+        cutoff = np.fmin(cutoff, first)
+    for pack_name in expansion_packs or []:
+        first = ExpansionPack.first_occurrence_times(pack_name, pids)
+        cutoff = np.fmin(cutoff, first)
+
+    return cutoff

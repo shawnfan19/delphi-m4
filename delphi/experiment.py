@@ -1,3 +1,5 @@
+import copy
+import json
 import math
 import os
 import pprint
@@ -12,6 +14,7 @@ from typing import Any, Iterable, Iterator, Optional, Self
 import numpy as np
 import torch
 import torch.distributed as dist
+import yaml
 from omegaconf import OmegaConf
 
 from delphi import distributed
@@ -169,7 +172,8 @@ class TrainBaseConfig:
     # learning rate decay settings
     schedule: str = "cosine"  # consine, constant
     warmup_iters: float | int = 1000  # how many steps to warm up for
-    min_lr: float = 0.1
+    decay_iters: float | int = 0.1  # how many steps to decay for (wsd only)
+    min_lr_frac: float = 0.1
 
     wandb_log: bool = True
     wandb_project: str = "delphi"
@@ -230,8 +234,9 @@ class BaseTrainer:
         self.scheduler = configure_scheduler(
             schedule=cfg.schedule,
             learning_rate=cfg.learning_rate,
-            min_lr=cfg.min_lr,
+            min_lr_frac=cfg.min_lr_frac,
             warmup_iters=cfg.warmup_iters,
+            decay_iters=cfg.decay_iters,
             max_iters=cfg.max_iters,
             optimizer=self.optimizer,
         )
@@ -427,6 +432,9 @@ class BaseTrainer:
             self.optimizer.zero_grad(set_to_none=True)
             self.scheduler.step()
 
+            if hasattr(self.model, "update_ema"):
+                self.model.update_ema()
+
             self.iter_num += 1
             # termination conditions
             if self.iter_num > self.cfg.max_iters:
@@ -475,3 +483,27 @@ def load_ckpt(ckpt_path):
     model = model.eval()
 
     return model, ckpt_dict
+
+
+def flexi_list(panel):
+    if isinstance(panel, str):
+        if panel.endswith(".yaml"):
+            with open(panel, "r") as f:
+                return yaml.safe_load(f)
+        else:
+            return [panel]
+    elif isinstance(panel, list):
+        return panel
+    else:
+        raise ValueError
+
+
+def load_json(json_path):
+    with open(json_path) as f:
+        data = json.load(f)
+        if "config" in data.keys():
+            config = copy.deepcopy(data["config"])
+            del data["config"]
+        else:
+            config = None
+    return data, config

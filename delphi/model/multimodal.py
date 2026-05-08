@@ -1,3 +1,4 @@
+import copy
 import math
 from dataclasses import dataclass, field
 from typing import Required, TypedDict
@@ -5,18 +6,17 @@ from typing import Required, TypedDict
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 
-from delphi.model.tpp import HomoPoissonTPP
+from delphi.model.tpp import HomoPoissonTPP, NeuralIntensity, NeuralTPP
 from delphi.model.transformer import (
     AgeEncoding,
     Block,
     LayerNorm,
     causal_attention_mask,
-    exponential_nll,
 )
 from delphi.model.utils import (
     incremental_attention_mask,
-    nearest_input_pos,
     sample_competing_exponentials,
     self_terminate_single,
 )
@@ -77,85 +77,37 @@ class BiomarkerEmbedding(nn.Module):
         return self.projector(x)
 
 
-class DelphiEmbedding(nn.Module):
+class BiomarkerEmbeddingDict(nn.Module):
 
     def __init__(self, config) -> None:
         super().__init__()
         self.config = config
-        self.token_embedding = nn.Embedding(
-            config.vocab_size, config.n_embd, padding_idx=0
-        )
-        self.age_encoding = AgeEncoding(n_embd=config.n_embd)
-        self.token_drop = nn.Dropout(config.token_dropout)
-
-        self.biomarker_embed = nn.ModuleDict()
-        biomarker_modalities = []
+        self.embed = nn.ModuleDict()
         for biomarker, biomarker_cfg in config.biomarkers.items():
             bm_key = module_name(Modality[biomarker.upper()])
-            self.biomarker_embed[bm_key] = BiomarkerEmbedding(
+            self.embed[bm_key] = BiomarkerEmbedding(
                 n_embed=config.n_embd, **biomarker_cfg
-            )
-            biomarker_modalities.append(Modality[biomarker.upper()])
-
-        if config.modality_emb:
-            max_modality_idx = (
-                max([modality.value for modality in biomarker_modalities])
-                if len(biomarker_modalities) > 0
-                else 1
-            )
-            self.mod_embedding = nn.Embedding(
-                max_modality_idx + 1, config.n_embd, padding_idx=0
             )
 
     def forward(
         self,
-        idx: torch.Tensor,
-        age: torch.Tensor,
-        mod_idx: None | torch.Tensor = None,
-        mod_age: None | torch.Tensor = None,
-        biomarker_x: None | dict[Modality, torch.Tensor] = None,
-        emb: None | torch.Tensor = None,
+        biomarker_x: dict[Modality, torch.Tensor],
     ):
-
-        raw = dict()
-        if emb is None:
-            idx_emb = self.token_embedding(idx)
-            idx_emb = self.token_drop(idx_emb) * (1 - self.config.token_dropout)
-            age_emb = self.age_encoding(age.unsqueeze(-1))
-            emb = idx_emb + age_emb
-            raw["idx"] = idx_emb
-            raw["age"] = age_emb
-
-        if biomarker_x is None:
-            return emb, None, None
-
         biomarker_emb = dict()
-        mod_age_emb = self.age_encoding(mod_age.unsqueeze(-1))
         for modality in biomarker_x.keys():
-            biomarker_emb[modality] = self.biomarker_embed[module_name(modality)](
+            biomarker_emb[modality] = self.embed[module_name(modality)](
                 biomarker_x[modality]
             )  # N * H
-            mod_mask = mod_idx == modality.value
-            biomarker_emb[modality] += mod_age_emb[mod_mask]
-            if self.config.modality_emb:
-                mod_emb = self.mod_embedding(
-                    torch.tensor(modality.value).to(idx.device)
-                )
-                biomarker_emb[modality] += mod_emb.unsqueeze(0)
 
-        raw = {
-            "idx": idx_emb,
-            "age": age_emb,
-            "mod_age": mod_age_emb,
-            "biomarker": biomarker_emb,
-        }
-        return emb, biomarker_emb, raw
+        return biomarker_emb
 
 
 def fuse_embed(
+    mod_emb: dict[Modality, torch.Tensor],
     mod_idx: torch.Tensor,
     mod_age: torch.Tensor,
-    mod_emb: dict[Modality, torch.Tensor],
+    mod_idx_emb: None | torch.Tensor,
+    mod_age_emb: torch.Tensor,
     emb: torch.Tensor,
     age: torch.Tensor,
     idx: torch.Tensor,
@@ -183,6 +135,9 @@ def fuse_embed(
                 f"got {m_tensor.shape[0]}"
             )
         mod_emb_dense[mask] = m_tensor
+    mod_emb_dense += mod_age_emb
+    if mod_idx_emb is not None:
+        mod_emb_dense += mod_idx_emb
 
     fused_emb_unsorted = torch.cat((mod_emb_dense, emb), dim=1)
     disease_mod_idx = (idx > 0).to(mod_idx.dtype)
@@ -202,6 +157,79 @@ def fuse_embed(
     fused_idx = torch.take_along_dim(fused_idx_unsorted, sort_indices, dim=1)
 
     return fused_emb, fused_age, fused_mod_idx, fused_idx
+
+
+class BiomarkerDecoder(nn.Module):
+
+    def __init__(
+        self,
+        n_embed: int,
+        projector: str,
+        n_layers: None | int = None,
+        n_hidden: None | int = None,
+        bias: bool = False,
+    ):
+
+        super().__init__()
+        if projector == "linear":
+            self.projector = nn.Linear(n_embed, n_embed, bias=bias)
+        elif projector == "mlp":
+            layers = []
+            if n_layers is None:
+                n_layers = 2
+            if n_hidden is None:
+                n_hidden = 32
+            for i in range(n_layers):
+                in_size = n_embed if i == 0 else n_hidden
+                out_size = n_embed if i == n_layers - 1 else n_hidden
+                layers.append(nn.Linear(in_size, out_size, bias=bias))
+                if i < n_layers - 1:
+                    layers.append(nn.ReLU())
+            self.projector = nn.Sequential(*layers)
+        else:
+            raise ValueError(f"unknown projector type: {projector}")
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.projector(x)
+
+
+class DelphiDecoder(nn.Module):
+
+    def __init__(self, config) -> None:
+        super().__init__()
+        self.biomarker_decoder = nn.ModuleDict()
+        for biomarker, _ in config.biomarkers.items():
+            bm_key = module_name(Modality[biomarker.upper()])
+            self.biomarker_decoder[bm_key] = BiomarkerDecoder(
+                n_embed=config.n_embd, projector="mlp", bias=True
+            )
+
+    def forward(self, embeddings, mod_idx):
+        output = dict()
+        for idx in torch.unique(mod_idx[mod_idx > 1]):
+            idx = idx.item()
+            modality = Modality(idx)
+            output[modality] = self.biomarker_decoder[module_name(modality)](
+                embeddings[mod_idx == idx]
+            )  # N * H
+        return output
+
+
+def multitask_loss(
+    bio_emb: dict[str, torch.Tensor],
+    bio_emb_hat: dict[str, torch.Tensor],
+    mse_beta: float,
+):
+    bio_loss = dict()
+    for biomarker in bio_emb.keys():
+        mse = F.mse_loss(
+            input=bio_emb_hat[biomarker], target=bio_emb[biomarker], reduction="none"
+        )
+        mse = torch.mean(mse, dim=-1)
+        cos = 1 - F.cosine_similarity(bio_emb_hat[biomarker], bio_emb[biomarker])
+        bio_loss[biomarker] = mse_beta * mse + (1 - mse_beta) * cos
+
+    return bio_loss
 
 
 @dataclass
@@ -251,8 +279,17 @@ class DelphiM4Config:
     biomarkers: dict[str, BiomarkerEmbedConfig] = field(default_factory=dict)
     modality_emb: bool = True
     self_terminate_except: list = field(default_factory=lambda: [1])
+    loss: str = "homo_poisson"
+    time_unit: float = 365.25
+    multitask: bool = False
+    ema: None | float = 0.999
+    n_integrate_grid: int = 20
+    integrate_method: str = "trapezoid"
     ce_beta: float = 1.0
     dt_beta: float = 1.0
+    multitask_beta: float = 0.1
+    mse_beta: float = 1.0
+    spectral_norm: bool = False
     fuse: str = "early"  # early, cross, concat, concat-raw
 
 
@@ -265,15 +302,54 @@ class DelphiM4(torch.nn.Module):
 
         self.transformer = nn.ModuleDict(
             dict(
-                embed=DelphiEmbedding(config),
+                wte=nn.Embedding(config.vocab_size, config.n_embd),
+                wae=AgeEncoding(n_embd=config.n_embd),
+                token_drop=nn.Dropout(config.token_dropout),
+                # embed=DelphiEmbedding(config),
                 drop=nn.Dropout(config.dropout),
                 h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
                 ln_f=LayerNorm(config.n_embd, bias=config.bias),
             )
         )
-        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
-        if config.weight_tying:
-            self.transformer.embed.token_embedding.weight = self.lm_head.weight
+
+        if config.loss == "neural_tpp":
+            self.neural_tpp_head = NeuralIntensity(
+                n_embd=config.n_embd,
+                vocab_size=config.vocab_size,
+                time_encoder=AgeEncoding(n_embd=config.n_embd),
+                spectral_norm=config.spectral_norm,
+            )
+        elif config.loss == "homo_poisson":
+            self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+            if config.weight_tying:
+                self.transformer.embed.token_embedding.weight = self.lm_head.weight
+        else:
+            raise ValueError
+
+        if len(config.biomarkers) > 0:
+            self.bio_embed = BiomarkerEmbeddingDict(config)
+            if config.modality_emb:
+                max_modality_idx = max(
+                    [
+                        Modality[biomarker.upper()].value
+                        for biomarker in config.biomarkers.keys()
+                    ]
+                )
+                self.mod_embedding = nn.Embedding(
+                    max_modality_idx + 1, config.n_embd, padding_idx=0
+                )
+            if config.multitask:
+                self.decoder = DelphiDecoder(config)
+                if config.ema is not None:
+                    self.encoder = AveragedModel(
+                        self.bio_embed,
+                        multi_avg_fn=get_ema_multi_avg_fn(config.ema),
+                        use_buffers=True,
+                    )
+                    for param in self.encoder.parameters():
+                        param.requires_grad = False
+                else:
+                    self.encoder = self.bio_embed
 
         self.fuse_early = self.config.fuse == "early"
         if not self.fuse_early:
@@ -295,6 +371,10 @@ class DelphiM4(torch.nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
+    def update_ema(self):
+        if isinstance(getattr(self, "encoder", None), AveragedModel):
+            self.encoder.update_parameters(self.bio_embed)
+
     @property
     def targets(self):
         all = torch.arange(self.config.vocab_size)
@@ -311,12 +391,29 @@ class DelphiM4(torch.nn.Module):
         terminate_except = torch.tensor(
             self.config.self_terminate_except, device=targets.device
         )
-        tpp = HomoPoissonTPP(
-            logits=outputs["logits"],
-            timesteps=outputs["age"],
-            tokens=outputs["idx"],
-            terminate_except=terminate_except,
-        )
+
+        if self.config.loss == "homo_poisson":
+            tpp = HomoPoissonTPP(
+                hidden_states=outputs["h"],
+                logits=outputs["logits"],
+                timesteps=outputs["age"],
+                tokens=outputs["idx"],
+                terminate_except=terminate_except,
+                time_unit=self.config.time_unit,
+            )
+        elif self.config.loss == "neural_tpp":
+            tpp = NeuralTPP(
+                hidden_states=outputs["h"],
+                intensity_func=self.neural_tpp_head,
+                timesteps=outputs["age"],
+                tokens=outputs["idx"],
+                n_grid=self.config.n_integrate_grid,
+                integrate_method=self.config.integrate_method,
+                time_unit=self.config.time_unit,
+            )
+        else:
+            raise NotImplementedError
+
         log_p = tpp.log_likelihood(x1=targets, t1=targets_age)
         nll = -log_p
 
@@ -327,8 +424,28 @@ class DelphiM4(torch.nn.Module):
             nll = nll.masked_fill(~is_valid, torch.nan)
         if reduce:
             nll = torch.nanmean(nll)
+        loss = {"loss_nll": nll}
 
-        return {"loss_nll": nll}
+        if self.config.multitask:
+            latent_states = tpp.latent_states(outputs["bio_age"])
+            bio_emb_hat = self.decoder(latent_states, outputs["bio_idx"])
+            with torch.no_grad():
+                self.encoder.eval()
+                bio_emb = self.encoder(outputs["bio_x"])
+            bio_loss = multitask_loss(
+                bio_emb_hat=bio_emb_hat,
+                bio_emb=bio_emb,
+                mse_beta=self.config.mse_beta,
+            )
+            if reduce:
+                for key in bio_loss.keys():
+                    loss[f"loss_{key.name}"] = (
+                        torch.mean(bio_loss[key])
+                        * self.config.multitask_beta
+                        / len(self.config.biomarkers)
+                    )
+
+        return loss
 
     @torch.no_grad()
     def sample_next(self, outputs: dict[str, torch.Tensor], idx: torch.Tensor):
@@ -354,24 +471,27 @@ class DelphiM4(torch.nn.Module):
         targets_age: None | torch.Tensor = None,
         past_kvs: None | list = None,
         past_pad: None | torch.Tensor = None,
-        emb: None | torch.Tensor = None,
+        # emb: None | torch.Tensor = None,
     ):
 
-        x, mod_emb, _ = self.transformer.embed(
-            idx=idx,
-            age=age,
-            mod_idx=mod_idx,
-            mod_age=mod_age,
-            biomarker_x=biomarker,
-            emb=emb,
-        )
+        tok_emb = self.transformer.wte(idx)
+        age_emb = self.transformer.wae(age.unsqueeze(-1))
+        x = self.transformer.token_drop(tok_emb) * (1 - self.config.token_dropout)
+        x = x + age_emb
+        x = self.transformer.drop(x)
 
-        if mod_emb is not None:
+        if biomarker:
+            mod_emb = self.bio_embed(biomarker)
+            mod_age_emb = self.transformer.wae(mod_age.unsqueeze(-1))
+            mod_idx_emb = self.mod_embedding(mod_idx)
+
             x, fused_age, fused_mod_idx, fused_idx = fuse_embed(
                 emb=x,
                 age=age,
                 mod_idx=mod_idx,
+                mod_idx_emb=mod_idx_emb,
                 mod_age=mod_age,
+                mod_age_emb=mod_age_emb,
                 mod_emb=mod_emb,
                 idx=idx,
             )
@@ -409,7 +529,14 @@ class DelphiM4(torch.nn.Module):
         outputs = dict()
         outputs["age"] = fused_age
         outputs["idx"] = fused_idx
-        outputs["logits"] = self.lm_head(x)
+        if biomarker:
+            outputs["bio_age"] = mod_age
+            outputs["bio_idx"] = mod_idx
+            outputs["bio_x"] = biomarker
+        outputs["h"] = x
+
+        if hasattr(self, "lm_head"):
+            outputs["logits"] = self.lm_head(x)
 
         if targets is not None and targets_age is not None:
             loss = self.loss(outputs, targets=targets, targets_age=targets_age)

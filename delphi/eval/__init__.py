@@ -9,7 +9,6 @@ from delphi.eval.auc import (
 )
 from delphi.eval.cluster import ClusterStatsTracker, CooccurrenceTracker
 from delphi.eval.survival import (
-    IntervalKaplanMeierCollator,
     KaplanMeierEstimator,
     OnlineSurvivalEstimator,
     SamplingProbCollator,

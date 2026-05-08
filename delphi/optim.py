@@ -27,6 +27,80 @@ def get_constant_lr(it: int) -> float:
     return 1.0
 
 
+def get_wsd_lr(
+    max_iters: int,
+    min_lr_frac: float,
+    warmup_iters: int,
+    decay_iters: int,
+    decay_type="linear",
+    init_div_factor=100,
+):
+    """Warmup, hold, and decay schedule.
+    Args:
+        n_iterations: total number of iterations
+        final_lr_factor: factor by which to reduce max_lr at the end
+        warmup_fract: fraction of iterations used for warmup
+        init_div_factor: initial division factor for warmup
+        fract_decay: fraction of iterations used for decay
+    Returns:
+        schedule: a function that takes the current iteration and
+        returns the multiplicative factor for the learning rate
+    """
+    # decay_iters = int(fract_decay * max_iters)
+    n_hold = max_iters - decay_iters
+
+    def schedule(step):
+        if step < warmup_iters:
+            return (step / warmup_iters) + (1 - step / warmup_iters) / init_div_factor
+        elif step < n_hold:
+            return 1.0
+        elif step < max_iters:
+            if decay_type == "linear":
+                return min_lr_frac + (1 - min_lr_frac) * (
+                    1 - (step - n_hold) / decay_iters
+                )
+            elif decay_type == "exp":
+                return min_lr_frac ** ((step - n_hold) / decay_iters)
+            elif decay_type == "cosine":
+                return (
+                    min_lr_frac
+                    + (1 - min_lr_frac)
+                    * (1 + math.cos(math.pi * (step - n_hold) / decay_iters))
+                    * 0.5
+                )
+            elif decay_type == "mirror_cosine":
+                cosine_value = (
+                    min_lr_frac
+                    + (1 - min_lr_frac)
+                    * (1 + math.cos(math.pi * (step - n_hold) / decay_iters))
+                    * 0.5
+                )
+                linear_value = min_lr_frac + (1 - min_lr_frac) * (
+                    1 - (step - n_hold) / decay_iters
+                )
+                return linear_value * 2 - cosine_value
+            elif decay_type == "square":
+                return min_lr_frac + (1 - min_lr_frac) * (
+                    1 - ((step - n_hold) / decay_iters) ** 2
+                )
+
+            elif decay_type == "sqrt":
+                return min_lr_frac + (1 - min_lr_frac) * (
+                    1 - math.sqrt((step - n_hold) / decay_iters)
+                )
+
+            else:
+                raise ValueError(
+                    f"decay type {decay_type} is not in "
+                    "['linear', 'exp', 'cosine', 'mirror_cosine', 'square', 'sqrt']"
+                )
+
+        else:
+            return min_lr_frac
+
+    return schedule
+
+
 def parse_weight_decay_groups(model: torch.nn.Module) -> list[dict]:
     """
     This long function is unfortunately doing something very simple and is being very defensive:
@@ -176,25 +250,37 @@ def configure_optimizer(optim_groups, learning_rate, beta1, beta2):
 def configure_scheduler(
     schedule: str,
     learning_rate: float,
-    min_lr: float,
+    min_lr_frac: float,
     warmup_iters: int | float,
+    decay_iters: int | float,
     max_iters: int,
     optimizer: torch.optim.Optimizer,
 ) -> torch.optim.lr_scheduler.LambdaLR:
 
-    if schedule == "cosine":
-        if warmup_iters < 1.0:
-            warmup_iters = int(warmup_iters * max_iters)
-        else:
-            warmup_iters = int(warmup_iters)
+    if warmup_iters < 1.0:
+        warmup_iters = int(warmup_iters * max_iters)
+    else:
+        warmup_iters = int(warmup_iters)
 
-        min_lr = learning_rate * min_lr
+    if schedule == "cosine":
+        min_lr = learning_rate * min_lr_frac
         lr_schedule_fn = partial(
             get_cosine_lr,
             max_iters=max_iters,
             warmup_iters=warmup_iters,
             max_lr=learning_rate,
             min_lr=min_lr,
+        )
+    elif schedule == "wsd":
+        if decay_iters < 1.0:
+            decay_iters = int(decay_iters * max_iters)
+        else:
+            decay_iters = int(decay_iters)
+        lr_schedule_fn = get_wsd_lr(
+            max_iters=max_iters,
+            warmup_iters=warmup_iters,
+            decay_iters=decay_iters,
+            min_lr_frac=min_lr_frac,
         )
     elif schedule == "constant":
         lr_schedule_fn = get_constant_lr

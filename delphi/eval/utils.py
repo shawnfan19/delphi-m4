@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-from delphi.model.multimodal import nearest_input_pos
+from delphi.model.utils import nearest_input_pos
 from delphi.multimodal import Modality
 
 
