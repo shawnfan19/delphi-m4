@@ -1,0 +1,520 @@
+alanine_aminotransferase:
+  ukb: 30620 # unit: U/L
+  aou:
+    id:
+      - 3006923 # alanine_aminotransferase
+    unit:
+      8645: null # unit per liter
+      4118133: null # IU/L
+albumin:
+  ukb: 30600 # unit: g/L
+  id:
+    - 3024561 # albumin
+  unit:
+    8636: null # gram per liter
+alkaline_phosphatase:
+  ukb: 30610 # unit: U/L
+  aou:
+    id:
+      - 3035995 # alkaline_phosphatase
+    unit:
+      8645: null # unit per liter
+      4118133: null # IU/L
+apolipoprotein_a:
+  ukb: 30630 # unit: g/L
+  aou:
+    id:
+      - 3008364
+    unit:
+      8840: 0.1 # milligram per deciliter
+      4121396: 0.1 # mg/dL
+apolipoprotein_b:
+  ukb: 30640 # unit: g/L
+  aou:
+    id:
+      - 3014791
+    unit:
+      8840: 0.1 # milligram per deciliter
+      4121396: 0.1 # mg/dL
+aspartate_aminotransferase:
+  ukb: 30650 # unit: U/L
+  aou:
+    id:
+      - 3013721 # aspartate_aminotransferase
+    unit:
+      8645: null # unit per liter
+      4118133: null # IU/L
+c_reactive_protein:
+  ukb: 30710 # unit: mg/L
+  aou:
+    id:
+      - 3020460 # crp
+    unit:
+      8751: null # milligram per liter
+      8840: 1e-2 # milligram per deciliter
+      4122414: null # mg/L
+calcium:
+  ukb: 30680 # unit: mmol/L
+  aou:
+    id:
+      - 3006906
+    unit:
+      # Calcium (mmol/L) = Calcium (mg/dL) × 0.2495
+      8840: 0.2495 # milligram per deciliter
+      8861: 24.95 # milligram per milliliter
+cholesterol:
+  ukb: 30690 # unit: mmol/L
+  aou:
+    id:
+      - 3027114 # cholesterol
+    unit:
+      8840: 0.02586 # milligram per deciliter
+      8713: 0.00002586 # gram per deciliter
+      8861: 0.2586 # milligram per milliliter
+creatinine:
+  ukb: 30700 # unit: umol/L
+  aou:
+    id:
+      - 3016723
+    unit:
+      # µmol/L = mg/dL × 88.4
+      8840: 88.4 # milligram per deciliter
+      8861: 8840 # milligram per milliliter
+cystatin_c:
+  ukb: 30720 # unit: mg/L
+  aou:
+    id:
+      - 3030366 # cysc
+    unit:
+      8751: null # milligram per liter
+      4122414: null # mg/L
+direct_bilirubin:
+  ukb: 30660 # unit: umol/L
+  aou:
+    id:
+      - 3027597
+    unit:
+      8840: 17.1 # milligram per deciliter
+      8861: 1710 # milligram per milliliter
+gamma_glutamyltransferase:
+  ukb: 30730 # unit: U/L
+  aou:
+    id:
+      - 3026910
+    unit:
+      8645: # unit per liter
+      8923: # international unit per liter
+      4118000: # U/L
+glucose:
+  ukb: 30740 # unit: mmol/L
+  aou:
+    id:
+      - 3004501
+    unit:
+      8840: 0.0555 # milligram per deciliter
+      8861: 5.55 # milligram per milliliter
+glycated_haemoglobin:
+  ukb: 30750 # unit: mmol/mol
+  aou:
+    id:
+      - 3004410 # hba1c
+    unit:
+      8554: 10 # percent
+      4041099: 10 # Percent
+      8591: 10 # Of Total H
+      8737: 10 # percent hemoglobin
+      4190629: 10 # Percentage unit
+hdl:
+  ukb: 30760 # mmol/L
+  aou:
+    id:
+      3007070: hdl
+    unit:
+      8840: 0.02586 # milligram per deciliter
+      8861: 0.2586 # milligram per milliliter
+igf1:
+  ukb: 30770 # unit: nmol/L
+  aou:
+    id:
+      - 3013273 # igf1
+    unit:
+      # [nmol/L] = [ng/mL] * 0.1307
+      8842: 0.1307 # nanogram per milliliter
+ldl_direct:
+  ukb: 30780 # mmol/L
+  id:
+    3028437: ldl # Cholesterol in LDL [Mass/volume] in Serum or Plasma (assuming direct)
+    3009966: ldl_direct # Cholesterol in LDL [Mass/volume] in Serum or Plasma by Direct assay
+  unit:
+    8840: 0.02586 # milligram per deciliter
+    4121396: 0.02586 # mg/dL
+    8861: 0.2586 # milligram per milliliter
+    9028: 0.02586 # milligram per deciliter calculated
+lipoprotein_a:
+  ukb: 30790 # unit: nmol/L
+  aou:
+    id:
+      - 3013861
+    unit:
+      #! not convertible
+      8840: # milligram per deciliter
+      8736: null # nanomole per liter
+      4121396: # mg/dL
+oestradiol:
+  ukb: 30800 # unit: pmol/L
+  aou:
+    id:
+      - 3025285 # Estradiol (E2) [Mass/volume] in Serum or Plasma
+    unit:
+      8845: 3.67 # picogram per milliliter
+      4120725: 3.67 # pg/mL
+phosphate:
+  ukb: 30810 # unit: mmol/L
+  aou:
+    id:
+      - 3011904
+    unit:
+      # mmol/L = mg/dL * 0.323
+      8840: 0.323 # milligram per deciliter
+      8861: 32.3 # milligram per milliliter
+rheumatoid_factor:
+  ukb: 30820 # unit: IU/ml
+  aou:
+    id:
+      - 3021614
+    unit:
+      8985: null # international unit per milliliter
+      4117839: null # IU/mL
+shbg:
+  ukb: 30830 # unit: nmol/L
+  aou:
+    id:
+      - 3004248 # shbg
+    unit:
+      8736: null # nanomole per liter
+      4124447: null # nmol/L
+testosterone:
+  ukb: 30850 # unit: nmol/L
+  aou:
+    id:
+      - 3008893 # testosterone
+    unit:
+      # nmol/L = (ng/dL) / 28.856
+      8817: 1 / 28.85 # nanogram per deciliter
+      4122417: 1 / 28.85 # ng/dL
+      8842: 10 / 28.85 # nanogram per milliliter
+total_bilirubin:
+  ukb: 30840 # umol/L
+  aou:
+    id:
+      - 3024128 # total_bilirubin
+    unit:
+      8840: 17.1 # milligram per deciliter
+      8861: 1710 # milligram per milliliter
+total_protein:
+  ukb: 30860 # g/L
+  aou:
+    id:
+      - 3020630 # total_protein
+    unit:
+      8713: 10 # gram per deciliter
+      8950: 10 # gram per deciliter calculated
+triglycerides:
+  ukb: 30870 # mmol/L
+  aou:
+    id:
+      - 3022192 # triglycerides
+    unit:
+      8840: 0.01129 # milligram per deciliter
+      8861: 0.11129 # milligram per milliliter
+urate:
+  ukb: 30880 # unit: umol/L
+  aou:
+    id:
+      - 3037556 # urate
+    unit:
+      # µmol/L = mg/dL × 59.48
+      8840: 59.48 # milligram per deciliter
+      4121396: 59.48 # mg/dL
+      8861: 59.48 * 10 # milligram per milliliter
+urea:
+  ukb: 30670 # unit: mmol/l
+  aou:
+    id:
+      - 3013682 # Urea nitrogen [Mass/volume] in Serum or Plasma
+    unit:
+      # $\text{urea (mmol/L)} = \text{BUN (mg/dL)} \times 0.357$
+      8840: 0.357 # milligram per deciliter
+      8861: 36.7 # milligram per milliliter
+vitamin_d:
+  ukb: 30890 # unit: nmol/L
+  id:
+    - 40765040 # vitd
+  unit:
+    # nmol/L = ng/mL × 2.5
+    8842: 2.5 # nanogram per milliliter
+urine_creatinine: # creatinine in urine
+  ukb: 30510 # unit: umol/L
+  aou:
+    id:
+      - 3017250 # Creatinine [Mass/volume] in Urine
+    unit:
+      # µmol/L = mg/dL × 88.4
+      8840: 88.4 # milligram per deciliter
+      8861: 88.4 * 10 # milligram per milliliter
+urine_microalbumin:
+  ukb: 30500 # unit: mg/L
+  aou:
+    id:
+      - 3000034 # microalbumin
+    unit:
+      8840: 100 # milligram per deciliter
+      8751: null # milligram per liter
+      8859: null # microgram per milliliter
+urine_potassium:
+  ukb: 30520 # unit: mmol/L
+  aou:
+    id:
+      - 3016038
+    unit:
+      8753: null # millimole per liter
+urine_sodium:
+  ukb: 30530 # unit: mmol/L
+  aou:
+    id:
+      - 3003181
+    unit:
+      8753: null # millimole per liter
+basophill_count:
+  ukb: 30160 # unit: 10^9 cells/Litre
+  aou:
+    id:
+      - 3013429 # basophil_count_auto
+      - 3006315 # basophil_count
+    unit:
+      8848: # thousand per microliter
+      8961: # thousand per cubic millimeter
+basophill_percentage:
+  ukb: 30220 # unit: percent
+  id:
+    - 3013869 # basophil_percentage_auto
+    - 3022096 # basophil_percentage
+  unit:
+    8554: null # percent
+    4190629: null # Percentage unit
+    4041099: null # Percent
+    9229: null # percent of white blood cells
+eosinophill_count:
+  ukb: 30150 # unit: 10^9 cells/Litre
+  id:
+    - 3028615 # eosinophil_count_auto
+    - 3013115 # eosniophil_count
+  unit:
+    8848: null # thousand per microliter
+    8961: null # thousand per cubic millimeter
+eosinophill_percentage:
+  ukb: 30210 # unit: percent
+  aou:
+    id:
+      - 3010457 # eosinophil_percentage_auto
+      - 3006504 # eosinophil_percentage
+    unit:
+      8554: null # percent
+      4190629: null # Percentage unit
+      4041099: null # Percent
+      9229: null # percent of white blood cells
+haematocrit_percentage:
+  ukb: 30030 # unit: percent
+  aou:
+    id:
+      - 3023314 # hematocrit_auto
+      - 3009542 # hematocrit
+    unit:
+      8554: null # percent
+      4190629: null # Percentage unit
+haemoglobin_concentration:
+  ukb: 30020 # unit: grams/decilitre
+  aou:
+    id:
+      3000963: hemoglobin
+    unit:
+      8636: 0.1 # gram per liter
+high_light_scatter_reticulocyte_count:
+  ukb: 30300 # unit: 10^12 cells/Litre
+high_light_scatter_reticulocyte_percentage:
+  ukb: 30290 # unit: percent
+immature_reticulocyte_fraction:
+  ukb: 30280 # unit: ratio
+lymphocyte_count:
+  ukb: 30120 # unit: 10^9 cells/Litre
+  aou:
+    id:
+      - 3004327 # lymphocyte_count_auto
+      - 3019198 # lymphocyte_count
+    unit:
+      8848: null # thousand per microliter
+      8961: null # thousand per cubic millimeter
+lymphocyte_percentage:
+  ukb: 30180 # unit: percent
+  aou:
+    id:
+      - 3037511 # lymphocyte_percentage_auto
+      - 3002030 # lymphocyte_percentage
+    unit:
+      8554: null # percent
+      4190629: null # Percentage unit
+mean_corpuscular_haemoglobin:
+  ukb: 30050 # unit: picogram
+  aou:
+    id:
+      - 3012030 # mch_auto
+      - 3035941 # mch
+    unit:
+      8564: null # picogram
+      8704: null # picogram per cell
+mean_corpuscular_haemoglobin_concentration:
+  ukb: 30060 # unit: g/dl
+  aou:
+    id:
+      - 3009744 # mchc_auto
+      - 3003338 # mchc
+    unit:
+      8713: # gram per deciliter
+      8950: # gram per deciliter calculated
+mean_corpuscular_volume:
+  ukb: 30040 # unit: femtoliter
+  aou:
+    id:
+      - 3023599 # mcv_auto
+      - 3024731 # mcv
+    unit:
+      8583: # femtoliter
+mean_platelet_volume:
+  ukb: 30100 # unit: femtoliter
+  aou:
+    id:
+      - 3043111 # platelet_volume_auto
+      - 3024386 # platelet_volume_rees_ecker
+      - 3001123 # platelet_volume
+    unit:
+      8583: # femtoliter
+      4121384: # fL
+mean_reticulocyte_volume:
+  ukb: 30260 # unit: femtoliter
+mean_sphered_cell_volume:
+  ukb: 30270 # unit: femtoliter
+monocyte_count:
+  ukb: 30130 # unit: 10^9 cells/Litre
+  aou:
+    id:
+      - 3033575 # monocyte_count_auto
+      - 3001604 # monocyte_count
+    unit:
+      8848: null # thousand per microliter
+      8961: null # thousand per cubic millimeter
+monocyte_percentage:
+  ukb: 30190 # unit: percent
+  aou:
+    id:
+      - 3011948 # monocyte_percentage_auto
+      - 3019069 # monocyte_percentage
+    unit:
+      8554: null # percent
+      4190629: null # Percentage unit
+neutrophill_count:
+  ukb: 30140 # unit: 10^9 cells/Litre
+  aou:
+    id:
+      - 3013650 # neutrophil_count
+      - 3017732 # neutrophil
+    unit:
+      8848: null # thousand per microliter
+      8961: null # thousand per cubic millimeter
+neutrophill_percentage:
+  ukb: 30200 # unit: percent
+  aou:
+    id:
+      - 3008342 # neutrophil_percentage_auto
+      - 3018010 # neutrophil_percentage
+    unit:
+      8554: null # percent
+      4190629: null # Percentage unit
+nucleated_red_blood_cell_count:
+  ukb: 30170 # unit: cells/Litre
+  aou:
+    id:
+      - 3007238 # Nucleated erythrocytes [#/volume] in Blood by Automated count
+      - 3001490 # Nucleated erythrocytes [#/volume] in Blood
+    unit:
+      8848: null # thousand per microliter
+      8961: null # thousand per cubic millimeter
+nucleated_red_blood_cell_percentage:
+  ukb: 30230 # unit: percent
+  aou:
+    id:
+      - 40761514
+      - 3034708
+    unit:
+      9032: null # per 100 white blood cells
+      8554: null # percent
+      4190629: null # Percentage unit
+platelet_count:
+  ukb: 30080 # unit: 10^9 cells/Litre
+  aou:
+    id:
+      - 3024929 # platelet_count_auto
+      - 3007461 # platelet_count
+    unit:
+      8848: # thousand per microliter
+platelet_crit:
+  ukb: 30090 # unit: percent
+platelet_distribution_width:
+  ukb: 30110 # unit: percent
+  aou:
+    id:
+      - 3039417 # Platelet distribution width [Ratio] in Blood
+    unit:
+      8554: null # percent
+red_blood_cell_count:
+  ukb: 30010 # unit: 10^12 cells/Litre
+  aou:
+    id:
+      - 3020416 # erythrocyte_count_auto
+      - 3026361 # erythrocyte_count
+    unit:
+      8815: null # million per microliter
+red_blood_cell_distribution_width:
+  ukb: 30070 # unit: percent
+  aou:
+    id:
+      - 3019897 # erythrocyte_distribution_width_auto
+      - 3002888 # erythrocyte_distribution_width
+    unit:
+      8554: null # percent
+      4041099: null # Percent
+reticulocyte_count:
+  ukb: 30250 # unit: 10^12 cells/Litre
+  aou:
+    id:
+      - 3023520 # Reticulocytes [#/volume] in Blood
+      - 40763528 # Reticulocytes [#/volume] in Blood by Automated count
+    unit:
+      8848: 0.001 # thousand per microliter
+      8931: null # million per cubic millimeter
+      8961: 0.001 # thousand per cubic millimeter
+reticulocyte_percentage:
+  ukb: 30240 # unit: percent
+  aou:
+    id:
+      - 3007124 # Reticulocytes/100 erythrocytes in Blood by Automated count
+      - 3027945 # Reticulocytes/100 erythrocytes in Blood
+    unit:
+      8554: null # percent
+      4041099: null # Percent
+white_blood_cell_count:
+  ukb: 30000 # unit: 10^9 cells/Litre
+  aou:
+    id:
+      - 3000905 # leukocyte_count
+    unit:
+      8848: null # thousand per microliter

@@ -1,0 +1,77 @@
+apolipoprotein_a:
+  - apolipoprotein_a
+apolipoprotein_b:
+  - apolipoprotein_b
+cystatin_c:
+  - cystatin_c
+gamma_glutamyltransferase:
+  - gamma_glutamyltransferase
+hba1c:
+  - glycated_haemoglobin
+igf1:
+  - igf1
+lipid_panel:
+  - cholesterol
+  - ldl_direct
+  - hdl
+  - triglycerides
+lipoprotein_a:
+  - lipoprotein_a
+lft_panel:
+  - alanine_aminotransferase
+  - aspartate_aminotransferase
+  - alkaline_phosphatase
+  - total_bilirubin
+  - direct_bilirubin
+  - albumin
+  - total_protein
+oestradiol:
+  - oestradiol
+renal_panel:
+  - albumin
+  - calcium
+  - creatinine
+  - glucose
+  - phosphate
+  - urea
+rheumatoid_factor:
+  - rheumatoid_factor
+shbg:
+  - shbg
+testosterone:
+  - testosterone
+urate:
+  - urate
+vitamin_d:
+  - vitamin_d
+
+urine_creatinine:
+  - urine_creatinine
+urine_microalbumin:
+  - urine_microalbumin
+urine_potassium:
+  - urine_potassium
+urine_sodium:
+  - urine_sodium
+
+cbc:
+  - basophill_count
+  - basophill_percentage
+  - eosinophill_count
+  - eosinophill_percentage
+  - haematocrit_percentage
+  - haemoglobin_concentration
+  - lymphocyte_count
+  - lymphocyte_percentage
+  - mean_corpuscular_haemoglobin
+  - mean_corpuscular_haemoglobin_concentration
+  - mean_corpuscular_volume
+  - mean_platelet_volume
+  - monocyte_count
+  - monocyte_percentage
+  - neutrophill_count
+  - neutrophill_percentage
+  - platelet_count
+  - red_blood_cell_count
+  - red_blood_cell_distribution_width
+  - white_blood_cell_count
