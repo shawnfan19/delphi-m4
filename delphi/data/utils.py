@@ -98,7 +98,8 @@ def pack_clusters(tokens, timesteps, whitelist, dx_token=1):
             (np.full((batch_size, 1), fill_value=0), tokens[:, :-1]), axis=1
         )
         is_dx_token = np.logical_and(is_dx_token, ~np.isin(prev_token, whitelist))
-    to_pack = ~np.isin(tokens, whitelist)
+    is_whitelist = np.isin(tokens, whitelist)
+    to_pack = np.logical_and(~is_whitelist, ~is_dx_token)
     timesteps = backward_fill(timesteps, to_pack, axis=1)
 
     tokens[is_dx_token] = 0
