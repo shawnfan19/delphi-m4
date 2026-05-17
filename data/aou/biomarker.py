@@ -75,70 +75,6 @@ def create_unit_conversion_case(
     )
 
 
-def create_biomarker_query(name: str, biomarker: Biomarker):
-    """
-    Builds the entire query using SQLAlchemy's composable expressions.
-    """
-    measurement_concept_ids = biomarker["id"]
-    unit_concept_ids = list(biomarker["unit"].keys())
-    
-    unit_conversion_case = create_unit_conversion_case(biomarker["unit"])
-
-    row_number = func.row_number().over(
-        partition_by=[
-            measurement.c.person_id,
-            measurement.c.visit_occurrence_id,
-            func.date(measurement.c.measurement_date)
-        ],
-        order_by=measurement.c.measurement_date.desc()
-    )
-
-    biomarker_cte = (
-        select(
-            measurement.c.person_id,
-            measurement.c.measurement_date,
-            func.DATE_DIFF(
-                func.date(measurement.c.measurement_date),
-                func.date(person.c.birth_datetime),
-                literal_column("DAY")
-            ).label("age_in_days"),
-            measurement.c.measurement_concept_id,
-            measurement.c.value_as_number,
-            unit_conversion_case.label("standardized_value"),
-            concept.c.concept_name.label("unit_name"),
-            row_number.label("rn")
-        )
-        .join(person, measurement.c.person_id == person.c.person_id)
-        .join(concept, measurement.c.unit_concept_id == concept.c.concept_id)
-        .where(
-            and_(
-                measurement.c.value_as_number.is_not(None),
-                and_(
-                    measurement.c.measurement_concept_id.in_(measurement_concept_ids),
-                    measurement.c.unit_concept_id.in_(unit_concept_ids)
-                )
-            )
-        )
-        .cte("biomarker")
-    )
-
-    final_query = (
-        select(
-            biomarker_cte.c.person_id,
-            biomarker_cte.c.measurement_date,
-            biomarker_cte.c.standardized_value.label(name), # Use the aliased column from the CTE
-            biomarker_cte.c.unit_name
-        )
-        .where(biomarker_cte.c.rn == 1)
-        .order_by(
-            biomarker_cte.c.person_id,
-            biomarker_cte.c.measurement_date
-        )
-    )
-    
-    return final_query
-
-
 def create_biomarker_name_case(biomarkers: dict[str: Biomarker]):
     whens = list()
     for name, biomarker in biomarkers.items():
@@ -314,15 +250,18 @@ bucket = storage_client.bucket(DATA_BUCKET)
 
 for panel_name, biomarker_list in panels.items():
     if len(biomarker_list) == 1:
-        q = create_biomarker_query(
-            biomarker_list[0],
-            biomarker_dict[biomarker_list[0]]
-        )
-    else:
         q = create_biomarker_panel_query(
             {name: biomarker_dict[name] for name in biomarker_list}
+            # biomarker_list[0],
+            # biomarker_dict[biomarker_list[0]]
         )
+    else:
+        continue
+        # q = create_biomarker_panel_query(
+        #     {name: biomarker_dict[name] for name in biomarker_list}
+        # )
 
+    print(panel_name)
     # To see the generated SQL (the equivalent of a "dry run"):
     # Use the BigQuery dialect to compile it into Google Standard SQL
     compiled_q = q.compile(
@@ -331,8 +270,6 @@ for panel_name, biomarker_list in panels.items():
     )
 
     df = client.run(str(compiled_q))
-    # odir = Path.home() / f"workspace/data/aou_uk/biomarkers/{panel_name}"
-    # os.makedirs(odir, exist_ok=True)
     df.to_parquet(
         f"gs://{DATA_BUCKET}/aou_uk/biomarkers/{panel_name}/data.parquet", index=False
     )
@@ -343,8 +280,6 @@ for panel_name, biomarker_list in panels.items():
         yaml.dump(missing_counts),
         content_type="text/yaml",
     )
-    # with open(odir / "missing_counts.yaml", "w") as f:
-    #     yaml.dump(missing_counts, f)
 # -
 
 DATA_BUCKET

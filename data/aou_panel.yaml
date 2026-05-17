@@ -1,20 +1,20 @@
-# apolipoprotein_a:
-#   - apolipoprotein_a
-# apolipoprotein_b:
-#   - apolipoprotein_b
-# cystatin_c:
-#   - cystatin_c
-# gamma_glutamyltransferase:
-#   - gamma_glutamyltransferase
-# hba1c:
-#   - glycated_haemoglobin
-# igf1:
-#   - igf1
-# lipid_panel:
-#   - cholesterol
-#   - ldl_direct
-#   - hdl
-#   - triglycerides
+apolipoprotein_a:
+  - apolipoprotein_a
+apolipoprotein_b:
+  - apolipoprotein_b
+cystatin_c:
+  - cystatin_c
+gamma_glutamyltransferase:
+  - gamma_glutamyltransferase
+hba1c:
+  - glycated_haemoglobin
+igf1:
+  - igf1
+lipid_panel:
+  - cholesterol
+  - ldl_direct
+  - hdl
+  - triglycerides
 lft_panel:
   - alanine_aminotransferase
   - aspartate_aminotransferase
