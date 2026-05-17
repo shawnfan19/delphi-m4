@@ -8,10 +8,11 @@ alanine_aminotransferase:
       4118133: null # IU/L
 albumin:
   ukb: 30600 # unit: g/L
-  id:
-    - 3024561 # albumin
-  unit:
-    8636: null # gram per liter
+  aou:
+      id:
+        - 3024561 # albumin
+      unit:
+        8636: null # gram per liter
 alkaline_phosphatase:
   ukb: 30610 # unit: U/L
   aou:
@@ -26,16 +27,16 @@ apolipoprotein_a:
     id:
       - 3008364
     unit:
-      8840: 0.1 # milligram per deciliter
-      4121396: 0.1 # mg/dL
+      8840: 0.01 # milligram per deciliter
+      4121396: 0.01 # mg/dL
 apolipoprotein_b:
   ukb: 30640 # unit: g/L
   aou:
     id:
       - 3014791
     unit:
-      8840: 0.1 # milligram per deciliter
-      4121396: 0.1 # mg/dL
+      8840: 0.01 # milligram per deciliter
+      4121396: 0.01 # mg/dL
 aspartate_aminotransferase:
   ukb: 30650 # unit: U/L
   aou:
@@ -51,7 +52,7 @@ c_reactive_protein:
       - 3020460 # crp
     unit:
       8751: null # milligram per liter
-      8840: 1e-2 # milligram per deciliter
+      8840: 10 # milligram per deciliter
       4122414: null # mg/L
 calcium:
   ukb: 30680 # unit: mmol/L
@@ -69,8 +70,8 @@ cholesterol:
       - 3027114 # cholesterol
     unit:
       8840: 0.02586 # milligram per deciliter
-      8713: 0.00002586 # gram per deciliter
-      8861: 0.2586 # milligram per milliliter
+      8713: 25.86 # gram per deciliter
+      8861: 2.586 # milligram per milliliter
 creatinine:
   ukb: 30700 # unit: umol/L
   aou:
@@ -102,9 +103,9 @@ gamma_glutamyltransferase:
     id:
       - 3026910
     unit:
-      8645: # unit per liter
-      8923: # international unit per liter
-      4118000: # U/L
+      8645: null # unit per liter
+      8923: null # international unit per liter
+      4118000: null # U/L
 glucose:
   ukb: 30740 # unit: mmol/L
   aou:
@@ -119,19 +120,29 @@ glycated_haemoglobin:
     id:
       - 3004410 # hba1c
     unit:
-      8554: 10 # percent
-      4041099: 10 # Percent
-      8591: 10 # Of Total H
-      8737: 10 # percent hemoglobin
-      4190629: 10 # Percentage unit
+      8554: # percent
+        factor: 10.93
+        offset: -23.5
+      4041099: # Percent
+        factor: 10.93
+        offset: -23.5
+      8591: # Of Total H
+        factor: 10.93
+        offset: -23.5
+      8737: # percent hemoglobin
+        factor: 10.93
+        offset: -23.5
+      4190629: # Percentage unit
+        factor: 10.93
+        offset: -23.5
 hdl:
   ukb: 30760 # mmol/L
   aou:
     id:
-      3007070: hdl
+      - 3007070 # hdl
     unit:
       8840: 0.02586 # milligram per deciliter
-      8861: 0.2586 # milligram per milliliter
+      8861: 2.586 # milligram per milliliter
 igf1:
   ukb: 30770 # unit: nmol/L
   aou:
@@ -142,14 +153,15 @@ igf1:
       8842: 0.1307 # nanogram per milliliter
 ldl_direct:
   ukb: 30780 # mmol/L
-  id:
-    3028437: ldl # Cholesterol in LDL [Mass/volume] in Serum or Plasma (assuming direct)
-    3009966: ldl_direct # Cholesterol in LDL [Mass/volume] in Serum or Plasma by Direct assay
-  unit:
-    8840: 0.02586 # milligram per deciliter
-    4121396: 0.02586 # mg/dL
-    8861: 0.2586 # milligram per milliliter
-    9028: 0.02586 # milligram per deciliter calculated
+  aou:
+      id:
+        - 3028437 # Cholesterol in LDL [Mass/volume] in Serum or Plasma (assuming direct)
+        - 3009966 # Cholesterol in LDL [Mass/volume] in Serum or Plasma by Direct assay
+      unit:
+        8840: 0.02586 # milligram per deciliter
+        4121396: 0.02586 # mg/dL
+        8861: 2.586 # milligram per milliliter
+        9028: 0.02586 # milligram per deciliter calculated
 lipoprotein_a:
   ukb: 30790 # unit: nmol/L
   aou:
@@ -200,9 +212,9 @@ testosterone:
       - 3008893 # testosterone
     unit:
       # nmol/L = (ng/dL) / 28.856
-      8817: 1 / 28.85 # nanogram per deciliter
-      4122417: 1 / 28.85 # ng/dL
-      8842: 10 / 28.85 # nanogram per milliliter
+      8817: 0.034662 # nanogram per deciliter
+      4122417: 0.034662 # ng/dL
+      8842: 3.4662 # nanogram per milliliter
 total_bilirubin:
   ukb: 30840 # umol/L
   aou:
@@ -226,7 +238,7 @@ triglycerides:
       - 3022192 # triglycerides
     unit:
       8840: 0.01129 # milligram per deciliter
-      8861: 0.11129 # milligram per milliliter
+      8861: 1.129 # milligram per milliliter
 urate:
   ukb: 30880 # unit: umol/L
   aou:
@@ -236,7 +248,7 @@ urate:
       # µmol/L = mg/dL × 59.48
       8840: 59.48 # milligram per deciliter
       4121396: 59.48 # mg/dL
-      8861: 59.48 * 10 # milligram per milliliter
+      8861: 5948 # milligram per milliliter
 urea:
   ukb: 30670 # unit: mmol/l
   aou:
@@ -245,14 +257,15 @@ urea:
     unit:
       # $\text{urea (mmol/L)} = \text{BUN (mg/dL)} \times 0.357$
       8840: 0.357 # milligram per deciliter
-      8861: 36.7 # milligram per milliliter
+      8861: 35.7 # milligram per milliliter
 vitamin_d:
   ukb: 30890 # unit: nmol/L
-  id:
-    - 40765040 # vitd
-  unit:
-    # nmol/L = ng/mL × 2.5
-    8842: 2.5 # nanogram per milliliter
+  aou:
+      id:
+        - 40765040 # vitd
+      unit:
+        # nmol/L = ng/mL × 2.5
+        8842: 2.5 # nanogram per milliliter
 urine_creatinine: # creatinine in urine
   ukb: 30510 # unit: umol/L
   aou:
@@ -261,14 +274,14 @@ urine_creatinine: # creatinine in urine
     unit:
       # µmol/L = mg/dL × 88.4
       8840: 88.4 # milligram per deciliter
-      8861: 88.4 * 10 # milligram per milliliter
+      8861: 8840 # milligram per milliliter
 urine_microalbumin:
   ukb: 30500 # unit: mg/L
   aou:
     id:
       - 3000034 # microalbumin
     unit:
-      8840: 100 # milligram per deciliter
+      8840: 10 # milligram per deciliter
       8751: null # milligram per liter
       8859: null # microgram per milliliter
 urine_potassium:
@@ -296,22 +309,24 @@ basophill_count:
       8961: # thousand per cubic millimeter
 basophill_percentage:
   ukb: 30220 # unit: percent
-  id:
-    - 3013869 # basophil_percentage_auto
-    - 3022096 # basophil_percentage
-  unit:
-    8554: null # percent
-    4190629: null # Percentage unit
-    4041099: null # Percent
-    9229: null # percent of white blood cells
+  aou:
+      id:
+        - 3013869 # basophil_percentage_auto
+        - 3022096 # basophil_percentage
+      unit:
+        8554: null # percent
+        4190629: null # Percentage unit
+        4041099: null # Percent
+        9229: null # percent of white blood cells
 eosinophill_count:
   ukb: 30150 # unit: 10^9 cells/Litre
-  id:
-    - 3028615 # eosinophil_count_auto
-    - 3013115 # eosniophil_count
-  unit:
-    8848: null # thousand per microliter
-    8961: null # thousand per cubic millimeter
+  aou:
+      id:
+        - 3028615 # eosinophil_count_auto
+        - 3013115 # eosniophil_count
+      unit:
+        8848: null # thousand per microliter
+        8961: null # thousand per cubic millimeter
 eosinophill_percentage:
   ukb: 30210 # unit: percent
   aou:
@@ -336,15 +351,26 @@ haemoglobin_concentration:
   ukb: 30020 # unit: grams/decilitre
   aou:
     id:
-      3000963: hemoglobin
+      - 3000963 # hemoglobin
     unit:
       8636: 0.1 # gram per liter
 high_light_scatter_reticulocyte_count:
   ukb: 30300 # unit: 10^12 cells/Litre
+  aou:
+      id:
+          - 3041522
+      unit:
+          8848: 0.001 # thousand per microliter
 high_light_scatter_reticulocyte_percentage:
   ukb: 30290 # unit: percent
 immature_reticulocyte_fraction:
   ukb: 30280 # unit: ratio
+  aou:
+      id:
+          - 3046000
+      unit:
+          8554: 0.01 # percent
+          4041099: 0.01 # Percent
 lymphocyte_count:
   ukb: 30120 # unit: 10^9 cells/Litre
   aou:
@@ -401,6 +427,11 @@ mean_platelet_volume:
       4121384: # fL
 mean_reticulocyte_volume:
   ukb: 30260 # unit: femtoliter
+  aou:
+      id: 
+          - 3049858
+      unit:
+          4121384: null # fL
 mean_sphered_cell_volume:
   ukb: 30270 # unit: femtoliter
 monocyte_count:
@@ -440,7 +471,7 @@ neutrophill_percentage:
       8554: null # percent
       4190629: null # Percentage unit
 nucleated_red_blood_cell_count:
-  ukb: 30170 # unit: cells/Litre
+  ukb: 30170 # unit: 10^9 cells/Litre
   aou:
     id:
       - 3007238 # Nucleated erythrocytes [#/volume] in Blood by Automated count
