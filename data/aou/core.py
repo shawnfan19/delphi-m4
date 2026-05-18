@@ -1,12 +1,12 @@
-from utils import Client, WORKSPACE_CDR, DATA_BUCKET
-
+# +
 import os
 import numpy as np
 import pandas as pd
-dataset_id = os.environ.get("WORKSPACE_CDR")
-dataset_id
 
-client = Client(dataset=dataset_id)
+from utils import Client, WORKSPACE_CDR, DATA_BUCKET
+# -
+
+client = Client(dataset=WORKSPACE_CDR)
 
 client.list_columns("condition_occurrence")
 
@@ -55,6 +55,8 @@ print(f"query in {t} minutes")
 
 df = df.sort_values(by=["person_id", "age_in_days"])
 df.head()
+
+df.shape
 
 df.vocab_id.value_counts()
 
@@ -116,8 +118,6 @@ FROM snomed_mapping
 """
 snomed_vocab = client.run(q)
 snomed2icd = snomed_vocab[["snomed_code", "icd_code"]]
-# snomed2name = snomed_vocab[["snomed_code", "snomed_name"]]
-# snomed2name = snomed2name.drop_duplicates().set_index("snomed_code")["snomed_name"]
 
 q = f"""
 SELECT 
@@ -212,7 +212,11 @@ condition_df = pd.concat((icd10_df, snomed_df), ignore_index=True)
 condition_df = condition_df.sort_values(by=["person_id", "age_in_days"])
 condition_df.head()
 
-condition_df = condition_df.drop_duplicates(subset=["person_id", "age_in_days"])
+condition_df = condition_df.drop_duplicates(subset=["person_id", "icd_code"])
+
+condition_df.shape
+
+condition_df.person_id.unique().shape
 
 # # sex
 
@@ -236,6 +240,8 @@ sex_df.concept_id.value_counts()
 sex_df["icd_code"] = sex_df.concept_id.map({45878463: "female", 45880669: "male"})
 
 sex_df.head()
+
+sex_df.shape
 
 # # death
 
@@ -298,8 +304,6 @@ df.shape
 
 df.head(50)
 
-# !wb resource resolve --id data
-
-df.to_parquet("gs://data-wb-amiable-pineapple-9453/tokens.parquet", index=False)
+df.to_parquet(f"gs://{DATA_BUCKET}/aou_uk/tokens.parquet", index=False)
 
 
