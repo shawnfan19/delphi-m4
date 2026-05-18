@@ -48,6 +48,7 @@ for _, token in enumerate(args.panel):
     axs = axs.ravel()
     for i, sex in enumerate(["female", "male"]):
         axs[i].plot([0, 1], [0, 1], color="k")
+        axs[i].set_title(sex)
         for j, horizon in enumerate(time_horizon):
             axs[i].scatter(
                 logbook[horizon][token][sex]["pred"],
@@ -58,6 +59,7 @@ for _, token in enumerate(args.panel):
                 label=horizon,
             )
             # axs[i].scatter(pred_mu, obs_mu, color=colors[j], marker="X")
+        axs[i].legend()
     axs[-1].set_yscale("log")
     axs[-1].set_xscale("log")
     axs[-1].set_ylim(1e-5, 1)
