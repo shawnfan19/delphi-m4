@@ -108,7 +108,7 @@ class ShapModel:
         return logits.detach().cpu().numpy()
 
 
-MultimodalOut = tuple[
+MultimodalPack = tuple[
     np.ndarray, np.ndarray, dict[Modality, list[np.ndarray]], np.ndarray, np.ndarray
 ]
 
@@ -121,7 +121,7 @@ class MultimodalShapModel:
         biomarker_only: bool,
         biomarker_background: None | dict,
         biomarker_features: dict,
-        data: MultimodalOut,
+        data: MultimodalPack,
     ):
         self.model = model
         self.biomarker_only = biomarker_only
@@ -158,6 +158,7 @@ class MultimodalShapModel:
 
     def mask_biomarkers_with_missing(self, mask: np.ndarray):
         mask_bool = mask.astype(bool)
+
         bio_t = self.bio_t[mask_bool]
         bio_m = self.bio_m[mask_bool]
 
@@ -214,14 +215,17 @@ class MultimodalShapModel:
                 x_lst.append(self.x)
                 t_lst.append(self.t)
 
-            if self.biomarker_background is not None:
-                bio_x, bio_t, bio_m = self.mask_biomarkers_with_background(
-                    mask[-self.n_biomarker_features :]
-                )
+            if self.n_biomarker_features > 0:
+                if self.biomarker_background is not None:
+                    bio_x, bio_t, bio_m = self.mask_biomarkers_with_background(
+                        mask[-self.n_biomarker_features :]
+                    )
+                else:
+                    bio_x, bio_t, bio_m = self.mask_biomarkers_with_missing(
+                        mask[-self.n_biomarker_features :]
+                    )
             else:
-                bio_x, bio_t, bio_m = self.mask_biomarkers_with_missing(
-                    mask[-self.n_biomarker_features :]
-                )
+                bio_x, bio_t, bio_m = self.bio_x_dict, self.bio_t, self.bio_m
 
             for mod, arrays in bio_x.items():
                 batched_bio_x[mod].extend(arrays)

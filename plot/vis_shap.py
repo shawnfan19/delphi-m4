@@ -934,16 +934,16 @@ def moi_pids(modality: str, feature: str, greater: bool, cutoff: float):
 # feature = "cholesterol"
 # modality = "LFT"
 # feature = "total_bilirubin"
-shap_feature = f"LFT"
+shap_feature = f"LIPID"
 print(f"analyzing feature: '{shap_feature}'")
-cutoff = 1
+cutoff = 2
 contribution_direction = "positive"
 
 if cutoff is not None:
     greater = cutoff > 0
     select_pids = moi_pids(
         modality=shap_feature,
-        feature="aspartate_aminotransferase",
+        feature="ldl_direct",
         greater=greater,
         cutoff=cutoff,
     )

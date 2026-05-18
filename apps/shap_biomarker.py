@@ -13,7 +13,7 @@ from tqdm import trange
 from delphi.data.ukb import MultimodalUKBDataset
 from delphi.env import DELPHI_CKPT_DIR
 from delphi.experiment import load_ckpt
-from delphi.shap import MultimodalShapModel, ShapMasker
+from delphi.explain.shap import MultimodalShapModel, ShapMasker
 
 # +
 parser = argparse.ArgumentParser()
@@ -28,8 +28,8 @@ parser.add_argument("--half", action="store_true", help="Run model in float16")
 if "ipykernel" in sys.modules:
     print(f"running in jupyter notebook")
     args = parser.parse_args([])
-    args.ckpt = "interpret/blood_0.1/ckpt.pt"
-    args.subsample = 1000
+    args.ckpt = "delphi-m4/prescriptions/ckpt.pt"
+    args.subsample = 5000
 else:
     args = parser.parse_args()
 
@@ -48,6 +48,9 @@ data_args["subject_list"] = "participants/val_fold.bin"
 data_args["stats_subject_list"] = ckpt_dict["data_args"]["subject_list"]
 data_args["deterministic"] = True
 data_args["must_have_biomarkers"] = data_args["biomarkers"]
+data_args["biomarker_require"] = "any"
+data_args["must_have_expansion_packs"] = data_args["expansion_packs"]
+data_args["expansion_pack_require"] = "any"
 pprint.pp(data_args)
 
 ds = MultimodalUKBDataset(**data_args)
@@ -95,15 +98,17 @@ for i in trange(total, leave=False):
     is_no_event = x == 1
     entry["x"] = x[~is_no_event]
     entry["t"] = t[~is_no_event]
+    entry["bio_t"] = bio_t
+    entry["bio_m"] = bio_m
+    entry["bio_x"] = bio_dict
+
     if not args.biomarker_only:
         token_shap = shap_vals[: shap_model.n_tokens].astype(np.float16)
         entry["shap"] = token_shap[~is_no_event]
 
-    entry["bio_t"] = bio_t
-    entry["bio_m"] = bio_m
-    bio_shap = shap_vals[-shap_model.n_biomarker_features :]
-    entry["bio_shap"] = bio_shap.astype(np.float16)
-    entry["bio_x"] = bio_dict
+    if shap_model.n_biomarker_features > 0:
+        bio_shap = shap_vals[-shap_model.n_biomarker_features :]
+        entry["bio_shap"] = bio_shap.astype(np.float16)
 
     shap_pickle[int(pid)] = entry
 # -
