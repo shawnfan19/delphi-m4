@@ -110,6 +110,8 @@ class Logger:
         if self.backend.is_master_process():
             if self.wandb:
                 for name, tensor in output.items():
+                    if isinstance(tensor, dict):
+                        continue
                     if not torch.is_floating_point(tensor):
                         continue
                     tensor = tensor.detach().float()

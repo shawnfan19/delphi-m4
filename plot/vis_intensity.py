@@ -13,7 +13,7 @@ from delphi.data.transform import TokenTransform
 from delphi.data.ukb import UKBReader
 from delphi.env import DELPHI_CKPT_READ
 from delphi.experiment import CliConfig, load_ckpt, move_batch_to_device
-from delphi.model.tpp import HomoPoissonTPP, NeuralDecayTPP, NeuralTPP, tpp_dispatch
+from delphi.model.tpp import HomoPoissonTPP, NeuralTPP, tpp_dispatch
 
 
 @dataclass(kw_only=True)
@@ -70,4 +70,7 @@ for i in range(len(ds)):
     plt.figure()
     plt.plot(t_grid, event_intensity)
     plt.yscale("log")
+    plt.ylabel("intensity")
+    plt.xlabel("time")
+    plt.title(args.event)
     plt.show()

@@ -1,0 +1,7 @@
+# Ignore everything in the repo root (files and folders)
+*
+# …but keep all directories, so their contents are not ignored
+!*/
+# (optional) still track some root‑level files:
+!.gitignore
+!README.md

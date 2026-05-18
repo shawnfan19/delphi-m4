@@ -245,9 +245,9 @@ class BaseTrainer:
         )
 
         self.iter_num = 0
-        if cfg.auto_resume:
-            ckpt_dict = checkpointer.load()
-            if ckpt_dict is not None:
+        ckpt_dict = checkpointer.load()
+        if ckpt_dict is not None:
+            if cfg.auto_resume:
                 self.model.load_state_dict(ckpt_dict["model"])
                 self.optimizer.load_state_dict(ckpt_dict["optimizer"])
                 self.scheduler.load_state_dict(ckpt_dict["scheduler"])
