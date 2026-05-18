@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from dataclasses import fields as dc_fields
 from pathlib import Path
 
@@ -6,10 +6,16 @@ import torch
 from omegaconf import OmegaConf
 
 from delphi import distributed
-from delphi.data.ukb import MultimodalUKBDataset
+from delphi.data import MultimodalDataset
+from delphi.data.transform import BiomarkerTransform, TokenTransform
+from delphi.data.ukb import (
+    Biomarker,
+    MultimodalUKBReader,
+    filter_participants_with_biomarkers,
+)
 from delphi.env import DELPHI_CKPT_READ as DELPHI_CKPT_DIR
-from delphi.experiment import BaseTrainer, TrainBaseConfig, seed_everything
-from delphi.log import TrainLogConfig
+from delphi.experiment import BaseTrainer, Logger, TrainBaseConfig, seed_everything
+from delphi.log import Checkpointer
 from delphi.model.multimodal import DelphiM4, DelphiM4Config
 from delphi.multimodal import Modality, module_name
 from delphi.optim import (
@@ -18,15 +24,6 @@ from delphi.optim import (
     parse_differential_lr_groups,
     parse_weight_decay_groups,
 )
-
-
-def unfreeze_biomarker_projectors(model, biomarkers):
-
-    # Unfreeze new biomarker projectors
-    for biomarker in biomarkers:
-        name = module_name(Modality[biomarker.upper()])
-        for param in model.transformer.embed.biomarker_embed[name].parameters():
-            param.requires_grad = True
 
 
 @dataclass
@@ -45,14 +42,13 @@ class FinetuneConfig(TrainBaseConfig):
     biomarker_dropout: None | float = None
     freeze_backbone: bool = False
 
-    learning_rate = 1e-5
-    schedule = "cosine"
-    max_iters = 50000
-    warmup_iters = 0.1
+    learning_rate: float = 1e-5
+    schedule: str = "cosine"
+    max_iters: int = 20000
+    warmup_iters: float | int = 0.1
 
     differential_lr: float = 1e-3
     eval_interval: int = 200
-    log: TrainLogConfig = field(default_factory=lambda: TrainLogConfig())
 
 
 def finetune(cfg: FinetuneConfig):
@@ -79,49 +75,99 @@ def finetune(cfg: FinetuneConfig):
     model_args = {k: v for k, v in pretrained_model_args.items() if k in valid_fields}
     model_cfg = DelphiM4Config(**model_args)
 
-    # Build datasets with all biomarkers (pre-trained + new)
-    data_args = {
-        "expansion_packs": pretrain_cfg["expansion_packs"],
-        "block_size": model_cfg.block_size,
-        "first_time_only": cfg.first_time_only,
-        "seed": cfg.seed,
-        "deterministic": cfg.deterministic,
-        "must_have_biomarkers": cfg.biomarkers,
-        "biomarker_require": "any",
-        "z_score_biomarkers": cfg.z_score_biomarkers,
-    }
-
     if not cfg.baseline_only:
         all_biomarkers = pretrain_biomarkers + cfg.biomarkers
     else:
         all_biomarkers = pretrain_biomarkers
-    train_ds = MultimodalUKBDataset(
-        subject_list=pretrain_cfg["train_subject_list"],
-        biomarkers=all_biomarkers,
-        biomarker_dropout=cfg.biomarker_dropout,
-        **data_args,
+
+    train_pids = MultimodalUKBReader.participants("train")
+    val_pids = MultimodalUKBReader.participants("val")
+    print(f"keeping participants with any of: {cfg.biomarkers}")
+    total_train, total_val = train_pids.size, val_pids.size
+    train_pids = filter_participants_with_biomarkers(
+        train_pids, biomarkers=cfg.biomarkers, any=True
     )
-    val_ds = MultimodalUKBDataset(
-        subject_list=pretrain_cfg["val_subject_list"],
-        biomarker_datasets=train_ds.mod_ds,
-        perturb=False,
-        **data_args,
+    val_pids = filter_participants_with_biomarkers(
+        val_pids, biomarkers=cfg.biomarkers, any=True
+    )
+    print(f"{train_pids.size} / {total_train} train pids")
+    print(f"{val_pids.size} / {total_val} val pids")
+
+    reader = MultimodalUKBReader(
+        biomarkers=all_biomarkers, expansion_packs=pretrain_cfg["expansion_packs"]
     )
 
-    pretrain_no_mod_emb = model_cfg.modality_emb == False
+    token_transform = TokenTransform(block_size=model_cfg.block_size, seed=cfg.seed)
+
+    if cfg.z_score_biomarkers:
+        mean_dict = dict()
+        std_dict = dict()
+        if pretrain_biomarkers:
+            pretrain_stats = ckpt_dict.get("biomarker_stats") or {}
+            pretrain_mean = pretrain_stats.get("mean") or {}
+            pretrain_std = pretrain_stats.get("std") or {}
+            missing = set(pretrain_biomarkers) - set(pretrain_mean)
+            assert not missing, (
+                f"pretrained checkpoint missing biomarker stats for {missing}; "
+                "cannot z-score without breaking the pretrained input distribution"
+            )
+            mean_dict.update(
+                {Modality[k.upper()]: pretrain_mean[k] for k in pretrain_biomarkers}
+            )
+            std_dict.update(
+                {Modality[k.upper()]: pretrain_std[k] for k in pretrain_biomarkers}
+            )
+        if not cfg.baseline_only:
+            for biomarker in cfg.biomarkers:
+                modality = Modality[biomarker.upper()]
+                mu, sigma = reader.biomarkers[modality].stats(train_pids)
+                mean_dict[modality] = mu
+                std_dict[modality] = sigma
+    else:
+        mean_dict = None
+        std_dict = None
+
+    train_bio_transform = BiomarkerTransform(
+        dropout=cfg.biomarker_dropout,
+        z_score=cfg.z_score_biomarkers,
+        mean=mean_dict,
+        std=std_dict,
+        first_time_only=False,
+        seed=cfg.seed,
+    )
+    train_bio_transform.describe()
+    val_bio_transform = BiomarkerTransform(
+        dropout=False,
+        z_score=cfg.z_score_biomarkers,
+        mean=mean_dict,
+        std=std_dict,
+        first_time_only=False,
+        seed=cfg.seed,
+    )
+
+    train_ds = MultimodalDataset(
+        reader=reader,
+        pids=train_pids,
+        token_transform=token_transform,
+        biomarker_transform=train_bio_transform,
+    )
+    val_ds = MultimodalDataset(
+        reader=reader,
+        pids=val_pids,
+        token_transform=token_transform,
+        biomarker_transform=val_bio_transform,
+    )
+
     if not cfg.baseline_only:
-        # Extend model config with new biomarkers
-        for modality, ds in train_ds.mod_ds.items():
-            biomarker = module_name(modality)
-            if biomarker not in model_cfg.biomarkers:
-                projector = "linear"
-                if biomarker in {"nmr", "proteomics"}:
-                    projector = "mlp"
-                model_cfg.biomarkers[biomarker] = {
-                    "projector": projector,
-                    "input_size": ds.n_features,
-                }
-        # Ensure modality embedding is enabled for finetuning even if the
+        for biomarker in cfg.biomarkers:
+            projector = "linear"
+            # if biomarker in {"nmr", "proteomics"}:
+            #     projector = "mlp"
+            model_cfg.biomarkers[biomarker] = {
+                "projector": projector,
+                "input_size": Biomarker.input_size(biomarker),
+            }
+        # ensure modality embedding is enabled for finetuning even if the
         # pretrained model didn't have one (e.g. no biomarkers at all)
         model_cfg.modality_emb = True
     cfg.model = model_cfg
@@ -143,29 +189,14 @@ def finetune(cfg: FinetuneConfig):
             old_mod_weight[preserve_idx]
         )
 
-    new, unexpected = model.load_state_dict(pretrained_state, strict=False)
+    new, _ = model.load_state_dict(pretrained_state, strict=False)
     print(f"new modules: {new}")
 
     # Freeze all parameters
     if cfg.freeze_backbone:
         for param in model.parameters():
             param.requires_grad = False
-
-        unfreeze_biomarker_projectors(model=model, biomarkers=cfg.biomarkers)
-
-        if pretrain_no_mod_emb:
-            with torch.no_grad():
-                model.transformer.embed.mod_embedding.weight[1, :] = 0
-        # Unfreeze modality embedding; freeze row 0 (padding) and any pretrained rows
-        model.transformer.embed.mod_embedding.weight.requires_grad = True
-        freeze_idx = [0, 1] + old_mod_idx
-
-        def mod_emb_grad_hook(grad, freeze_idx=freeze_idx):
-            grad = grad.clone()
-            grad[freeze_idx] = 0
-            return grad
-
-        model.transformer.embed.mod_embedding.weight.register_hook(mod_emb_grad_hook)
+        model.transformer.embed.unfreeze_for_new_biomarkers(biomarkers=cfg.biomarkers)
 
         model.transformer.eval()
         for biomarker in cfg.biomarkers:
@@ -199,13 +230,45 @@ def finetune(cfg: FinetuneConfig):
 
     # Train
     backend = distributed.make_backend_from_args(cfg)
-    cfg.log.wandb_project = cfg.ckpt_dir
+    cfg.wandb_project = cfg.ckpt_dir
+
+    n_params = sum(p.numel() for p in model.parameters())
+    logger = Logger(
+        config=asdict(cfg),
+        backend=backend,
+        wandb_log=cfg.wandb_log,
+        wandb_project=cfg.wandb_project,
+        run_name=cfg.run_name,
+        summary={"model_params": n_params},
+    )
+
+    metadata = {
+        "config": asdict(cfg),
+        "model_args": asdict(cfg.model),
+        "pretrain_ckpt": cfg.pretrain_ckpt,
+        "reader_args": {
+            "biomarkers": all_biomarkers,
+            "expansion_packs": pretrain_cfg["expansion_packs"],
+        },
+        "token_transform_args": token_transform.config,
+        "biomarker_transform_args": val_bio_transform.config,
+        "biomarker_stats": val_bio_transform.stats,
+        "tokenizer": train_ds.tokenizer,
+    }
+    checkpointer = Checkpointer(
+        dump_dir=Path(cfg.ckpt_dir) / logger.run_name,
+        backend=backend,
+        metadata=metadata,
+    )
+
     trainer = BaseTrainer(
         cfg=cfg,
         backend=backend,
         model=model,
         train_ds=train_ds,
         val_ds=val_ds,
+        logger=logger,
+        checkpointer=checkpointer,
         optimizer=optimizer,
     )
     trainer.train()
