@@ -220,17 +220,16 @@ with torch.no_grad():
         # forward pass without targets to get outputs
         outputs, _, _ = model(x0, t0)
 
-        # compute per-position loss
-        loss_dict = model.loss(outputs=outputs, targets=x1, age=t0, targets_age=t1)
-        loss_mask = loss_dict.pop("mask", None)
+        # compute per-position loss (invalid positions are NaN)
+        loss_dict = model.loss(
+            outputs=outputs, targets=x1, targets_age=t1, reduce=False
+        )
         total_nll = sum(loss_dict.values())
 
-        # build valid mask (same logic as Delphi2M.forward)
-        valid_mask = torch.ones_like(x1, dtype=torch.bool)
-        for k in ignored_tokens:
-            valid_mask &= x1 != k
-        if loss_mask is not None:
-            valid_mask &= loss_mask
+        # recover valid positions from the NaN pattern set inside loss()
+        valid_mask = ~torch.isnan(total_nll)
+        while valid_mask.dim() > x1.dim():
+            valid_mask = valid_mask.any(dim=-1)
 
         # scope masks
         no_event_mask = x1 == NO_EVENT_TOKEN
