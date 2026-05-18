@@ -372,11 +372,11 @@ Otherwise:
 
 `transform(x)` is applied to each feature array: z-scores if `z_score=True`, else identity.
 
-### `mask` Property
+### `background` Property
 
 ```python
 @property
-def mask(self):   # shape (n_features,)
+def background(self):   # shape (n_features,)
     return np.zeros((self.n_features,)) if self.z_score else self.mean
 ```
 

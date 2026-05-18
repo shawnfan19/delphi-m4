@@ -59,8 +59,8 @@ def load_biomarker(modality: str, data_args: dict) -> Biomarker:
 
 # %%
 ckpt_path = Path(DELPHI_CKPT_DIR) / "interpret/blood/ckpt.pt"
-saliency_dir = ckpt_path.parent / "saliency-LIPID"
-modality_name = "LIPID"
+saliency_dir = ckpt_path.parent / "saliency-RENAL"
+modality_name = "RENAL"
 
 sal_matrix, logits, pids = load_saliency(saliency_dir)
 tokenizer, targets, data_args = load_ckpt_meta(ckpt_path)
@@ -82,21 +82,14 @@ def plot_saliency_vs_value(
     feature_names: list,
     target_idx: int,
     target_name=None,
+    age=None,
     n_cols=3,
     figsize_per_subplot=(4, 3.5),
     lowess_frac=None,
 ):
-    """
-    For each feature in the modality, scatter biomarker value (x) vs
-    saliency for a given target disease (y), with optional LOWESS trend.
-
-    Saliency is rescaled from per-z-unit to per-raw-unit (dividing by σ_f),
-    and y-axis ticks show the corresponding % change in hazard rate.
-
-    If horizon is provided (array of years per participant), scatter points
-    and LOWESS lines are stratified by time horizon using STRATA bins.
-    """
     import textwrap
+
+    age_years = age / 365.25 if age is not None else None
 
     k = len(feature_names)
     n_rows = int(np.ceil(k / n_cols))
@@ -117,25 +110,26 @@ def plot_saliency_vs_value(
         x = biomarker_values[:, idx]
         y = sal_matrix[:, idx, target_idx].astype(np.float32)
 
-        ax.scatter(
-            x,
-            y,
-            alpha=0.3,
-            s=10,
-            c="steelblue",
-            rasterized=True,
-        )
+        scatter_kw = dict(alpha=0.2, s=10, rasterized=True)
+        if age_years is not None:
+            scatter_kw.update(c=age_years, cmap="viridis")
+        else:
+            scatter_kw.update(c="steelblue")
+
+        sc = ax.scatter(x, y, **scatter_kw)
+
         if lowess_frac is not None:
             sort_idx = np.argsort(x)
             smoothed = sm_lowess(y[sort_idx], x[sort_idx], frac=lowess_frac)
             ax.plot(smoothed[:, 0], smoothed[:, 1], "r-", linewidth=2)
 
-        # ax.axhline(y=1, color="black", linestyle="--", linewidth=0.8)
         ax.set_xlabel(feat)
         ax.set_ylabel("hazard ratio")
         ax.set_title(textwrap.fill(display_name, width=25), wrap=True, pad=15)
 
-    plt.tight_layout()
+    if age_years is not None:
+        fig.colorbar(sc, ax=axes, label="age (years)")
+
     plt.show()
 
 
@@ -143,12 +137,9 @@ def plot_saliency_vs_value(
 
 # %%
 # Example usage: pick a target disease by name or index
-target_name = "i21_(acute_myocardial_infarction)"
+# target_name = "i21_(acute_myocardial_infarction)"
 # target_name = "k74_(fibrosis_and_cirrhosis_of_liver)"
-# target_name = "j11_(influenza,_virus_not_identified)"
 # target_name = "m10_(gout)"
-# target_name = "o23_(infections_of_genito-urinary_tract_in_pregnancy)"
-# target_name = "b02_(zoster_[herpes_zoster])"
 # target_name = "i20_(angina_pectoris)"
 # target_name =  'o47_(false_labour)'
 # target_name = "e11_(non-insulin-dependent_diabetes_mellitus)"
@@ -156,6 +147,7 @@ target_name = "i21_(acute_myocardial_infarction)"
 # target_name = "k70_(alcoholic_liver_disease)"
 # target_name = "d50_(iron_deficiency_anaemia)"
 # target_name = "e78_(disorders_of_lipoprotein_metabolism_and_other_lipidaemias)"
+target_name = "n18_(chronic_renal_failure)"
 target_idx = targets.tolist().index(tokenizer[target_name])
 # print(f"target: {target_name} (idx={target_idx})")
 
@@ -165,6 +157,7 @@ plot_saliency_vs_value(
     feature_names=features,
     target_name=target_name,
     target_idx=target_idx,
+    age=bio_timesteps,
     lowess_frac=0.3,
 )
 
@@ -178,7 +171,7 @@ horizon = 365.25 * 5
 
 # %%
 # X = np.exp(sal_matrix)
-mean_saliency = np.exp(sal_matrix.mean(axis=0))
+mean_saliency = np.exp(np.nanmean(sal_matrix, axis=0))
 
 # %%
 import pprint
@@ -194,6 +187,7 @@ for i in range(sal_matrix.shape[1]):
     top_score = [round(float(saliency_per_feature[j]), 2) for j in max_target_idx]
     # print(top_diseases)
     pprint.pp(list(zip(top_diseases, top_score)))
+
 
 # %% [markdown]
 # ## Heatmap: feature saliency across diseases
@@ -238,9 +232,9 @@ for modality_name, sal_dir in zip(modalities, saliency_dirs):
     bio = load_biomarker(modality_name, data_args)
 
     # jacobians: (N, n_features, n_targets) — scale from z-score to raw units
-    mean_sal = jacobians.mean(axis=0)  # (n_features, n_targets)
+    mean_sal = np.nanmean(jacobians, axis=0)  # (n_features, n_targets)
     mean_sal = mean_sal * bio.std[:, np.newaxis]
-    var_sal = jacobians.var(axis=0)
+    var_sal = np.nanvar(jacobians, axis=0)
     var_sal = var_sal * (bio.std[:, np.newaxis] ** 2)
 
     mean_sal = mean_sal[:, disease_indices]  # (n_features, n_diseases)
