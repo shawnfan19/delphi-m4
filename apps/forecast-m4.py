@@ -18,17 +18,16 @@ import pprint
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import torch
-import yaml
 from tqdm import tqdm
 
 from delphi.data import MultimodalDataset
 from delphi.data.transform import BiomarkerTransform, MultimodalPrompt, TokenTransform
 from delphi.data.ukb import (
     Biomarker,
+    ExpansionPack,
     MultimodalUKBReader,
     filter_participants_with_biomarkers,
 )
@@ -36,37 +35,52 @@ from delphi.env import DELPHI_CKPT_READ, DELPHI_CKPT_WRITE
 from delphi.eval.auc import batched_mann_whitney_auc
 from delphi.eval.survival import NelsonAalenEstimator
 from delphi.experiment import GenerateConfig, eval_iter, load_ckpt, move_batch_to_device
-from delphi.model.tpp import TPP
+from delphi.model.tpp import HomoPoissonTPP
 from delphi.model.transformer import generate
 from delphi.model.utils import self_terminate
-from delphi.multimodal import Modality
+from delphi.multimodal import Modality, parse_panel
 
 
-def parse_biomarkers(biomarkers):
-    if biomarkers is None:
-        return None, None
-    if isinstance(biomarkers, str):
-        if biomarkers.endswith(".yaml"):
-            path = Path(biomarkers)
-            with open(path) as f:
-                return yaml.safe_load(f), path.stem
-        return [biomarkers], None
-    return list(biomarkers), None
+def first_modality_timestep(pids, biomarkers, expansion_packs):
+
+    cutoff = np.full(len(pids), -np.inf, dtype=np.float32)
+    for mod_name in biomarkers or []:
+        first = Biomarker.first_occurrence_times(mod_name, pids)
+        cutoff = np.fmin(cutoff, first)
+    for pack_name in expansion_packs or []:
+        first = ExpansionPack.first_occurrence_times(pack_name, pids)
+        cutoff = np.fmin(cutoff, first)
+
+    return cutoff
 
 
 @dataclass(kw_only=True)
 class TaskConfig(GenerateConfig):
-    biomarkers: Any = None
+    panel: None | str = None
+    biomarkers: None | list = None
+    expansion_packs: None | list = None
     horizons: list = field(default_factory=lambda: [1, 3, 5, 10])
     method: str = "hazards"  # "hazards", "sampling_hazards", "nelson_aalen"
+    fname: None | str = None
+
+    def __post_init__(self):
+
+        assert args.method in {"hazards", "sampling_hazards", "nelson_aalen"}
+
+        if self.panel:
+            self.biomarkers, self.expansion_packs, self.panel_name = parse_panel(
+                self.panel
+            )
+        if not self.fname:
+            if args.method == "hazards":
+                suffix = "hazards"
+            else:
+                suffix = f"{self.method}_n{self.n_repeats}"
+            self.fname = f"forecast_{suffix}"
 
 
 args = TaskConfig.from_cli()
-args.biomarkers, _ = parse_biomarkers(args.biomarkers)
-print("args:")
-pprint.pp(args)
-
-assert args.method in {"hazards", "sampling_hazards", "nelson_aalen"}
+args.print()
 
 ckpt = Path(DELPHI_CKPT_READ) / args.ckpt
 model, ckpt_dict = load_ckpt(ckpt)
@@ -81,11 +95,9 @@ val_pids = filter_participants_with_biomarkers(
 )
 print(f"{val_pids.size} / {total_val} val pids (biomarker filter)")
 
-age_lst = list()
-for biomarker in args.biomarkers:
-    age = Biomarker.first_occurrence_times(name=biomarker, pids=val_pids)
-    age_lst.append(age)
-prompt_age = np.stack(age_lst, axis=1).max(axis=1)
+prompt_age = first_modality_timestep(
+    pids=val_pids, biomarkers=args.biomarkers, expansion_packs=args.expansion_packs
+)
 prompt_transform = MultimodalPrompt(
     prompt_age={pid: age for pid, age in zip(val_pids, prompt_age.tolist())},
     append_no_event=args.method != "hazards",
@@ -149,10 +161,6 @@ if args.method == "hazards":
                 mod_idx=pmt_bio_m,
             )
 
-        # last fused position has the largest age (prompt/biomarker tokens,
-        # sorted); its logits are log-intensity from the prompt-end state.
-        # rank-equivalent to λ · H for any horizon H, so serves as the
-        # predictor across all horizons.
         predictor.append(outputs["logits"][:, -1, :].detach().cpu().numpy())
 
     predictor = np.concatenate(predictor, axis=0)
@@ -283,10 +291,6 @@ for horizon in predictor.keys():
 
 print(logbook[args.horizons[0]][reader.detokenizer[1269]])
 
-if args.method == "hazards":
-    suffix = "hazards"
-else:
-    suffix = f"{args.method}_n{args.n_repeats}"
-path = Path(DELPHI_CKPT_WRITE) / Path(args.ckpt).parent / f"forecast_{suffix}.json"
+path = Path(DELPHI_CKPT_WRITE) / Path(args.ckpt).parent / f"{args.fname}.json"
 with open(path, "w") as f:
     json.dump(logbook, f)

@@ -1,16 +1,16 @@
 # +
 import math
-import os
 import pprint
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 import torch
 from tqdm import tqdm
 
-from delphi.data.ukb import MultimodalUKBDataset, cut_prompt_multimodal
+from delphi.data import MultimodalDataset
+from delphi.data.transform import BiomarkerTransform, MultimodalPrompt, TokenTransform
+from delphi.data.ukb import MultimodalUKBReader
 from delphi.data.utils import collate_batches
 from delphi.env import DELPHI_CKPT_DIR
 from delphi.eval import KaplanMeierEstimator
@@ -20,35 +20,42 @@ from delphi.model.transformer import generate
 # -
 
 
-args = GenerateConfig.auto(ckpt="delphi-m4/new_blood/ckpt.pt")
+args = GenerateConfig.from_cli()
+# interactive debug: GenerateConfig(ckpt="delphi-m4/new_blood/ckpt.pt")
 print("args:")
 pprint.pp(args)
 
 model, ckpt_dict = load_ckpt(Path(DELPHI_CKPT_DIR) / args.ckpt)
 data_args = ckpt_dict["data_args"]
-data_args["subject_list"] = "participants/val_fold.bin"
-data_args["perturb"] = False
-data_args["deterministic"] = True
-data_args["crop_mode"] = "left"
 pprint.pp(data_args)
 
-ds = MultimodalUKBDataset(**data_args)
-prompt_age = args.prompt_age * 365.25 if args.prompt_age is not None else None
-prompt_tokens = [ds.tokenizer[i] for i in ["female", "male"]] + [
-    ds.tokenizer[i]
-    for i in [
-        "bmi_low",
-        "bmi_mid",
-        "bmi_high",
-        "smoking_low",
-        "smoking_mid",
-        "smoking_high",
-        "alcohol_low",
-        "alcohol_mid",
-        "alcohol_high",
-    ]
-]
-prompt_tokens = np.array(prompt_tokens) if args.prompt_lifestyle else None
+reader = MultimodalUKBReader(
+    biomarkers=ckpt_dict["config"]["biomarkers"],
+    expansion_packs=ckpt_dict["config"]["expansion_packs"],
+)
+
+pids = MultimodalUKBReader.participants("val")
+
+biomarkers = ckpt_dict["config"]["biomarkers"]
+pmt_bio_m = np.array([m.value if hasattr(m, "value") else m for m in biomarkers])
+prompt_age = {}
+for pid in pids:
+    _, _, _, bio_t, bio_m = reader[pid]
+    is_pmt = np.isin(bio_m, pmt_bio_m)
+    assert is_pmt.any(), f"no prompt biomarkers for pid {pid}"
+    prompt_age[pid] = bio_t[is_pmt].max()
+
+token_transform = TokenTransform(block_size=None, crop_mode="left")
+biomarker_transform = BiomarkerTransform()
+prompt_transform = MultimodalPrompt(prompt_age=prompt_age)
+
+ds = MultimodalDataset(
+    reader=reader,
+    pids=pids,
+    token_transform=token_transform,
+    biomarker_transform=biomarker_transform,
+    prompt_transform=prompt_transform,
+)
 
 model.config.self_terminate_except
 
@@ -61,24 +68,16 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 pbar = tqdm(it, total=math.ceil(len(ds) / args.batch_size))
 for batch_idx in pbar:
 
-    X0, T0, bio_X_dict, bio_T, bio_M, X1, T1 = ds.get_batch(batch_idx)
+    pmt_idx, pmt_age, pmt_bio_x_dict, pmt_bio_t, pmt_bio_m, X1, T1 = ds.get_batch(
+        batch_idx
+    )
 
-    X1_np = torch.cat((X0, X1[:, [-1]]), dim=1).detach().cpu().numpy()
-    T1_np = torch.cat((T0, T1[:, [-1]]), dim=1).detach().cpu().numpy()
+    X1_np = X1.detach().cpu().numpy()
+    T1_np = T1.detach().cpu().numpy()
 
     real_idx.append(X1_np)
     real_age.append(T1_np)
 
-    pmt_idx, pmt_age, pmt_bio_x_dict, pmt_bio_t, pmt_bio_m, _ = cut_prompt_multimodal(
-        X0,
-        T0,
-        bio_X_dict,
-        bio_T,
-        bio_M,
-        prompt_age=prompt_age,
-        prompt_token=torch.Tensor(prompt_tokens) if prompt_tokens is not None else None,
-        append_no_event=args.prompt_no_event,
-    )
     pmt_idx = pmt_idx.to(device)
     pmt_age = pmt_age.to(device)
     pmt_bio_x_dict = {k: v.to(device) for k, v in pmt_bio_x_dict.items()}
@@ -109,7 +108,6 @@ for batch_idx in pbar:
             "n_pmt": stats["n_prompt"].mean(),
         }
     )
-# -
 
 
 # +
