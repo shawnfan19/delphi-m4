@@ -2,6 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+# from torchdiffeq import odeint_adjoint as odeint
+from torchdiffeq import odeint
+
 from delphi.model.utils import (
     have_occurred,
     nearest_input_pos,
@@ -378,6 +381,169 @@ class NeuralTPP:
         return ll.masked_fill(invalid, torch.nan)
 
 
+class NeuralODEIntensity(nn.Module):
+
+    def __init__(self, n_embd: int, vocab_size: int):
+        super().__init__()
+        self.dh_dt = nn.Sequential(
+            nn.Linear(n_embd, n_embd), nn.GELU(), nn.Linear(n_embd, n_embd), nn.Tanh()
+        )
+        self.vocab_size = vocab_size
+        self.intensity_projector = nn.Sequential(
+            nn.Linear(n_embd, vocab_size),
+        )
+        self.delta_t = None
+        self.nfe = 0
+
+    def forward_intensity(self, h):
+        _lambda = F.softplus(self.intensity_projector(h))
+        return _lambda.clamp(min=1e-8)
+
+    def forward_latents(self, tau, h):
+        self.nfe += 1
+        dh_dt = self.dh_dt(h)
+        return dh_dt * self.delta_t.unsqueeze(-1)
+
+    def forward(self, tau, state):
+        self.nfe += 1
+        h, _ = state
+        dh_dt = self.dh_dt(h)
+        intensity = self.forward_intensity(h)
+        return dh_dt * self.delta_t.unsqueeze(-1), intensity * self.delta_t.unsqueeze(
+            -1
+        )
+
+
+class NeuralODETPP:
+
+    def __init__(
+        self,
+        ode: NeuralODEIntensity,
+        hidden_states: torch.Tensor,
+        timesteps: torch.Tensor,
+        tokens: torch.Tensor,
+        time_unit: float = 365.25,
+        method: str = "rk4",
+        step_size: float = 0.25,
+    ):
+
+        self.ode = ode
+        self.timesteps = timesteps
+        self.first_timesteps = (
+            torch.where(self.timesteps == -1e4, float("inf"), self.timesteps)
+            .min(dim=1)
+            .values
+        )
+        self.h = hidden_states
+        self.terminate_except = torch.tensor(
+            [1], device=self.h.device, dtype=torch.long
+        )
+        # cache the history-dependent cumulative-seen mask; queries just gather from it
+        self.occurred_mask = have_occurred(
+            history_x=tokens,
+            terminate_except=self.terminate_except,
+            vocab_size=self.ode.vocab_size,
+        )
+
+        self.time_unit = time_unit
+        self.method = method
+        self.step_size = step_size
+
+    @property
+    def shape(self):
+        return self.timesteps.shape
+
+    def intensity(self, t: torch.Tensor):
+        assert t.shape[0] == self.timesteps.shape[0]
+
+        idx = nearest_input_pos(age=self.timesteps, targets_age=t)
+        invalid = idx == -1
+        idx = idx.clamp(min=0)
+        nearest_t = torch.take_along_dim(self.timesteps, indices=idx, dim=1)
+        invalid = invalid | (nearest_t == -1e4)
+        nearest_t = nearest_t.masked_fill(invalid, -1e4)
+
+        h = torch.take_along_dim(self.h, indices=idx.unsqueeze(-1), dim=1)
+        delta_t = (t - nearest_t).clamp(min=0)
+        # zero delta_t at invalid positions so the ODE does not integrate
+        # over the huge t - (-1e4) gap and leave the training distribution.
+        delta_t = delta_t.masked_fill(invalid, 0.0)
+        t_normalized = torch.tensor([0.0, 1.0], dtype=torch.float32, device=t.device)
+        self.ode.delta_t = delta_t / self.time_unit
+
+        self.ode.nfe = 0
+        if self.method == "rk4":
+            options = {"step_size": self.step_size}
+        else:
+            options = None
+        latents = odeint(
+            func=self.ode.forward_latents,
+            y0=h,
+            t=t_normalized,
+            method=self.method,
+            options=options,
+            rtol=1e-3,
+            atol=1e-4,
+        )
+
+        h1 = latents[-1]
+        intensity = self.ode.forward_intensity(h1)
+
+        mask = torch.take_along_dim(self.occurred_mask, idx.unsqueeze(-1), dim=1)
+        intensity = intensity.masked_fill(mask, 0).masked_fill(
+            invalid.unsqueeze(-1), torch.nan
+        )
+        return intensity, nearest_t
+
+    def log_likelihood(
+        self,
+        x1: torch.Tensor,
+        t1: torch.Tensor,
+    ):
+        first = self.first_timesteps.view(-1, *([1] * (t1.dim() - 1)))
+        invalid = t1 <= first
+
+        idx = nearest_input_pos(age=self.timesteps, targets_age=t1).clamp(min=0)
+        h0 = torch.take_along_dim(self.h, indices=idx.unsqueeze(-1), dim=1)
+        t0 = torch.take_along_dim(self.timesteps, indices=idx, dim=1)
+        mask = torch.take_along_dim(self.occurred_mask, idx.unsqueeze(-1), dim=1)
+
+        delta_t = t1 - t0
+        t_normalized = torch.tensor([0.0, 1.0], dtype=torch.float32, device=t1.device)
+        self.ode.delta_t = delta_t / self.time_unit
+        cumul_lambda_0 = torch.zeros((*t1.shape, self.ode.vocab_size), device=x1.device)
+
+        self.ode.nfe = 0
+        if self.method == "rk4":
+            options = {"step_size": self.step_size}
+        else:
+            options = None
+        latents, cumulative_intensity = odeint(
+            func=self.ode,
+            y0=(h0, cumul_lambda_0),
+            t=t_normalized,
+            method=self.method,
+            options=options,
+            rtol=1e-3,
+            atol=1e-4,
+        )
+        print(f"\rBatch NFE: {self.ode.nfe}", end="", flush=True)
+
+        h1 = latents[-1]
+        cumulative_intensity = cumulative_intensity[-1]
+        intensity = self.ode.forward_intensity(h1)
+        log_intensity = torch.log(intensity)
+        log_intensity_k = torch.gather(
+            log_intensity, dim=-1, index=x1.unsqueeze(-1)
+        ).squeeze(-1)
+
+        cumulative_intensity = cumulative_intensity.masked_fill(mask, 0)
+        compensator = cumulative_intensity.sum(dim=-1)
+
+        ll = log_intensity_k - compensator
+        return ll.masked_fill(invalid, torch.nan)
+
+
 def tpp_dispatch(model, out_dict, device):
     loss = model.config.loss
     if loss == "homo_poisson":
@@ -400,5 +566,15 @@ def tpp_dispatch(model, out_dict, device):
             time_unit=model.config.time_unit,
             n_grid=model.config.n_integrate_grid,
             integrate_method=getattr(model.config, "integrate_method", "trapezoid"),
+        )
+    if loss == "neural_ode":
+        return NeuralODETPP(
+            ode=model.neural_head,
+            hidden_states=out_dict["h"],
+            timesteps=out_dict["age"],
+            tokens=out_dict["idx"],
+            time_unit=model.config.time_unit,
+            method=model.config.ode_method,
+            step_size=model.config.ode_step_size,
         )
     raise ValueError(f"c-index unsupported for model.config.loss={loss!r}")

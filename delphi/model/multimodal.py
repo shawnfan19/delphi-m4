@@ -8,7 +8,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 
-from delphi.model.tpp import HomoPoissonTPP, NeuralIntensity, NeuralTPP
+from delphi.model.tpp import (
+    HomoPoissonTPP,
+    NeuralIntensity,
+    NeuralODEIntensity,
+    NeuralODETPP,
+    NeuralTPP,
+)
 from delphi.model.transformer import (
     AgeEncoding,
     Block,
@@ -285,6 +291,8 @@ class DelphiM4Config:
     ema: None | float = 0.999
     n_integrate_grid: int = 20
     integrate_method: str = "trapezoid"
+    ode_method: str = "rk4"
+    ode_step_size: float = 0.25
     ce_beta: float = 1.0
     dt_beta: float = 1.0
     multitask_beta: float = 0.1
@@ -323,6 +331,10 @@ class DelphiM4(torch.nn.Module):
             self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
             if config.weight_tying:
                 self.transformer.embed.token_embedding.weight = self.lm_head.weight
+        elif config.loss == "neural_ode":
+            self.neural_head = NeuralODEIntensity(
+                n_embd=config.n_embd, vocab_size=config.vocab_size
+            )
         else:
             raise ValueError
 
@@ -410,6 +422,15 @@ class DelphiM4(torch.nn.Module):
                 n_grid=self.config.n_integrate_grid,
                 integrate_method=self.config.integrate_method,
                 time_unit=self.config.time_unit,
+            )
+        elif self.config.loss == "neural_ode":
+            tpp = NeuralODETPP(
+                hidden_states=outputs["h"],
+                ode=self.neural_head,
+                timesteps=outputs["age"],
+                tokens=outputs["idx"],
+                method=self.config.ode_method,
+                step_size=self.config.ode_step_size,
             )
         else:
             raise NotImplementedError
