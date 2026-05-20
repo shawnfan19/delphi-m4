@@ -38,7 +38,7 @@ from delphi.experiment import GenerateConfig, eval_iter, load_ckpt, move_batch_t
 from delphi.model.tpp import HomoPoissonTPP
 from delphi.model.transformer import generate
 from delphi.model.utils import self_terminate
-from delphi.multimodal import Modality, parse_panel
+from delphi.multimodal import parse_panel
 
 
 def first_modality_timestep(pids, biomarkers, expansion_packs):
@@ -105,32 +105,24 @@ prompt_transform = MultimodalPrompt(
 
 
 reader_args = ckpt_dict["reader_args"]
-token_transform_args = ckpt_dict["token_transform_args"]
-biomarker_transform_args = ckpt_dict.get("biomarker_transform_args")
-biomarker_stats = ckpt_dict.get("biomarker_stats")
 pprint.pp(
     {
         "reader_args": reader_args,
-        "token_transform_args": token_transform_args,
-        "biomarker_transform_args": biomarker_transform_args,
+        "token_transform_args": ckpt_dict["token_transform_args"],
+        "biomarker_transform_args": ckpt_dict.get("biomarker_transform_args"),
     }
 )
 
-reader = MultimodalUKBReader(**reader_args)
-token_transform = TokenTransform(**token_transform_args)
-if biomarker_transform_args is not None:
-    mean = biomarker_stats["mean"] if biomarker_stats else None
-    std = biomarker_stats["std"] if biomarker_stats else None
-    if mean is not None:
-        mean = {Modality[k.upper()]: v for k, v in mean.items()}
-    if std is not None:
-        std = {Modality[k.upper()]: v for k, v in std.items()}
-    biomarker_transform = BiomarkerTransform(
-        **biomarker_transform_args, mean=mean, std=std
-    )
+# pass dict (not list) so reader uses the checkpoint's index assignments
+# instead of re-deriving them from sorted order
+reader = MultimodalUKBReader(
+    biomarkers=model.config.biomarker2idx or None,
+    expansion_packs=reader_args["expansion_packs"],
+)
+token_transform = TokenTransform.from_ckpt(ckpt_dict)
+biomarker_transform = BiomarkerTransform.from_ckpt(ckpt_dict)
+if biomarker_transform is not None:
     biomarker_transform.describe()
-else:
-    biomarker_transform = None
 
 
 ds = MultimodalDataset(
