@@ -21,7 +21,7 @@ from delphi.eval import (
 )
 from delphi.experiment import CliConfig, eval_iter, load_ckpt, move_batch_to_device
 from delphi.model.tpp import tpp_dispatch
-from delphi.multimodal import Modality, parse_panel
+from delphi.multimodal import parse_panel
 
 
 @dataclass(kw_only=True)
@@ -82,8 +82,11 @@ expansion_packs = list(
         set(args.expansion_packs or [])
     )
 )
+# pass dict (not list) so reader uses the checkpoint's index assignments
+# instead of re-deriving them from sorted order
+biomarker2idx = {name: model.config.biomarker2idx[name] for name in biomarkers}
 reader = MultimodalUKBReader(
-    biomarkers=biomarkers, expansion_packs=expansion_packs, memmap=False
+    biomarkers=biomarker2idx, expansion_packs=expansion_packs, memmap=False
 )
 reader.describe()
 
@@ -93,10 +96,6 @@ token_transform.describe()
 if biomarker_transform_args and biomarkers:
     mean = biomarker_stats["mean"] if biomarker_stats else None
     std = biomarker_stats["std"] if biomarker_stats else None
-    if mean is not None:
-        mean = {Modality[k.upper()]: v for k, v in mean.items()}
-    if std is not None:
-        std = {Modality[k.upper()]: v for k, v in std.items()}
     biomarker_transform = BiomarkerTransform(
         **biomarker_transform_args, mean=mean, std=std
     )
