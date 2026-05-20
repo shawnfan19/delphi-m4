@@ -67,9 +67,6 @@ model, ckpt_dict = load_ckpt(ckpt)
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 reader_args = ckpt_dict["reader_args"]
-token_transform_args = ckpt_dict["token_transform_args"]
-biomarker_transform_args = ckpt_dict.get("biomarker_transform_args")
-biomarker_stats = ckpt_dict.get("biomarker_stats")
 
 val_pids = MultimodalUKBReader.participants("val")
 
@@ -90,18 +87,12 @@ reader = MultimodalUKBReader(
 )
 reader.describe()
 
-token_transform = TokenTransform(**token_transform_args)
+token_transform = TokenTransform.from_ckpt(ckpt_dict)
 token_transform.describe()
 
-if biomarker_transform_args and biomarkers:
-    mean = biomarker_stats["mean"] if biomarker_stats else None
-    std = biomarker_stats["std"] if biomarker_stats else None
-    biomarker_transform = BiomarkerTransform(
-        **biomarker_transform_args, mean=mean, std=std
-    )
+biomarker_transform = BiomarkerTransform.from_ckpt(ckpt_dict) if biomarkers else None
+if biomarker_transform is not None:
     biomarker_transform.describe()
-else:
-    biomarker_transform = None
 
 ds = MultimodalDataset(
     reader=reader,

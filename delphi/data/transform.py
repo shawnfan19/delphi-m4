@@ -108,6 +108,10 @@ class TokenTransform:
     def config(self) -> dict:
         return dict(self._init_args)
 
+    @classmethod
+    def from_ckpt(cls, ckpt_dict: dict) -> "TokenTransform":
+        return cls(**ckpt_dict["token_transform_args"])
+
     def describe(self) -> None:
         print(f"{type(self).__name__}:")
         heavy_keys = {"perturb_tokens", "blacklist_tokens", "whitelist_tokens"}
@@ -180,6 +184,14 @@ class BiomarkerTransform:
     @property
     def config(self) -> dict:
         return {k: v for k, v in self._init_args.items() if k not in {"mean", "std"}}
+
+    @classmethod
+    def from_ckpt(cls, ckpt_dict: dict) -> "BiomarkerTransform | None":
+        args = ckpt_dict.get("biomarker_transform_args")
+        if not args:
+            return None
+        stats = ckpt_dict.get("biomarker_stats") or {}
+        return cls(**args, mean=stats.get("mean"), std=stats.get("std"))
 
     @property
     def stats(self) -> dict:
