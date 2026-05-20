@@ -92,27 +92,30 @@ def train(cfg: TrainConfig):
         else:
             mean_dict = None
             std_dict = None
-        biomarker_transform = BiomarkerTransform(
+        train_biomarker_transform = BiomarkerTransform(
             first_time_only=cfg.first_time_only,
+            dropout=cfg.biomarker_dropout,
             seed=cfg.seed,
             z_score=cfg.z_score_biomarkers,
             mean=mean_dict,
             std=std_dict,
         )
+        val_biomarker_transform = train_biomarker_transform.replace(dropout=None)
     else:
-        biomarker_transform = None
+        train_biomarker_transform = None
+        val_biomarker_transform = None
 
     train_ds = MultimodalDataset(
         reader=reader,
         pids=train_pids,
         token_transform=token_transform,
-        biomarker_transform=biomarker_transform,
+        biomarker_transform=train_biomarker_transform,
     )
     val_ds = MultimodalDataset(
         reader=reader,
         pids=val_pids,
         token_transform=token_transform,
-        biomarker_transform=biomarker_transform,
+        biomarker_transform=val_biomarker_transform,
     )
 
     cfg.model.vocab_size = reader.vocab_size
@@ -155,9 +158,9 @@ def train(cfg: TrainConfig):
         "token_transform_args": token_transform.config,
         "tokenizer": train_ds.tokenizer,
     }
-    if biomarker_transform is not None:
-        metadata["biomarker_transform_args"] = biomarker_transform.config
-        metadata["biomarker_stats"] = biomarker_transform.stats
+    if train_biomarker_transform is not None:
+        metadata["biomarker_transform_args"] = train_biomarker_transform.config
+        metadata["biomarker_stats"] = train_biomarker_transform.stats
     checkpointer = Checkpointer(
         dump_dir=Path(cfg.ckpt_dir) / logger.run_name,
         backend=backend,

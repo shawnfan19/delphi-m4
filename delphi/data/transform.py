@@ -196,6 +196,9 @@ class BiomarkerTransform:
         stats = ckpt_dict.get("biomarker_stats") or {}
         return cls(**args, mean=stats.get("mean"), std=stats.get("std"))
 
+    def replace(self, **overrides) -> "BiomarkerTransform":
+        return type(self)(**{**self._init_args, **overrides})
+
     @property
     def stats(self) -> dict:
         def keys_to_str(d):
