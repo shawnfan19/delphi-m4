@@ -38,6 +38,7 @@ class TrainConfig(TrainBaseConfig):
     must_have_expansion_packs: bool = False
     ignore_expansion_packs: bool = True
     biomarker_dropout: None | float = None
+    exclude_smoking_and_alcohol: bool = False
 
     def __post_init__(self):
         if self.panel:
@@ -79,7 +80,17 @@ def train(cfg: TrainConfig):
     reader = MultimodalUKBReader(
         biomarkers=cfg.biomarkers, expansion_packs=cfg.expansion_packs
     )
-    token_transform = TokenTransform(block_size=cfg.model.block_size, seed=cfg.seed)
+    if cfg.exclude_smoking_and_alcohol:
+        blacklist_tokens = [
+            reader.tokenizer[k] for k in reader.smoking_keys + reader.alcohol_keys
+        ]
+    else:
+        blacklist_tokens = None
+    token_transform = TokenTransform(
+        block_size=cfg.model.block_size,
+        blacklist_tokens=blacklist_tokens,
+        seed=cfg.seed,
+    )
 
     if cfg.biomarkers is not None:
         if cfg.z_score_biomarkers:

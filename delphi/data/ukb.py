@@ -19,17 +19,22 @@ RESERVED_MOD_IDX = 2  # 0 = padding, 1 = event tokens
 
 class UKBReader:
     base_dir = Path(DELPHI_DATA_DIR) / "ukb_real_data"
-    lifestyle_keys = [
+    bmi_keys = [
         "bmi_low",
         "bmi_mid",
         "bmi_high",
+    ]
+    smoking_keys = [
         "smoking_low",
         "smoking_mid",
         "smoking_high",
+    ]
+    alcohol_keys = [
         "alcohol_low",
         "alcohol_mid",
         "alcohol_high",
     ]
+    lifestyle_keys = bmi_keys + smoking_keys + alcohol_keys
     sex_keys = ["female", "male"]
 
     def __init__(self, memmap: bool = False):
@@ -124,6 +129,9 @@ class UKBReader:
 
 
 class MultimodalUKBReader:
+    bmi_keys = UKBReader.bmi_keys
+    smoking_keys = UKBReader.smoking_keys
+    alcohol_keys = UKBReader.alcohol_keys
     lifestyle_keys = UKBReader.lifestyle_keys
     sex_keys = UKBReader.sex_keys
 
