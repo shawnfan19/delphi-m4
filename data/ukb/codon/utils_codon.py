@@ -1,0 +1,136 @@
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import yaml
+
+
+class UKBDatabase:
+    VISITS = ["birth", "init_assess", "1st_repeat_assess", "img", "1st_repeat_img"]
+    _ASSESS_INSTANCE = {
+        "init_assess": 0,
+        "1st_repeat_assess": 1,
+        "img": 2,
+        "1st_repeat_img": 3,
+    }
+
+    def __init__(self, root: str | Path):
+        self.root = Path(root)
+        self._tab_dir = self.root / "tab"
+        self._pheno: dict[str, Path] | None = None
+        self._assess_age: pd.DataFrame | None = None
+        self._long_assess_age: pd.Series | None = None
+
+    def _pheno_index(self) -> dict[str, Path]:
+        if self._pheno is None:
+            self._pheno = {
+                f.stem.split("_")[-1]: f
+                for f in self._tab_dir.rglob("*")
+                if f.is_file()
+            }
+        return self._pheno
+
+    def load_fid(self, fid: str | int) -> pd.DataFrame:
+        return pd.read_csv(
+            self._pheno_index()[str(fid)], delimiter="\t", index_col="f.eid"
+        )
+
+    def load_coding(self, scheme: int) -> pd.DataFrame:
+        path = self.root / "coding" / f"{scheme}.txt"
+        if not path.exists():
+            raise FileNotFoundError(path)
+        return pd.read_csv(path, sep="\t")
+
+    def load_visit(self, fid: str | int, visit_idx: int = 0) -> dict:
+        df = self.load_fid(fid)
+        return df.iloc[:, visit_idx].to_dict()
+
+    def month_of_birth(self) -> pd.DataFrame:
+        mob = pd.read_csv(
+            self.root / "year_and_month_of_birth.txt", sep="\t", index_col="eid"
+        )
+        mob["year_month"] = pd.to_datetime(mob["year_month"], format="%Y%m")
+        return mob
+
+    def assessment_age(self) -> pd.DataFrame:
+        if self._assess_age is None:
+            mob = self.month_of_birth()
+            rename_map = {f"f.53.{i}.0": v for v, i in self._ASSESS_INSTANCE.items()}
+            assess_date = self.load_fid(53).rename(columns=rename_map)
+            assess_date["birth"] = mob["year_month"]
+
+            assess_age = pd.DataFrame(
+                index=assess_date.index, columns=self.VISITS, dtype=float
+            )
+            for col in self.VISITS:
+                dt = pd.to_datetime(assess_date[col], format="%Y-%m-%d")
+                assess_age[col] = (dt - mob["year_month"]).dt.days.astype(float)
+            self._assess_age = assess_age
+        return self._assess_age
+
+    def long_assessment_age(self) -> pd.Series:
+        if self._long_assess_age is None:
+            self._long_assess_age = index_by_visit(self.assessment_age(), self.VISITS)
+        return self._long_assess_age
+
+    def load_biomarker_df(
+        self, fids: list[int | str], visits: list[str]
+    ) -> pd.DataFrame:
+        markers = []
+        for fid in fids:
+            marker = index_by_visit(self.load_fid(fid), visits)
+            marker.name = str(fid)
+            markers.append(marker)
+        return pd.concat(markers, axis=1)
+
+
+def index_by_visit(df: pd.DataFrame, visits: list[str]) -> pd.Series:
+    return (
+        df.set_axis(visits, axis=1)
+        .rename_axis(index="pid", columns="visit")
+        .stack(dropna=False)
+    )
+
+
+def build_biomarker(
+    biomarker_df: pd.DataFrame,
+    features: list,
+    odir: str | Path,
+    time_series: pd.Series,
+    data_dtype=np.float32,
+):
+    odir = Path(odir)
+    odir.mkdir(parents=True, exist_ok=True)
+    print(odir)
+    print(f"\t - features: {features}")
+
+    with open(odir / "features.yaml", "w") as f:
+        yaml.dump(features, f, default_flow_style=False, sort_keys=False)
+
+    time_np = time_series[biomarker_df.index].to_numpy().astype(np.float32)
+    data_np = biomarker_df.to_numpy().astype(data_dtype)
+
+    has_nan_time = np.isnan(time_np)
+    has_nan_data = np.isnan(data_np).any(axis=1)
+    is_valid = ~has_nan_time & ~has_nan_data
+    print(f"\t - has NaN in time: {has_nan_time.sum()}")
+    print(f"\t - has NaN in data: {has_nan_data.sum()}")
+    print(f"\t - total remaining: {is_valid.sum()}")
+
+    kept = biomarker_df.loc[is_valid].reset_index()
+    n_visits = kept["pid"].value_counts().value_counts().to_dict()
+    print(f"\t - histogram: {n_visits}")
+
+    seq_len = data_np.shape[1]
+    p2i = pd.DataFrame(
+        {
+            "pid": kept["pid"].to_numpy(np.int32),
+            "visit": kept["visit"].to_numpy(str),
+            "start_pos": np.arange(is_valid.sum(), dtype=np.int32) * seq_len,
+            "seq_len": seq_len,
+            "time": time_np[is_valid],
+        }
+    )
+
+    data_np[is_valid].ravel().tofile(odir / "data.bin")
+    p2i.to_csv(odir / "p2i.csv", index=False)
