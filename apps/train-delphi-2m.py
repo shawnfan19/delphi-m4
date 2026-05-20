@@ -69,18 +69,7 @@ def train(cfg: TrainConfig):
         whitelist_tokens=whitelist_tokens,
         seed=cfg.seed,
     )
-    val_token_transform = TokenTransform(
-        no_event_interval=cfg.no_event_interval,
-        no_event_mode=cfg.no_event_mode,
-        block_size=cfg.model.block_size,
-        crop_mode=cfg.crop_mode,
-        blacklist_tokens=blacklist_tokens,
-        perturb_tokens=None,
-        break_clusters=cfg.break_clusters,
-        dx_token=dx_token,
-        whitelist_tokens=whitelist_tokens,
-        seed=cfg.seed,
-    )
+    val_token_transform = train_token_transform.replace(perturb_tokens=None)
 
     train_ds = Dataset(
         reader=reader,

@@ -112,6 +112,9 @@ class TokenTransform:
     def from_ckpt(cls, ckpt_dict: dict) -> "TokenTransform":
         return cls(**ckpt_dict["token_transform_args"])
 
+    def replace(self, **overrides) -> "TokenTransform":
+        return type(self)(**{**self._init_args, **overrides})
+
     def describe(self) -> None:
         print(f"{type(self).__name__}:")
         heavy_keys = {"perturb_tokens", "blacklist_tokens", "whitelist_tokens"}
