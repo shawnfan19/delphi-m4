@@ -26,7 +26,6 @@ from delphi.model.utils import (
     sample_competing_exponentials,
     self_terminate_single,
 )
-from delphi.multimodal import Modality, module_name
 
 tensor_dict = dict[str, torch.Tensor]
 
@@ -90,26 +89,25 @@ class BiomarkerEmbeddingDict(nn.Module):
         self.config = config
         self.embed = nn.ModuleDict()
         for biomarker, biomarker_cfg in config.biomarkers.items():
-            bm_key = module_name(Modality[biomarker.upper()])
-            self.embed[bm_key] = BiomarkerEmbedding(
+            self.embed[biomarker.lower()] = BiomarkerEmbedding(
                 n_embed=config.n_embd, **biomarker_cfg
             )
 
     def forward(
         self,
-        biomarker_x: dict[Modality, torch.Tensor],
+        biomarker_x: dict[str, torch.Tensor],
     ):
         biomarker_emb = dict()
-        for modality in biomarker_x.keys():
-            biomarker_emb[modality] = self.embed[module_name(modality)](
-                biomarker_x[modality]
+        for biomarker in biomarker_x.keys():
+            biomarker_emb[biomarker] = self.embed[biomarker.lower()](
+                biomarker_x[biomarker]
             )  # N * H
 
         return biomarker_emb
 
 
 def fuse_embed(
-    mod_emb: dict[Modality, torch.Tensor],
+    mod_emb: dict[str, torch.Tensor],
     mod_idx: torch.Tensor,
     mod_age: torch.Tensor,
     mod_idx_emb: None | torch.Tensor,
@@ -117,6 +115,7 @@ def fuse_embed(
     emb: torch.Tensor,
     age: torch.Tensor,
     idx: torch.Tensor,
+    biomarker2idx: dict[str, int],
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     fuse modality embeddings and base embeddings, sorted by age.
@@ -133,11 +132,11 @@ def fuse_embed(
     mod_emb_dense = torch.zeros(
         (*mod_idx.shape, n_embd), dtype=emb.dtype, device=device
     )
-    for modality, m_tensor in mod_emb.items():
-        mask = mod_idx == modality.value
+    for biomarker, m_tensor in mod_emb.items():
+        mask = mod_idx == biomarker2idx[biomarker]
         if m_tensor.shape[0] != mask.sum():
             raise ValueError(
-                f"Shape mismatch for {modality}: mask expects {mask.sum()} tokens, "
+                f"Shape mismatch for {biomarker}: mask expects {mask.sum()} tokens, "
                 f"got {m_tensor.shape[0]}"
             )
         mod_emb_dense[mask] = m_tensor
@@ -205,17 +204,17 @@ class DelphiDecoder(nn.Module):
         super().__init__()
         self.biomarker_decoder = nn.ModuleDict()
         for biomarker, _ in config.biomarkers.items():
-            bm_key = module_name(Modality[biomarker.upper()])
-            self.biomarker_decoder[bm_key] = BiomarkerDecoder(
+            self.biomarker_decoder[biomarker.lower()] = BiomarkerDecoder(
                 n_embed=config.n_embd, projector="mlp", bias=True
             )
+        self.idx2biomarker = {v: k for k, v in config.biomarker2idx.items()}
 
     def forward(self, embeddings, mod_idx):
         output = dict()
         for idx in torch.unique(mod_idx[mod_idx > 1]):
             idx = idx.item()
-            modality = Modality(idx)
-            output[modality] = self.biomarker_decoder[module_name(modality)](
+            biomarker = self.idx2biomarker[idx]
+            output[biomarker] = self.biomarker_decoder[biomarker.lower()](
                 embeddings[mod_idx == idx]
             )  # N * H
         return output
@@ -261,6 +260,10 @@ class DelphiM4Config:
         ignore_tokens: list of tokens to ignore as targets.
             default [0, 2-12] includes zero padding tokens and gender and lifestyle tokens in the UKB.
         biomarkers: mapping biomarker names to their embedding configs.
+        biomarker2idx: mapping biomarker names to the integer used in mod_idx
+            (i.e. the modality channel). Saved with the checkpoint so the same
+            mapping can be reconstructed at inference. 0 and 1 are reserved
+            for padding and event tokens, so values start at 2.
         modality_emb: whether to introduce modality-specific embeddings.
         ce_beta: weight coefficient for cross-entropy loss.
         dt_beta: weight coefficient for delta-time loss.
@@ -283,6 +286,7 @@ class DelphiM4Config:
         default_factory=lambda: [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     )
     biomarkers: dict[str, BiomarkerEmbedConfig] = field(default_factory=dict)
+    biomarker2idx: dict[str, int] = field(default_factory=dict)
     modality_emb: bool = True
     self_terminate_except: list = field(default_factory=lambda: [1])
     loss: str = "homo_poisson"
@@ -341,12 +345,7 @@ class DelphiM4(torch.nn.Module):
         if len(config.biomarkers) > 0:
             self.bio_embed = BiomarkerEmbeddingDict(config)
             if config.modality_emb:
-                max_modality_idx = max(
-                    [
-                        Modality[biomarker.upper()].value
-                        for biomarker in config.biomarkers.keys()
-                    ]
-                )
+                max_modality_idx = max(config.biomarker2idx.values())
                 self.mod_embedding = nn.Embedding(
                     max_modality_idx + 1, config.n_embd, padding_idx=0
                 )
@@ -460,7 +459,7 @@ class DelphiM4(torch.nn.Module):
             )
             if reduce:
                 for key in bio_loss.keys():
-                    loss[f"loss_{key.name}"] = (
+                    loss[f"loss_{key}"] = (
                         torch.mean(bio_loss[key])
                         * self.config.multitask_beta
                         / len(self.config.biomarkers)
@@ -485,7 +484,7 @@ class DelphiM4(torch.nn.Module):
         self,
         idx: torch.Tensor,
         age: torch.Tensor,
-        biomarker: None | dict[Modality, torch.Tensor] = None,
+        biomarker: None | dict[str, torch.Tensor] = None,
         mod_age: None | torch.Tensor = None,
         mod_idx: None | torch.Tensor = None,
         targets: None | torch.Tensor = None,
@@ -515,6 +514,7 @@ class DelphiM4(torch.nn.Module):
                 mod_age_emb=mod_age_emb,
                 mod_emb=mod_emb,
                 idx=idx,
+                biomarker2idx=self.config.biomarker2idx,
             )
             pad = fused_mod_idx > 0
         else:

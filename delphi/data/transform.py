@@ -15,7 +15,6 @@ from delphi.data.utils import (
     perturb_time,
     sort_by_time,
 )
-from delphi.multimodal import Modality
 
 
 class TokenTransform:
@@ -145,8 +144,8 @@ class BiomarkerTransform:
         first_time_only: bool = False,
         dropout: None | float = None,
         z_score: bool = False,
-        mean: None | dict[Modality, np.ndarray] = None,
-        std: None | dict[Modality, np.ndarray] = None,
+        mean: None | dict[str, np.ndarray] = None,
+        std: None | dict[str, np.ndarray] = None,
         deterministic: bool = True,
         seed: int = 42,
     ):
@@ -187,7 +186,7 @@ class BiomarkerTransform:
         def keys_to_str(d):
             if d is None:
                 return None
-            return {k.name.lower(): v for k, v in d.items()}
+            return {k.lower(): v for k, v in d.items()}
 
         return {"mean": keys_to_str(self.mean), "std": keys_to_str(self.std)}
 
@@ -197,17 +196,17 @@ class BiomarkerTransform:
 
         mean = self.mean or {}
         std = self.std or {}
-        modalities = sorted(set(mean) | set(std), key=lambda m: m.name)
-        if not modalities:
+        biomarkers = sorted(set(mean) | set(std))
+        if not biomarkers:
             return
-        width = max(len(m.name.lower()) for m in modalities)
+        width = max(len(m) for m in biomarkers)
         print("stats:")
         with np.printoptions(precision=4, linewidth=120):
-            for m in modalities:
+            for m in biomarkers:
                 mu = np.asarray(mean.get(m)) if m in mean else None
                 sigma = np.asarray(std.get(m)) if m in std else None
                 shape = mu.shape if mu is not None else sigma.shape
-                print(f"  {m.name.lower():<{width}}  shape={shape}")
+                print(f"  {m:<{width}}  shape={shape}")
                 print(f"    mean: {mu}")
                 print(f"    std:  {sigma}")
 

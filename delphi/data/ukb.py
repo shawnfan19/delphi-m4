@@ -12,9 +12,9 @@ from delphi.data.utils import (
     update_tokenizer,
 )
 from delphi.env import DELPHI_DATA_READ as DELPHI_DATA_DIR
-from delphi.multimodal import Modality
 
 NO_EVENT_TOKEN = 1
+RESERVED_MOD_IDX = 2  # 0 = padding, 1 = event tokens
 
 
 class UKBReader:
@@ -129,14 +129,17 @@ class MultimodalUKBReader:
 
     def __init__(
         self,
-        expansion_packs: list | None = None,
-        biomarkers: list | None = None,
+        expansion_packs: list[str] | None = None,
+        biomarkers: list[str] | dict[str, int] | None = None,
         memmap: bool = False,
     ):
         """
         args:
             expansion_packs: a list of expansion packs to include
-            biomarkers: a list of biomarkers to load
+            biomarkers: either a list of biomarker names (sorted and assigned
+                indices starting at RESERVED_MOD_IDX), or a {name: idx} mapping
+                to use as-is (e.g. loaded from a checkpoint). Keys/names are
+                normalized to lowercase.
             memmap: whether to load data files in memmap mode
         """
 
@@ -147,8 +150,7 @@ class MultimodalUKBReader:
         self.expansion_packs = dict()
         self.expansion_offset = dict()
         if expansion_packs is not None:
-            expansion_packs.sort()
-            for name in expansion_packs:
+            for name in sorted(expansion_packs):
                 self.expansion_packs[name] = ExpansionPack(name=name, memmap=memmap)
                 self.tokenizer, offset = update_tokenizer(
                     base_tokenizer=self.tokenizer,
@@ -158,12 +160,27 @@ class MultimodalUKBReader:
         self.vocab_size = len(self.tokenizer)
 
         self.biomarkers = dict()
-        if biomarkers is not None:
-            for biomarker in biomarkers:
-                self.biomarkers[Modality[biomarker.upper()]] = Biomarker(
-                    name=biomarker.lower(),
-                    memmap=memmap,
+        self.biomarker2idx = dict()
+        if isinstance(biomarkers, list):
+            self.biomarker2idx = {
+                name.lower(): i + RESERVED_MOD_IDX
+                for i, name in enumerate(sorted(biomarkers))
+            }
+        elif isinstance(biomarkers, dict):
+            self.biomarker2idx = {k.lower(): v for k, v in biomarkers.items()}
+            bad = [k for k, v in self.biomarker2idx.items() if v < RESERVED_MOD_IDX]
+            if bad:
+                raise ValueError(
+                    f"biomarker indices must be >= {RESERVED_MOD_IDX} "
+                    f"(0=padding, 1=event token); got {bad}"
                 )
+        elif biomarkers is not None:
+            raise ValueError(
+                f"biomarkers must be list[str] or dict[str, int], "
+                f"got {type(biomarkers).__name__}"
+            )
+        for biomarker in self.biomarker2idx:
+            self.biomarkers[biomarker] = Biomarker(name=biomarker, memmap=memmap)
 
     @classmethod
     def participants(cls, fold):
@@ -177,7 +194,7 @@ class MultimodalUKBReader:
         print(f"{type(self).__name__}:")
         config = {
             "expansion_packs": sorted(self.expansion_packs.keys()),
-            "biomarkers": sorted(m.name.lower() for m in self.biomarkers),
+            "biomarkers": sorted(self.biomarkers),
         }
         pprint.pp(config)
 
@@ -220,7 +237,7 @@ class MultimodalUKBReader:
             if bio_x is None:
                 continue
             bio_x_dict[modality] = bio_x
-            mod_m = np.full_like(mod_t, fill_value=modality.value)
+            mod_m = np.full_like(mod_t, fill_value=self.biomarker2idx[modality])
             bio_t_lst.append(mod_t)
             bio_m_lst.append(mod_m)
 

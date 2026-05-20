@@ -15,7 +15,7 @@ from delphi.data.ukb import (
 from delphi.experiment import BaseTrainer, Logger, TrainBaseConfig, seed_everything
 from delphi.log import Checkpointer
 from delphi.model.multimodal import DelphiM4, DelphiM4Config
-from delphi.multimodal import Modality, parse_panel
+from delphi.multimodal import parse_panel
 
 
 @dataclass
@@ -86,7 +86,6 @@ def train(cfg: TrainConfig):
             mean_dict = dict()
             std_dict = dict()
             for biomarker in cfg.biomarkers:
-                biomarker = Modality[biomarker.upper()]
                 mu, sigma = reader.biomarkers[biomarker].stats(train_pids)
                 mean_dict[biomarker] = mu
                 std_dict[biomarker] = sigma
@@ -130,6 +129,7 @@ def train(cfg: TrainConfig):
                 "projector": projector,
                 "input_size": Biomarker.input_size(biomarker),
             }
+        cfg.model.biomarker2idx = reader.biomarker2idx
     model = DelphiM4(cfg.model)
 
     backend = distributed.make_backend_from_args(cfg)
