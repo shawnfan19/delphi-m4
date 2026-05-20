@@ -2,10 +2,17 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 import yaml
 
 
 class UKBDatabase:
+    """Reads UKB tabular data from a parquet conversion of the .tab file.
+
+    The parquet at `parquet_path` is the authoritative source. The per-FID .txt
+    extracts under `root/tab/` are retained for reference but unused.
+    """
+
     VISITS = ["birth", "init_assess", "1st_repeat_assess", "img", "1st_repeat_img"]
     _ASSESS_INSTANCE = {
         "init_assess": 0,
@@ -14,26 +21,28 @@ class UKBDatabase:
         "1st_repeat_img": 3,
     }
 
-    def __init__(self, root: str | Path):
+    def __init__(self, root: str | Path, parquet_path: str | Path | None = None):
         self.root = Path(root)
-        self._tab_dir = self.root / "tab"
-        self._pheno: dict[str, Path] | None = None
+        self.parquet_path = (
+            Path(parquet_path) if parquet_path else self.root / "tab.parquet"
+        )
+        self._schema_cols: list[str] = pq.ParquetFile(
+            self.parquet_path
+        ).schema_arrow.names
+        self._fid_cache: dict[str, pd.DataFrame] = {}
         self._assess_age: pd.DataFrame | None = None
         self._long_assess_age: pd.Series | None = None
 
-    def _pheno_index(self) -> dict[str, Path]:
-        if self._pheno is None:
-            self._pheno = {
-                f.stem.split("_")[-1]: f
-                for f in self._tab_dir.rglob("*")
-                if f.is_file()
-            }
-        return self._pheno
-
     def load_fid(self, fid: str | int) -> pd.DataFrame:
-        return pd.read_csv(
-            self._pheno_index()[str(fid)], delimiter="\t", index_col="f.eid"
-        )
+        fid = str(fid)
+        if fid in self._fid_cache:
+            return self._fid_cache[fid]
+        cols = [c for c in self._schema_cols if c.startswith(f"f.{fid}.")]
+        df = pq.read_table(self.parquet_path, columns=["f.eid", *cols]).to_pandas()
+        df["f.eid"] = pd.to_numeric(df["f.eid"]).astype("int64")
+        df = df.set_index("f.eid")
+        self._fid_cache[fid] = df
+        return df
 
     def load_coding(self, scheme: int) -> pd.DataFrame:
         path = self.root / "coding" / f"{scheme}.txt"
@@ -63,7 +72,9 @@ class UKBDatabase:
                 index=assess_date.index, columns=self.VISITS, dtype=float
             )
             for col in self.VISITS:
-                dt = pd.to_datetime(assess_date[col], format="%Y-%m-%d")
+                dt = pd.to_datetime(
+                    assess_date[col], format="%Y-%m-%d", errors="coerce"
+                )
                 assess_age[col] = (dt - mob["year_month"]).dt.days.astype(float)
             self._assess_age = assess_age
         return self._assess_age
@@ -81,7 +92,8 @@ class UKBDatabase:
     ) -> pd.DataFrame:
         markers = []
         for fid in fids:
-            marker = index_by_visit(self.load_fid(fid), visits)
+            df = self.load_fid(fid).apply(pd.to_numeric, errors="coerce")
+            marker = index_by_visit(df, visits)
             marker.name = name_by_fid[fid] if name_by_fid else str(fid)
             markers.append(marker)
         return pd.concat(markers, axis=1)
