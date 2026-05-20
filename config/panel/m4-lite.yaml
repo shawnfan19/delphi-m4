@@ -1,21 +1,23 @@
-- prs
-- wbc
-- lipid
-- lft
-- renal
-- hba1c
-- crp
-- urate
-- cysc
-- apo
-- vitd
-- dht
-- shbg
-- igf1
-- nak
-- creat
-- albu
-- meds
-- ops
-- prescriptions
-- summary_ops
+biomarkers:
+  - prs
+  - wbc
+  - lipid
+  - lft
+  - renal
+  - hba1c
+  - crp
+  - urate
+  - cysc
+  - apo
+  - vitd
+  - dht
+  - shbg
+  - igf1
+  - nak
+  - creat
+  - albu
+expansion_packs:
+  - meds
+  - ops
+  - prescriptions
+  - summary_ops

@@ -44,11 +44,28 @@ def module_name(modality: Modality) -> str:
 def parse_panel(path):
     with open(path) as f:
         panel = yaml.safe_load(f)
-    biomarkers, expansion_packs = list(), list()
-    all_biomarkers = [m.name for m in Modality]
-    for modality in panel:
-        if modality.upper() in all_biomarkers:
-            biomarkers.append(modality)
-        else:
-            expansion_packs.append(modality)
-    return biomarkers or None, expansion_packs or None, Path(path).stem
+    if isinstance(panel, list):
+        raise ValueError(
+            f"panel {path} uses the old flat-list format; "
+            f"convert to {{biomarkers: [...], expansion_packs: [...]}}"
+        )
+    if not isinstance(panel, dict):
+        raise ValueError(f"panel {path} must be a YAML mapping")
+    allowed = {"biomarkers", "expansion_packs"}
+    unknown = set(panel) - allowed
+    if unknown:
+        raise ValueError(
+            f"unknown panel keys: {sorted(unknown)}; allowed: {sorted(allowed)}"
+        )
+    for key in allowed:
+        if key in panel and panel[key] is not None and not isinstance(panel[key], list):
+            raise ValueError(
+                f"panel key '{key}' must be a list, got {type(panel[key]).__name__}"
+            )
+    biomarkers = panel.get("biomarkers") or None
+    expansion_packs = panel.get("expansion_packs") or None
+    if biomarkers and expansion_packs:
+        overlap = sorted(set(biomarkers) & set(expansion_packs))
+        if overlap:
+            raise ValueError(f"name(s) appear in both lists: {overlap}")
+    return biomarkers, expansion_packs, Path(path).stem

@@ -1,17 +1,18 @@
-- wbc
-- lipid
-- lft
-- renal
-- hba1c
-- crp
-- urate
-- cysc
-- apo
-- vitd
-- dht
-- shbg
-- igf1
-- nak
-- creat
-- albu
-- prs
+biomarkers:
+  - wbc
+  - lipid
+  - lft
+  - renal
+  - hba1c
+  - crp
+  - urate
+  - cysc
+  - apo
+  - vitd
+  - dht
+  - shbg
+  - igf1
+  - nak
+  - creat
+  - albu
+  - prs
