@@ -1,25 +1,27 @@
 # +
+import os
+from pathlib import Path
 from typing import TypedDict
+
 import yaml
+from google.cloud import storage
 from sqlalchemy import (
-    create_engine,
-    select,
+    MetaData,
+    Table,
     and_,
-    or_,
     case,
+    create_engine,
     func,
     literal_column,
-    Table,
-    MetaData,
+    or_,
+    select,
 )
 from sqlalchemy.orm import declarative_base
-from google.cloud import storage
+from utils import DATA_BUCKET, PROJECT_ID, WORKSPACE_CDR, Client
 
-from utils import Client, WORKSPACE_CDR, DATA_BUCKET, PROJECT_ID
 # -
 
-from pathlib import Path
-import os
+
 CWD = Path(os.getcwd())
 CWD
 
@@ -35,23 +37,22 @@ class Biomarker(TypedDict):
         4122414: null # mg/L
 
     """
+
     id: list[int]
     unit: dict[int, float | None]
 
 
-engine = create_engine(f'bigquery://{WORKSPACE_CDR}')
+engine = create_engine(f"bigquery://{WORKSPACE_CDR}")
 metadata = MetaData()
-measurement = Table('measurement', metadata, schema=WORKSPACE_CDR, autoload_with=engine)
-concept = Table('concept', metadata, schema=WORKSPACE_CDR, autoload_with=engine)
-person = Table('person', metadata, schema=WORKSPACE_CDR, autoload_with=engine)
+measurement = Table("measurement", metadata, schema=WORKSPACE_CDR, autoload_with=engine)
+concept = Table("concept", metadata, schema=WORKSPACE_CDR, autoload_with=engine)
+person = Table("person", metadata, schema=WORKSPACE_CDR, autoload_with=engine)
 
 
-def create_unit_conversion_case(
-    unit_id2spec: dict
-):
+def create_unit_conversion_case(unit_id2spec: dict):
     """
     Generates a reusable SQLAlchemy CASE expression for unit conversion.
-    
+
     Instead of a string, this returns a composable SQL expression object.
     """
     whens = {}
@@ -69,49 +70,39 @@ def create_unit_conversion_case(
         # If no conversions, just return the original value
         return measurement.c.value_as_number
     return case(
-        whens,
-        value=measurement.c.unit_concept_id,
-        else_=measurement.c.value_as_number
+        whens, value=measurement.c.unit_concept_id, else_=measurement.c.value_as_number
     )
 
 
-def create_biomarker_name_case(biomarkers: dict[str: Biomarker]):
+def create_biomarker_name_case(biomarkers: dict[str:Biomarker]):
     whens = list()
     for name, biomarker in biomarkers.items():
-        condition = measurement.c.measurement_concept_id.in_(
-            biomarker["id"]
-        )
+        condition = measurement.c.measurement_concept_id.in_(biomarker["id"])
         whens.append((condition, name))
 
     return case(*whens)
 
 
-def create_biomarker_panel_query(biomarkers: dict[str: Biomarker]):
+def create_biomarker_panel_query(biomarkers: dict[str:Biomarker]):
 
     wheres = list()
     for biomarker in biomarkers.values():
         wheres.append(
             and_(
-                measurement.c.measurement_concept_id.in_(
-                    biomarker["id"]
-                ),
-                measurement.c.unit_concept_id.in_(
-                    list(biomarker["unit"].keys())
-                )
+                measurement.c.measurement_concept_id.in_(biomarker["id"]),
+                measurement.c.unit_concept_id.in_(list(biomarker["unit"].keys())),
             )
         )
 
     conversion_whens = list()
     for name, biomarker in biomarkers.items():
-        unit_conversion_case = create_unit_conversion_case(biomarker['unit'])
-        condition = measurement.c.measurement_concept_id.in_(
-            biomarker["id"]
-        )
+        unit_conversion_case = create_unit_conversion_case(biomarker["unit"])
+        condition = measurement.c.measurement_concept_id.in_(biomarker["id"])
         conversion_whens.append((condition, unit_conversion_case))
 
     master_unit_conversion_case = case(
         *conversion_whens,
-        else_=measurement.c.value_as_number  # Fallback for any other measurement
+        else_=measurement.c.value_as_number,  # Fallback for any other measurement
     )
 
     biomarker_name = create_biomarker_name_case(biomarkers)
@@ -121,9 +112,9 @@ def create_biomarker_panel_query(biomarkers: dict[str: Biomarker]):
             measurement.c.person_id,
             measurement.c.visit_occurrence_id,
             func.date(measurement.c.measurement_date),
-            biomarker_name
+            biomarker_name,
         ],
-        order_by=measurement.c.measurement_date.desc()
+        order_by=measurement.c.measurement_date.desc(),
     )
 
     unit_concept = concept.alias("unit_concept")
@@ -136,7 +127,7 @@ def create_biomarker_panel_query(biomarkers: dict[str: Biomarker]):
             func.DATE_DIFF(
                 func.date(measurement.c.measurement_date),
                 func.date(person.c.birth_datetime),
-                literal_column("DAY")
+                literal_column("DAY"),
             ).label("age_in_days"),
             measurement.c.measurement_concept_id,
             meas_concept.c.concept_name.label("concept_name"),
@@ -145,17 +136,15 @@ def create_biomarker_panel_query(biomarkers: dict[str: Biomarker]):
             measurement.c.unit_concept_id,
             unit_concept.c.concept_name.label("unit_name"),
             biomarker_name.label("biomarker"),
-            row_number.label("rn")
+            row_number.label("rn"),
         )
         .join(person, measurement.c.person_id == person.c.person_id)
         .join(unit_concept, measurement.c.unit_concept_id == unit_concept.c.concept_id)
-        .join(meas_concept, measurement.c.measurement_concept_id == meas_concept.c.concept_id)
-        .where(
-            and_(
-                measurement.c.value_as_number.is_not(None),
-                or_(*wheres)
-            )
+        .join(
+            meas_concept,
+            measurement.c.measurement_concept_id == meas_concept.c.concept_id,
         )
+        .where(and_(measurement.c.value_as_number.is_not(None), or_(*wheres)))
         .cte("biomarker")
     )
 
@@ -186,16 +175,10 @@ def create_biomarker_panel_query(biomarkers: dict[str: Biomarker]):
         biomarker_cte.c.age_in_days,
     ]
     final_query = (
-        select(
-            *group_cols,
-            *biomarker_cols
-        )
+        select(*group_cols, *biomarker_cols)
         .where(biomarker_cte.c.rn == 1)
         .group_by(*group_cols)
-        .order_by(
-            biomarker_cte.c.person_id,
-            biomarker_cte.c.age_in_days
-        )
+        .order_by(biomarker_cte.c.person_id, biomarker_cte.c.age_in_days)
     )
 
     return final_query
@@ -203,7 +186,6 @@ def create_biomarker_panel_query(biomarkers: dict[str: Biomarker]):
 
 # -
 client = Client(dataset=WORKSPACE_CDR)
-
 
 
 with open(CWD.parent / "biomarker.yaml", "r") as f:
@@ -215,12 +197,12 @@ for key, value in _biomarker_dict.items():
 
 biomarker_dict
 
-# get availability of all biomarkers 
+# get availability of all biomarkers
 biomarker_count = dict()
 for name, biomarker in biomarker_dict.items():
     ids = biomarker["id"]
     ids_str = ", ".join(str(i) for i in ids)
-    
+
     q = f"""
     SELECT concept_id, domain_id, name, est_count, rollup_count
     FROM   `cb_criteria`
@@ -230,7 +212,7 @@ for name, biomarker in biomarker_dict.items():
       AND  is_group = 0
       AND  concept_id in ({ids_str});
     """
-    
+
     df = client.run(q)
     est_ct = df["est_count"].iloc[0]
     biomarker_count[name] = int(est_ct)
@@ -240,7 +222,7 @@ biomarker_count = {k: int(v) for k, v in biomarker_count.items()}
 with open(CWD / "biomarker_availability.yaml", "w") as f:
     yaml.dump(biomarker_count, f)
 
-with open(CWD.parent / "aou_panel.yaml", "r") as f:
+with open(CWD.parent / "panel" / "aou.yaml", "r") as f:
     panels = yaml.safe_load(f)
 panels
 
@@ -265,8 +247,7 @@ for panel_name, biomarker_list in panels.items():
     # To see the generated SQL (the equivalent of a "dry run"):
     # Use the BigQuery dialect to compile it into Google Standard SQL
     compiled_q = q.compile(
-        dialect=engine.dialect,
-        compile_kwargs={"literal_binds": True}
+        dialect=engine.dialect, compile_kwargs={"literal_binds": True}
     )
 
     df = client.run(str(compiled_q))
@@ -283,5 +264,3 @@ for panel_name, biomarker_list in panels.items():
 # -
 
 DATA_BUCKET
-
-

@@ -1,0 +1,478 @@
+apolipoprotein_a:
+  visits: [init_assess, 1st_repeat_assess]
+  biomarkers: [apolipoprotein_a]
+
+apolipoprotein_b:
+  visits: [init_assess, 1st_repeat_assess]
+  biomarkers: [apolipoprotein_b]
+
+c_reactive_protein:
+  visits: [init_assess, 1st_repeat_assess]
+  biomarkers: [c_reactive_protein]
+
+cystatin_c:
+  visits: [init_assess, 1st_repeat_assess]
+  biomarkers: [cystatin_c]
+
+gamma_glutamyltransferase:
+  visits: [init_assess, 1st_repeat_assess]
+  biomarkers: [gamma_glutamyltransferase]
+
+glycated_haemoglobin:
+  visits: [init_assess, 1st_repeat_assess]
+  biomarkers: [glycated_haemoglobin]
+
+igf1:
+  visits: [init_assess, 1st_repeat_assess]
+  biomarkers: [igf1]
+
+lipid_panel:
+  visits: [init_assess, 1st_repeat_assess]
+  biomarkers: [cholesterol, ldl_direct, hdl, triglycerides]
+
+lipoprotein_a:
+  visits: [init_assess, 1st_repeat_assess]
+  biomarkers: [lipoprotein_a]
+
+lft_panel:
+  visits: [init_assess, 1st_repeat_assess]
+  biomarkers:
+    - alanine_aminotransferase
+    - aspartate_aminotransferase
+    - alkaline_phosphatase
+    - total_bilirubin
+    - direct_bilirubin
+    - albumin
+    - total_protein
+
+oestradiol:
+  visits: [init_assess, 1st_repeat_assess]
+  biomarkers: [oestradiol]
+
+renal_panel:
+  visits: [init_assess, 1st_repeat_assess]
+  biomarkers:
+    - albumin
+    - calcium
+    - creatinine
+    - glucose
+    - phosphate
+    - urea
+
+rheumatoid_factor:
+  visits: [init_assess, 1st_repeat_assess]
+  biomarkers: [rheumatoid_factor]
+
+shbg:
+  visits: [init_assess, 1st_repeat_assess]
+  biomarkers: [shbg]
+
+testosterone:
+  visits: [init_assess, 1st_repeat_assess]
+  biomarkers: [testosterone]
+
+urate:
+  visits: [init_assess, 1st_repeat_assess]
+  biomarkers: [urate]
+
+vitamin_d:
+  visits: [init_assess, 1st_repeat_assess]
+  biomarkers: [vitamin_d]
+
+urine_creatinine:
+  visits: [init_assess, 1st_repeat_assess]
+  biomarkers: [urine_creatinine]
+
+urine_microalbumin:
+  visits: [init_assess, 1st_repeat_assess]
+  biomarkers: [urine_microalbumin]
+
+urine_potassium:
+  visits: [init_assess, 1st_repeat_assess]
+  biomarkers: [urine_potassium]
+
+urine_sodium:
+  visits: [init_assess, 1st_repeat_assess]
+  biomarkers: [urine_sodium]
+
+cbc:
+  visits: [init_assess, 1st_repeat_assess]
+  biomarkers:
+    - basophill_count
+    - basophill_percentage
+    - eosinophill_count
+    - eosinophill_percentage
+    - haematocrit_percentage
+    - haemoglobin_concentration
+    - lymphocyte_count
+    - lymphocyte_percentage
+    - mean_corpuscular_haemoglobin
+    - mean_corpuscular_haemoglobin_concentration
+    - mean_corpuscular_volume
+    - mean_platelet_volume
+    - monocyte_count
+    - monocyte_percentage
+    - neutrophill_count
+    - neutrophill_percentage
+    - platelet_count
+    - red_blood_cell_count
+    - red_blood_cell_distribution_width
+    - white_blood_cell_count
+
+cbc_ukb:
+  visits: [init_assess, 1st_repeat_assess, img]
+  biomarkers:
+    - basophill_count
+    - basophill_percentage
+    - eosinophill_count
+    - eosinophill_percentage
+    - haematocrit_percentage
+    - haemoglobin_concentration
+    - high_light_scatter_reticulocyte_count
+    - high_light_scatter_reticulocyte_percentage
+    - immature_reticulocyte_fraction
+    - lymphocyte_count
+    - lymphocyte_percentage
+    - mean_corpuscular_haemoglobin
+    - mean_corpuscular_haemoglobin_concentration
+    - mean_corpuscular_volume
+    - mean_platelet_volume
+    - mean_reticulocyte_volume
+    - mean_sphered_cell_volume
+    - monocyte_count
+    - monocyte_percentage
+    - neutrophill_count
+    - neutrophill_percentage
+    - nucleated_red_blood_cell_count
+    - nucleated_red_blood_cell_percentage
+    - platelet_count
+    - platelet_crit
+    - platelet_distribution_width
+    - red_blood_cell_count
+    - red_blood_cell_distribution_width
+    - reticulocyte_count
+    - reticulocyte_percentage
+    - white_blood_cell_count
+
+telomere:
+  visits: [init_assess, 1st_repeat_assess, img]
+  biomarkers: [telomere_length]
+
+diet:
+  visits: [init_assess, 1st_repeat_assess, img, 1st_repeat_img]
+  biomarkers:
+    - beef
+    - bread
+    - cereal
+    - coffee
+    - cooked_vegetable
+    - dried_fruit
+    - fresh_fruit
+    - lamb
+    - non_oily_fish
+    - oily_fish
+    - pork
+    - poultry
+    - processed_meat
+    - salad
+    - tea
+    - water
+
+met:
+  visits: [init_assess, 1st_repeat_assess, img, 1st_repeat_img]
+  biomarkers: [walking, moderate, vigorous]
+
+prs:
+  visits: [birth]
+  biomarkers:
+    - alzheimer
+    - amd
+    - asthma
+    - atrial_fibrillation
+    - bipolar_disorder
+    - body_mass_index
+    - bone_mineral_density
+    - bowel_cancer
+    - breast_cancer
+    - cad
+    - cardiovascular_disease
+    - coeliac_disease
+    - crohns
+    - epithelial_ovarian_cancer
+    - glaucoma
+    - glycated_haemoglobin_prs
+    - hdl_prs
+    - height
+    - hypertension
+    - intraocular_pressure
+    - ischaemic_stroke
+    - ldl
+    - lupus
+    - melanoma
+    - menopause
+    - multiple_sclerosis
+    - osteoporosis
+    - parkinsons
+    - prostate_cancer
+    - psoriasis
+    - rheumatoid_arthritis
+    - schizophrenia
+    - t1d
+    - t2d
+    - ulcerative_colitis
+    - venous_thromboembolic_disease
+
+nmr:
+  visits: [init_assess, 1st_repeat_assess]
+  biomarkers:
+    - glucose_lactate
+    - spectrometer_corrected_alanine
+    - total_cholesterol
+    - total_cholesterol_minus_hdl_c
+    - remnant_cholesterol_non_hdl_non_ldl_cholesterol
+    - vldl_cholesterol
+    - clinical_ldl_cholesterol
+    - ldl_cholesterol
+    - hdl_cholesterol
+    - total_triglycerides
+    - triglycerides_in_vldl
+    - triglycerides_in_ldl
+    - triglycerides_in_hdl
+    - total_phospholipids_in_lipoprotein_particles
+    - phospholipids_in_vldl
+    - phospholipids_in_ldl
+    - phospholipids_in_hdl
+    - total_esterified_cholesterol
+    - cholesteryl_esters_in_vldl
+    - cholesteryl_esters_in_ldl
+    - cholesteryl_esters_in_hdl
+    - total_free_cholesterol
+    - free_cholesterol_in_vldl
+    - free_cholesterol_in_ldl
+    - free_cholesterol_in_hdl
+    - total_lipids_in_lipoprotein_particles
+    - total_lipids_in_vldl
+    - total_lipids_in_ldl
+    - total_lipids_in_hdl
+    - total_concentration_of_lipoprotein_particles
+    - concentration_of_vldl_particles
+    - concentration_of_ldl_particles
+    - concentration_of_hdl_particles
+    - average_diameter_for_vldl_particles
+    - average_diameter_for_ldl_particles
+    - average_diameter_for_hdl_particles
+    - phosphoglycerides
+    - triglycerides_to_phosphoglycerides_ratio
+    - total_cholines
+    - phosphatidylcholines
+    - sphingomyelins
+    - apolipoprotein_b_nmr
+    - apolipoprotein_a1
+    - apolipoprotein_b_to_apolipoprotein_a1_ratio
+    - total_fatty_acids
+    - degree_of_unsaturation
+    - omega_3_fatty_acids
+    - omega_6_fatty_acids
+    - polyunsaturated_fatty_acids
+    - monounsaturated_fatty_acids
+    - saturated_fatty_acids
+    - linoleic_acid
+    - docosahexaenoic_acid
+    - omega_3_fatty_acids_to_total_fatty_acids_percentage
+    - omega_6_fatty_acids_to_total_fatty_acids_percentage
+    - polyunsaturated_fatty_acids_to_total_fatty_acids_percentage
+    - monounsaturated_fatty_acids_to_total_fatty_acids_percentage
+    - saturated_fatty_acids_to_total_fatty_acids_percentage
+    - linoleic_acid_to_total_fatty_acids_percentage
+    - docosahexaenoic_acid_to_total_fatty_acids_percentage
+    - polyunsaturated_fatty_acids_to_monounsaturated_fatty_acids_ratio
+    - omega_6_fatty_acids_to_omega_3_fatty_acids_ratio
+    - alanine
+    - glutamine
+    - glycine
+    - histidine
+    - total_concentration_of_branched_chain_amino_acids_leucine_and_isoleucine_and_valine
+    - isoleucine
+    - leucine
+    - valine
+    - phenylalanine
+    - tyrosine
+    - glucose_nmr
+    - lactate
+    - pyruvate
+    - citrate
+    - 3_hydroxybutyrate
+    - acetate
+    - acetoacetate
+    - acetone
+    - creatinine_nmr
+    - albumin_nmr
+    - glycoprotein_acetyls
+    - concentration_of_chylomicrons_and_extremely_large_vldl_particles
+    - total_lipids_in_chylomicrons_and_extremely_large_vldl
+    - phospholipids_in_chylomicrons_and_extremely_large_vldl
+    - cholesterol_in_chylomicrons_and_extremely_large_vldl
+    - cholesteryl_esters_in_chylomicrons_and_extremely_large_vldl
+    - free_cholesterol_in_chylomicrons_and_extremely_large_vldl
+    - triglycerides_in_chylomicrons_and_extremely_large_vldl
+    - concentration_of_very_large_vldl_particles
+    - total_lipids_in_very_large_vldl
+    - phospholipids_in_very_large_vldl
+    - cholesterol_in_very_large_vldl
+    - cholesteryl_esters_in_very_large_vldl
+    - free_cholesterol_in_very_large_vldl
+    - triglycerides_in_very_large_vldl
+    - concentration_of_large_vldl_particles
+    - total_lipids_in_large_vldl
+    - phospholipids_in_large_vldl
+    - cholesterol_in_large_vldl
+    - cholesteryl_esters_in_large_vldl
+    - free_cholesterol_in_large_vldl
+    - triglycerides_in_large_vldl
+    - concentration_of_medium_vldl_particles
+    - total_lipids_in_medium_vldl
+    - phospholipids_in_medium_vldl
+    - cholesterol_in_medium_vldl
+    - cholesteryl_esters_in_medium_vldl
+    - free_cholesterol_in_medium_vldl
+    - triglycerides_in_medium_vldl
+    - concentration_of_small_vldl_particles
+    - total_lipids_in_small_vldl
+    - phospholipids_in_small_vldl
+    - cholesterol_in_small_vldl
+    - cholesteryl_esters_in_small_vldl
+    - free_cholesterol_in_small_vldl
+    - triglycerides_in_small_vldl
+    - concentration_of_very_small_vldl_particles
+    - total_lipids_in_very_small_vldl
+    - phospholipids_in_very_small_vldl
+    - cholesterol_in_very_small_vldl
+    - cholesteryl_esters_in_very_small_vldl
+    - free_cholesterol_in_very_small_vldl
+    - triglycerides_in_very_small_vldl
+    - concentration_of_idl_particles
+    - total_lipids_in_idl
+    - phospholipids_in_idl
+    - cholesterol_in_idl
+    - cholesteryl_esters_in_idl
+    - free_cholesterol_in_idl
+    - triglycerides_in_idl
+    - concentration_of_large_ldl_particles
+    - total_lipids_in_large_ldl
+    - phospholipids_in_large_ldl
+    - cholesterol_in_large_ldl
+    - cholesteryl_esters_in_large_ldl
+    - free_cholesterol_in_large_ldl
+    - triglycerides_in_large_ldl
+    - concentration_of_medium_ldl_particles
+    - total_lipids_in_medium_ldl
+    - phospholipids_in_medium_ldl
+    - cholesterol_in_medium_ldl
+    - cholesteryl_esters_in_medium_ldl
+    - free_cholesterol_in_medium_ldl
+    - triglycerides_in_medium_ldl
+    - concentration_of_small_ldl_particles
+    - total_lipids_in_small_ldl
+    - phospholipids_in_small_ldl
+    - cholesterol_in_small_ldl
+    - cholesteryl_esters_in_small_ldl
+    - free_cholesterol_in_small_ldl
+    - triglycerides_in_small_ldl
+    - concentration_of_very_large_hdl_particles
+    - total_lipids_in_very_large_hdl
+    - phospholipids_in_very_large_hdl
+    - cholesterol_in_very_large_hdl
+    - cholesteryl_esters_in_very_large_hdl
+    - free_cholesterol_in_very_large_hdl
+    - triglycerides_in_very_large_hdl
+    - concentration_of_large_hdl_particles
+    - total_lipids_in_large_hdl
+    - phospholipids_in_large_hdl
+    - cholesterol_in_large_hdl
+    - cholesteryl_esters_in_large_hdl
+    - free_cholesterol_in_large_hdl
+    - triglycerides_in_large_hdl
+    - concentration_of_medium_hdl_particles
+    - total_lipids_in_medium_hdl
+    - phospholipids_in_medium_hdl
+    - cholesterol_in_medium_hdl
+    - cholesteryl_esters_in_medium_hdl
+    - free_cholesterol_in_medium_hdl
+    - triglycerides_in_medium_hdl
+    - concentration_of_small_hdl_particles
+    - total_lipids_in_small_hdl
+    - phospholipids_in_small_hdl
+    - cholesterol_in_small_hdl
+    - cholesteryl_esters_in_small_hdl
+    - free_cholesterol_in_small_hdl
+    - triglycerides_in_small_hdl
+    - phospholipids_to_total_lipids_in_chylomicrons_and_extremely_large_vldl_percentage
+    - cholesterol_to_total_lipids_in_chylomicrons_and_extremely_large_vldl_percentage
+    - cholesteryl_esters_to_total_lipids_in_chylomicrons_and_extremely_large_vldl_percentage
+    - free_cholesterol_to_total_lipids_in_chylomicrons_and_extremely_large_vldl_percentage
+    - triglycerides_to_total_lipids_in_chylomicrons_and_extremely_large_vldl_percentage
+    - phospholipids_to_total_lipids_in_very_large_vldl_percentage
+    - cholesterol_to_total_lipids_in_very_large_vldl_percentage
+    - cholesteryl_esters_to_total_lipids_in_very_large_vldl_percentage
+    - free_cholesterol_to_total_lipids_in_very_large_vldl_percentage
+    - triglycerides_to_total_lipids_in_very_large_vldl_percentage
+    - phospholipids_to_total_lipids_in_large_vldl_percentage
+    - cholesterol_to_total_lipids_in_large_vldl_percentage
+    - cholesteryl_esters_to_total_lipids_in_large_vldl_percentage
+    - free_cholesterol_to_total_lipids_in_large_vldl_percentage
+    - triglycerides_to_total_lipids_in_large_vldl_percentage
+    - phospholipids_to_total_lipids_in_medium_vldl_percentage
+    - cholesterol_to_total_lipids_in_medium_vldl_percentage
+    - cholesteryl_esters_to_total_lipids_in_medium_vldl_percentage
+    - free_cholesterol_to_total_lipids_in_medium_vldl_percentage
+    - triglycerides_to_total_lipids_in_medium_vldl_percentage
+    - phospholipids_to_total_lipids_in_small_vldl_percentage
+    - cholesterol_to_total_lipids_in_small_vldl_percentage
+    - cholesteryl_esters_to_total_lipids_in_small_vldl_percentage
+    - free_cholesterol_to_total_lipids_in_small_vldl_percentage
+    - triglycerides_to_total_lipids_in_small_vldl_percentage
+    - phospholipids_to_total_lipids_in_very_small_vldl_percentage
+    - cholesterol_to_total_lipids_in_very_small_vldl_percentage
+    - cholesteryl_esters_to_total_lipids_in_very_small_vldl_percentage
+    - free_cholesterol_to_total_lipids_in_very_small_vldl_percentage
+    - triglycerides_to_total_lipids_in_very_small_vldl_percentage
+    - phospholipids_to_total_lipids_in_idl_percentage
+    - cholesterol_to_total_lipids_in_idl_percentage
+    - cholesteryl_esters_to_total_lipids_in_idl_percentage
+    - free_cholesterol_to_total_lipids_in_idl_percentage
+    - triglycerides_to_total_lipids_in_idl_percentage
+    - phospholipids_to_total_lipids_in_large_ldl_percentage
+    - cholesterol_to_total_lipids_in_large_ldl_percentage
+    - cholesteryl_esters_to_total_lipids_in_large_ldl_percentage
+    - free_cholesterol_to_total_lipids_in_large_ldl_percentage
+    - triglycerides_to_total_lipids_in_large_ldl_percentage
+    - phospholipids_to_total_lipids_in_medium_ldl_percentage
+    - cholesterol_to_total_lipids_in_medium_ldl_percentage
+    - cholesteryl_esters_to_total_lipids_in_medium_ldl_percentage
+    - free_cholesterol_to_total_lipids_in_medium_ldl_percentage
+    - triglycerides_to_total_lipids_in_medium_ldl_percentage
+    - phospholipids_to_total_lipids_in_small_ldl_percentage
+    - cholesterol_to_total_lipids_in_small_ldl_percentage
+    - cholesteryl_esters_to_total_lipids_in_small_ldl_percentage
+    - free_cholesterol_to_total_lipids_in_small_ldl_percentage
+    - triglycerides_to_total_lipids_in_small_ldl_percentage
+    - phospholipids_to_total_lipids_in_very_large_hdl_percentage
+    - cholesterol_to_total_lipids_in_very_large_hdl_percentage
+    - cholesteryl_esters_to_total_lipids_in_very_large_hdl_percentage
+    - free_cholesterol_to_total_lipids_in_very_large_hdl_percentage
+    - triglycerides_to_total_lipids_in_very_large_hdl_percentage
+    - phospholipids_to_total_lipids_in_large_hdl_percentage
+    - cholesterol_to_total_lipids_in_large_hdl_percentage
+    - cholesteryl_esters_to_total_lipids_in_large_hdl_percentage
+    - free_cholesterol_to_total_lipids_in_large_hdl_percentage
+    - triglycerides_to_total_lipids_in_large_hdl_percentage
+    - phospholipids_to_total_lipids_in_medium_hdl_percentage
+    - cholesterol_to_total_lipids_in_medium_hdl_percentage
+    - cholesteryl_esters_to_total_lipids_in_medium_hdl_percentage
+    - free_cholesterol_to_total_lipids_in_medium_hdl_percentage
+    - triglycerides_to_total_lipids_in_medium_hdl_percentage
+    - phospholipids_to_total_lipids_in_small_hdl_percentage
+    - cholesterol_to_total_lipids_in_small_hdl_percentage
+    - cholesteryl_esters_to_total_lipids_in_small_hdl_percentage
+    - free_cholesterol_to_total_lipids_in_small_hdl_percentage
+    - triglycerides_to_total_lipids_in_small_hdl_percentage

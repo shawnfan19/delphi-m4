@@ -74,14 +74,35 @@ class UKBDatabase:
         return self._long_assess_age
 
     def load_biomarker_df(
-        self, fids: list[int | str], visits: list[str]
+        self,
+        fids: list[int | str],
+        visits: list[str],
+        name_by_fid: dict[int | str, str] | None = None,
     ) -> pd.DataFrame:
         markers = []
         for fid in fids:
             marker = index_by_visit(self.load_fid(fid), visits)
-            marker.name = str(fid)
+            marker.name = name_by_fid[fid] if name_by_fid else str(fid)
             markers.append(marker)
         return pd.concat(markers, axis=1)
+
+
+def load_ukb_biomarker_fids(data_dir: Path) -> dict[str, int]:
+    """Merge biomarker.yaml (nested ukb field) + biomarker_ukb/*.yaml (flat) into name->fid."""
+    fids: dict[str, int] = {}
+    with open(data_dir / "biomarker.yaml") as f:
+        for name, entry in yaml.safe_load(f).items():
+            fids[name] = entry["ukb"]
+    for path in sorted((data_dir / "biomarker_ukb").glob("*.yaml")):
+        with open(path) as f:
+            entries = yaml.safe_load(f) or {}
+        duplicates = set(entries) & set(fids)
+        if duplicates:
+            raise ValueError(
+                f"{path.name}: name(s) defined elsewhere too: {duplicates}"
+            )
+        fids.update(entries)
+    return fids
 
 
 def index_by_visit(df: pd.DataFrame, visits: list[str]) -> pd.Series:

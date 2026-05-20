@@ -6,7 +6,7 @@ cystatin_c:
   - cystatin_c
 gamma_glutamyltransferase:
   - gamma_glutamyltransferase
-hba1c:
+glycated_haemoglobin:
   - glycated_haemoglobin
 igf1:
   - igf1
