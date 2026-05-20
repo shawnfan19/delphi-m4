@@ -250,10 +250,9 @@ def finetune(cfg: FinetuneConfig):
             "biomarkers": all_biomarkers,
             "expansion_packs": pretrain_cfg["expansion_packs"],
         },
-        "token_transform_args": token_transform.config,
-        "biomarker_transform_args": val_bio_transform.config,
-        "biomarker_stats": val_bio_transform.stats,
         "tokenizer": train_ds.tokenizer,
+        **token_transform.to_ckpt(),
+        **val_bio_transform.to_ckpt(),
     }
     checkpointer = Checkpointer(
         dump_dir=Path(cfg.ckpt_dir) / logger.run_name,

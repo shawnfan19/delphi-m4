@@ -112,6 +112,9 @@ class TokenTransform:
     def from_ckpt(cls, ckpt_dict: dict) -> "TokenTransform":
         return cls(**ckpt_dict["token_transform_args"])
 
+    def to_ckpt(self) -> dict:
+        return {"token_transform_args": self.config}
+
     def replace(self, **overrides) -> "TokenTransform":
         return type(self)(**{**self._init_args, **overrides})
 
@@ -195,6 +198,12 @@ class BiomarkerTransform:
             return None
         stats = ckpt_dict.get("biomarker_stats") or {}
         return cls(**args, mean=stats.get("mean"), std=stats.get("std"))
+
+    def to_ckpt(self) -> dict:
+        return {
+            "biomarker_transform_args": self.config,
+            "biomarker_stats": self.stats,
+        }
 
     def replace(self, **overrides) -> "BiomarkerTransform":
         return type(self)(**{**self._init_args, **overrides})

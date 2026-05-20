@@ -155,12 +155,11 @@ def train(cfg: TrainConfig):
             "biomarkers": cfg.biomarkers,
             "expansion_packs": cfg.expansion_packs,
         },
-        "token_transform_args": token_transform.config,
         "tokenizer": train_ds.tokenizer,
+        **token_transform.to_ckpt(),
     }
     if train_biomarker_transform is not None:
-        metadata["biomarker_transform_args"] = train_biomarker_transform.config
-        metadata["biomarker_stats"] = train_biomarker_transform.stats
+        metadata |= train_biomarker_transform.to_ckpt()
     checkpointer = Checkpointer(
         dump_dir=Path(cfg.ckpt_dir) / logger.run_name,
         backend=backend,

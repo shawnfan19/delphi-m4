@@ -112,8 +112,8 @@ def train(cfg: TrainConfig):
     metadata = {
         "config": asdict(cfg),
         "model_args": asdict(cfg.model),
-        "token_transform_args": train_token_transform.config,
         "tokenizer": train_ds.tokenizer,
+        **train_token_transform.to_ckpt(),
     }
     checkpointer = Checkpointer(
         dump_dir=Path(cfg.ckpt_dir) / logger.run_name,
