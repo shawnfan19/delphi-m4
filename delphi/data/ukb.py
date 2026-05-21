@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
+from delphi.data.reader import TokenReader
 from delphi.data.utils import (
     sort_by_time,
     update_tokenizer,
@@ -17,7 +18,7 @@ NO_EVENT_TOKEN = 1
 RESERVED_MOD_IDX = 2  # 0 = padding, 1 = event tokens
 
 
-class UKBReader:
+class UKBReader(TokenReader):
     base_dir = Path(DELPHI_DATA_DIR) / "ukb_real_data"
     bmi_keys = [
         "bmi_low",
@@ -41,21 +42,22 @@ class UKBReader:
 
         tokenizer_path = self.base_dir / "tokenizer.yaml"
         with open(tokenizer_path, "r") as f:
-            self.tokenizer = yaml.safe_load(f)
-        self.vocab_size = len(self.tokenizer)
+            tokenizer = yaml.safe_load(f)
 
         self.p2i = pd.read_csv(self.base_dir / "p2i.csv", index_col="pid")
-        self.start_pos = self.p2i["start_pos"].to_dict()
-        self.seq_len = self.p2i["seq_len"].to_dict()
+        start_pos = self.p2i["start_pos"].to_dict()
+        seq_len = self.p2i["seq_len"].to_dict()
 
         tokens_path = self.base_dir / "data.bin"
         time_steps_path = self.base_dir / "time.bin"
         if memmap:
-            self.tokens = np.memmap(tokens_path, dtype=np.uint32, mode="r")
-            self.timesteps = np.memmap(time_steps_path, dtype=np.uint32, mode="r")
+            tokens = np.memmap(tokens_path, dtype=np.uint32, mode="r")
+            timesteps = np.memmap(time_steps_path, dtype=np.uint32, mode="r")
         else:
-            self.tokens = np.fromfile(tokens_path, dtype=np.uint32)
-            self.timesteps = np.fromfile(time_steps_path, dtype=np.uint32)
+            tokens = np.fromfile(tokens_path, dtype=np.uint32)
+            timesteps = np.fromfile(time_steps_path, dtype=np.uint32)
+
+        super().__init__(tokens, timesteps, start_pos, seq_len, tokenizer)
 
     @classmethod
     def participants(cls, fold):
@@ -68,19 +70,6 @@ class UKBReader:
         """Load disease label metadata (ICD chapters, colors)."""
         return pd.read_csv(cls.base_dir / "labels_chapters_colours.csv")
 
-    @cached_property
-    def detokenizer(self):
-        return {v: k for k, v in self.tokenizer.items()}
-
-    def __getitem__(self, pid: int):
-
-        i = self.start_pos[pid]
-        l = self.seq_len[pid]
-        x_pid = self.tokens[i : i + l].astype(np.uint32)
-        t_pid = self.timesteps[i : i + l].astype(np.float32)
-
-        return x_pid, t_pid
-
     def is_female(self, pids: np.ndarray) -> np.ndarray:
         female_token = self.tokenizer["female"]
         out = np.zeros(len(pids), dtype=bool)
@@ -90,42 +79,10 @@ class UKBReader:
             out[i] = (self.tokens[start : start + length] == female_token).any()
         return out
 
-    def event_times(self, pids: np.ndarray) -> np.ndarray:
-        """N by V array of first-occurrence times; NaN where a token never occurs."""
-        out = np.full((len(pids), self.vocab_size), np.nan, dtype=np.float32)
-        for i, pid in enumerate(pids):
-            start = self.start_pos[int(pid)]
-            length = self.seq_len[int(pid)]
-            x = self.tokens[start : start + length]
-            t = self.timesteps[start : start + length].astype(np.float32)
-            uniq, first_idx = np.unique(x, return_index=True)
-            out[i, uniq] = t[first_idx]
-        return out
-
-    def participants_with_event(self, pids: np.ndarray, event: str) -> np.ndarray:
-        token = self.tokenizer[event]
-        pids_with_event = list()
-        for i, pid in enumerate(pids):
-            start = self.start_pos[int(pid)]
-            length = self.seq_len[int(pid)]
-            x = self.tokens[start : start + length]
-            if token in x:
-                pids_with_event.append(pid)
-        return np.array(pids_with_event)
-
     def recruitment_times(self, pids: np.ndarray) -> np.ndarray:
         event_times = self.event_times(pids)
         lifestyle_tokens = np.array([self.tokenizer[e] for e in self.lifestyle_keys])
         return np.nanmin(event_times[:, lifestyle_tokens], axis=1)
-
-    def exit_times(self, pids: np.ndarray) -> np.ndarray:
-        """N array of last token times (exit / censoring time)."""
-        out = np.empty(len(pids), dtype=np.float32)
-        for i, pid in enumerate(pids):
-            start = self.start_pos[int(pid)]
-            length = self.seq_len[int(pid)]
-            out[i] = self.timesteps[start + length - 1]
-        return out
 
 
 class MultimodalUKBReader:
