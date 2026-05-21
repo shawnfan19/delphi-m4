@@ -1,3 +1,4 @@
+# %%
 # +
 import os
 import numpy as np
@@ -25,7 +26,7 @@ subjects = df.person_id.values.astype(np.uint32)
 tokens = df.token.values.astype(np.uint32)
 timesteps = df.age_in_days.values.astype(np.uint32)
 
-os.makedirs("tmp")
+os.makedirs("tmp", exist_ok=True)
 tokens.astype(np.uint32).tofile("tmp/data.bin")
 timesteps.astype(np.uint32).tofile("tmp/time.bin")
 
@@ -58,3 +59,5 @@ blob_data.upload_from_filename("tmp/data.bin")
 blob_time.upload_from_filename("tmp/time.bin")
 
 
+
+# %%

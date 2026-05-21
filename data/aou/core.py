@@ -2,6 +2,7 @@
 import os
 import numpy as np
 import pandas as pd
+import yaml
 
 from utils import Client, WORKSPACE_CDR, DATA_BUCKET
 # -
@@ -18,9 +19,11 @@ client.list_columns("person")
 
 client.value_counts("person", "sex_at_birth_concept_id")
 
-client.list_columns("aou_death")
+client.list_columns("measurement_ext")
 
-client.unique("condition_occurrence", "vocabulary_id")
+client.unique("measurement_ext", "src_id")
+
+client.list_columns("measurement")
 
 # # disease tokens
 
@@ -41,6 +44,7 @@ LEFT JOIN
 INNER JOIN
     `person` p
     ON p.person_id = co.person_id
+ORDER BY person_id, age_in_days;
 """
 client.dry_run(query)
 
@@ -53,7 +57,6 @@ t = time.time() - t0
 print(f"query in {t} minutes")
 # -
 
-df = df.sort_values(by=["person_id", "age_in_days"])
 df.head()
 
 df.shape
@@ -218,6 +221,8 @@ condition_df.shape
 
 condition_df.person_id.unique().shape
 
+condition_df.to_parquet(f"gs://{DATA_BUCKET}/aou_uk/condition.parquet", index=False)
+
 # # sex
 
 query = """
@@ -243,6 +248,8 @@ sex_df.head()
 
 sex_df.shape
 
+sex_df.to_parquet(f"gs://{DATA_BUCKET}/aou_uk/sex.parquet", index=False)
+
 # # death
 
 query = """
@@ -264,23 +271,66 @@ death_df.head()
 
 death_df.shape
 
+death_df.to_parquet(f"gs://{DATA_BUCKET}/aou_uk/death.parquet", index=False)
+
+# # BMI
+
+query = """
+SELECT 
+    m.person_id, 
+    DATE_DIFF(DATE(m.measurement_date), DATE(p.birth_datetime), DAY) AS age_in_days,
+    CASE
+        WHEN m.value_as_number > 28 THEN 'bmi_high'
+        WHEN m.value_as_number > 22 THEN 'bmi_mid'
+        ELSE 'bmi_low'
+    END AS icd_code
+FROM 
+    `measurement` m
+INNER JOIN `person` p
+    ON p.person_id = m.person_id
+JOIN 
+    `measurement_ext` ext 
+    ON m.measurement_id = ext.measurement_id
+WHERE 
+    m.measurement_concept_id = 3038553      -- The standard OMOP concept for BMI
+    AND ext.src_id IN ("Staff Portal: HealthPro")  
+"""
+client.dry_run(query)
+
+bmi_df = client.run(query)
+
+bmi_df.person_id.value_counts().max()
+
+bmi_df.icd_code.value_counts()
+
+bmi_df.to_parquet(f"gs://{DATA_BUCKET}/aou_uk/bmi.parquet", index=False)
+
 # # combine everything
 
-df = pd.concat((condition_df, sex_df, death_df), ignore_index=True)
+df = pd.concat((condition_df, sex_df, bmi_df, death_df), ignore_index=True)
 df.shape
 
 df.head()
 
 df = df.sort_values(by=["person_id", "age_in_days"])
 
-df.head()
-
 # # tokenize
 
 import yaml
+import re 
 with open("tokenizer.yaml", "r") as f:
     tokenizer = yaml.safe_load(f)
-tokenizer = {event.split("_")[0].lower(): code for event, code in tokenizer.items()}
+event_prefix_re = re.compile(r"^([A-Za-z]\d{2})_")
+tokenizer = {
+    (
+        match.group(1).lower()
+        if (match := event_prefix_re.match(event))
+        else event.lower()
+    ): code
+    for event, code in tokenizer.items()
+}
+
+
 
 # ## identify tokens not found in UKB (ICD10CM tokens not in ICD10)
 
