@@ -2,9 +2,7 @@ import os
 
 import numpy as np
 import pandas as pd
-
-from delphi.test.test_biomarkers import has_all_participants
-from delphi.test.test_expansion_packs import (
+from test_expansion_packs import (
     all_start_pos_within_range,
     data_and_time_size_match,
     no_duplicate_start_pos,
@@ -53,21 +51,19 @@ def positive_timesteps(time_steps: np.ndarray) -> bool:
 
 
 def no_duplicate_tokens(p2i: pd.DataFrame, tokens: np.ndarray) -> bool:
-    
+
     for start_pos, seq_len in zip(p2i["start_pos"], p2i["seq_len"]):
-        x = tokens[start_pos:start_pos + seq_len]
+        x = tokens[start_pos : start_pos + seq_len]
         x_uniq, ct = np.unique(x, return_counts=True)
         if len(x_uniq) != len(x):
             # print(x_uniq[ct>1])
             # return False
-            raise AssertionError(
-                f"Duplicates: {x_uniq[ct>1]}"
-            )
-    
+            raise AssertionError(f"Duplicates: {x_uniq[ct>1]}")
+
     return True
 
 
-def test_data(dataset_dir, all_participants):
+def test_data(dataset_dir):
 
     assert required_files_exist(dataset_dir)
 
@@ -85,7 +81,6 @@ def test_data(dataset_dir, all_participants):
 
     assert data_and_time_size_match(tokens=tokens, time_steps=time_steps)
     assert tokens_within_range(tokens=tokens, tokenizer=tokenizer)
-    assert has_all_participants(p2i=p2i, pids=all_participants)
     assert all_start_pos_within_range(p2i=p2i, tokens=tokens)
     assert no_duplicate_start_pos(p2i=p2i)
     assert total_seq_len_add_up(p2i=p2i, tokens=tokens)

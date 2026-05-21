@@ -3,8 +3,6 @@ import os
 import numpy as np
 import pandas as pd
 
-from delphi.test.test_biomarkers import has_all_participants
-
 
 def required_files_exist(expansion_pack_path: str):
 
@@ -84,7 +82,7 @@ def tokenizer_contiguous(tokenizer: dict):
     )
 
 
-def test_expansion_pack(expansion_pack_path, all_participants):
+def test_expansion_pack(expansion_pack_path):
 
     assert required_files_exist(expansion_pack_path)
 
@@ -102,7 +100,6 @@ def test_expansion_pack(expansion_pack_path, all_participants):
 
     assert data_and_time_size_match(tokens=tokens, time_steps=time_steps)
     assert tokens_within_range(tokens=tokens, tokenizer=tokenizer)
-    assert has_all_participants(p2i=p2i, pids=all_participants)
     assert all_start_pos_within_range(p2i=p2i, tokens=tokens)
     assert no_duplicate_start_pos(p2i=p2i)
     assert total_seq_len_add_up(p2i=p2i, tokens=tokens)

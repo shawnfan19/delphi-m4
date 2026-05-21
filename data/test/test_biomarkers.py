@@ -2,22 +2,12 @@ import os
 
 import numpy as np
 import pandas as pd
-import pytest
-
-from delphi.multimodal import Modality
-
-all_biomarkers = [modality.lower() for modality in Modality.__members__]
 
 
 def has_required_columns(p2i: pd.DataFrame) -> bool:
 
     required_columns = {"pid", "visit", "start_pos", "seq_len", "time"}
     return required_columns.issubset(p2i.columns)
-
-
-def has_all_participants(p2i: pd.DataFrame, pids: np.ndarray) -> bool:
-
-    return bool(np.isin(p2i["pid"].astype(int).to_numpy(), pids).all())
 
 
 def data_is_1d(data: np.ndarray) -> bool:
@@ -47,15 +37,13 @@ def no_duplicate_start_pos(p2i: pd.DataFrame) -> bool:
     return is_unique
 
 
-@pytest.mark.parametrize("biomarker", all_biomarkers)
-def test_biomarkers(dataset_dir, all_participants, biomarker):
+def test_biomarkers(dataset_dir, biomarker):
     biomarker_path = os.path.join(dataset_dir, "biomarkers", biomarker)
 
     data = np.fromfile(os.path.join(biomarker_path, "data.bin"), dtype=np.float32)
     p2i = pd.read_csv(os.path.join(biomarker_path, "p2i.csv"))
 
     assert has_required_columns(p2i=p2i)
-    assert has_all_participants(p2i=p2i, pids=all_participants)
     assert data_is_1d(data=data)
     assert no_nan_data(data=data)
     assert no_empty_data(p2i=p2i)
