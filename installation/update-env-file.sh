@@ -9,10 +9,11 @@
 # In that case you also have to make the edits here or patch the file manually.
 
 ENVIR_FILE="environment.yml"
-conda env export --file "$ENVIR_FILE"
+EXE="${MAMBA_EXE:-$(command -v micromamba || command -v conda)}"
+"$EXE" env export > "$ENVIR_FILE"
 
-# Delete the path line.
-sed -i.deleteme "$ d" "$ENVIR_FILE"
+# Strip the absolute prefix path (env-specific, not portable).
+sed -i.deleteme '/^prefix:/d' "$ENVIR_FILE"
 # Set the package to a local installation.
 sed -i.deleteme "/template-project-name==/d" "$ENVIR_FILE"
 # .deleteme is a trick to make sed work the same way on both Linux and OSX.
