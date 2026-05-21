@@ -96,7 +96,7 @@ urine_sodium:
   biomarkers: [urine_sodium]
 
 cbc:
-  visits: [init_assess, 1st_repeat_assess]
+  visits: [init_assess, 1st_repeat_assess, img]
   biomarkers:
     - basophill_count
     - basophill_percentage
