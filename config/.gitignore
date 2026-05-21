@@ -5,3 +5,5 @@
 # (optional) still track some root‑level files:
 !.gitignore
 !README.md
+# Track panel configs
+!panel/*.yaml

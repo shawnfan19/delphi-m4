@@ -1,0 +1,21 @@
+biomarkers:
+  - apolipoprotein_a
+  - apolipoprotein_b
+  - cystatin_c
+  - gamma_glutamyltransferase
+  - glycated_haemoglobin
+  - igf1
+  - lipid_panel
+  - lft_panel
+  - oestradiol
+  - renal_panel
+  - rheumatoid_factor
+  - shbg
+  - testosterone
+  - urate
+  - vitamin_d
+  - urine_creatinine
+  - urine_microalbumin
+  - urine_potassium
+  - urine_sodium
+  - cbc
