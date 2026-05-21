@@ -29,19 +29,15 @@ class UKBDatabase:
         self._schema_cols: list[str] = pq.ParquetFile(
             self.parquet_path
         ).schema_arrow.names
-        self._fid_cache: dict[str, pd.DataFrame] = {}
         self._assess_age: pd.DataFrame | None = None
         self._long_assess_age: pd.Series | None = None
 
     def load_fid(self, fid: str | int) -> pd.DataFrame:
         fid = str(fid)
-        if fid in self._fid_cache:
-            return self._fid_cache[fid]
         cols = [c for c in self._schema_cols if c.startswith(f"f.{fid}.")]
         df = pq.read_table(self.parquet_path, columns=["f.eid", *cols]).to_pandas()
         df["f.eid"] = pd.to_numeric(df["f.eid"]).astype("int64")
         df = df.set_index("f.eid")
-        self._fid_cache[fid] = df
         return df
 
     def load_coding(self, scheme: int) -> pd.DataFrame:
@@ -121,7 +117,7 @@ def index_by_visit(df: pd.DataFrame, visits: list[str]) -> pd.Series:
     return (
         df.set_axis(visits, axis=1)
         .rename_axis(index="pid", columns="visit")
-        .stack(dropna=False)
+        .stack(future_stack=True)
     )
 
 
