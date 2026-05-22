@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from delphi.data.reader import TokenReader
+from delphi.data.reader import MultimodalReader, TokenReader
 from delphi.env import DELPHI_DATA_READ as DELPHI_DATA_DIR
 
 
@@ -210,3 +210,39 @@ class AOUExpansionPack(TokenReader):
             if pid in first.index:
                 result[i] = first.loc[pid]
         return result
+
+
+class MultimodalAOUReader(MultimodalReader):
+    token_reader: AOUReader
+
+    bmi_keys = AOUReader.bmi_keys
+    lifestyle_keys = AOUReader.lifestyle_keys
+    sex_keys = AOUReader.sex_keys
+
+    def __init__(
+        self,
+        expansion_packs: list[str] | None = None,
+        biomarkers: list[str] | dict[str, int] | None = None,
+    ):
+        bm_names, biomarker2idx = self._normalize_biomarkers(biomarkers)
+        super().__init__(
+            token_reader=AOUReader(),
+            expansion_packs={
+                n: AOUExpansionPack(name=n) for n in expansion_packs or []
+            },
+            biomarkers={n: AOUBiomarker(name=n) for n in bm_names},
+            biomarker2idx=biomarker2idx,
+        )
+
+    @classmethod
+    def participants(cls, fold):
+        return AOUReader.participants(fold)
+
+    def is_female(self, pids: np.ndarray) -> np.ndarray:
+        return self.token_reader.is_female(pids)
+
+    def event_times(self, pids: np.ndarray) -> np.ndarray:
+        return self.token_reader.event_times(pids)
+
+    def exit_times(self, pids: np.ndarray) -> np.ndarray:
+        return self.token_reader.exit_times(pids)
