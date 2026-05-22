@@ -11,8 +11,8 @@ import torch
 from tqdm import tqdm
 
 from delphi.data import MultimodalDataset
+from delphi.data.auto import multimodal_reader_cls
 from delphi.data.transform import BiomarkerTransform, TokenTransform
-from delphi.data.ukb import MultimodalUKBReader
 from delphi.env import DELPHI_CKPT_READ, DELPHI_CKPT_WRITE
 from delphi.eval import (
     ConcordanceCollator,
@@ -37,6 +37,7 @@ class TaskConfig(CliConfig):
     after_recruit: bool = False
     fname: None | str = None
     panel_name: None | str = None
+    fold: str = "val"
 
     def __post_init__(self):
         if self.panel:
@@ -68,7 +69,13 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 reader_args = ckpt_dict["reader_args"]
 
-val_pids = MultimodalUKBReader.participants("val")
+ReaderCls = multimodal_reader_cls()
+if args.after_recruit and not hasattr(ReaderCls, "recruitment_times"):
+    raise ValueError(
+        "--after_recruit requires recruitment_times on the reader; "
+        f"{ReaderCls.__name__} doesn't support it"
+    )
+val_pids = ReaderCls.participants(args.fold)
 
 # -
 biomarkers = list(
@@ -82,9 +89,7 @@ expansion_packs = list(
 # pass dict (not list) so reader uses the checkpoint's index assignments
 # instead of re-deriving them from sorted order
 biomarker2idx = {name: model.config.biomarker2idx[name] for name in biomarkers}
-reader = MultimodalUKBReader(
-    biomarkers=biomarker2idx, expansion_packs=expansion_packs, memmap=False
-)
+reader = ReaderCls(biomarkers=biomarker2idx, expansion_packs=expansion_packs)
 reader.describe()
 
 token_transform = TokenTransform.from_ckpt(ckpt_dict)
