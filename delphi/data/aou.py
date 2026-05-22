@@ -19,6 +19,7 @@ class AOUReader(TokenReader):
     ]
     lifestyle_keys = bmi_keys
     sex_keys = ["female", "male"]
+    FOLDS = ("val", "val_1", "val_2", "val_3", "val_4")
 
     def __init__(self):
 
@@ -43,14 +44,17 @@ class AOUReader(TokenReader):
 
     @classmethod
     def participants(cls, fold):
-        if fold != "all":
-            raise ValueError(
-                f"Unsupported fold {fold!r}; only 'all' is supported for now"
-            )
         pids = pd.read_parquet(cls.base_dir / "data.parquet", columns=["person_id"])[
             "person_id"
         ].unique()
-        return np.sort(pids)
+        pids = np.sort(pids)
+        if fold == "all":
+            return pids
+        if fold not in cls.FOLDS:
+            raise ValueError(
+                f"Unsupported fold {fold!r}; expected 'all' or one of {cls.FOLDS}"
+            )
+        return pids[cls.FOLDS.index(fold) :: len(cls.FOLDS)]
 
     def is_female(self, pids: np.ndarray) -> np.ndarray:
         female_token = self.tokenizer["female"]
@@ -223,6 +227,7 @@ class MultimodalAOUReader(MultimodalReader):
     bmi_keys = AOUReader.bmi_keys
     lifestyle_keys = AOUReader.lifestyle_keys
     sex_keys = AOUReader.sex_keys
+    FOLDS = AOUReader.FOLDS
 
     def __init__(
         self,
