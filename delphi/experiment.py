@@ -15,6 +15,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 import yaml
+from cloudpathlib import AnyPath
 from omegaconf import OmegaConf
 from typing_extensions import Self
 
@@ -458,9 +459,10 @@ class GenerateConfig(CliConfig):
 
 def load_ckpt(ckpt_path):
 
-    ckpt_path = Path(ckpt_path)
+    ckpt_path = AnyPath(ckpt_path)
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    ckpt_dict = torch.load(ckpt_path, map_location=device)
+    with ckpt_path.open("rb") as f:
+        ckpt_dict = torch.load(f, map_location=device)
     model_type = ckpt_dict["model_type"]
     if model_type == "delphi-2m":
         model_cfg_cls = Delphi2MConfig

@@ -1,13 +1,12 @@
 # +
 import json
 import math
-import os
 import pprint
 from dataclasses import asdict, dataclass
-from pathlib import Path
 
 import numpy as np
 import torch
+from cloudpathlib import AnyPath
 from tqdm import tqdm
 
 from delphi.data import MultimodalDataset
@@ -63,7 +62,7 @@ pprint.pp(args)
 
 
 # +
-ckpt = Path(DELPHI_CKPT_READ) / args.ckpt
+ckpt = AnyPath(DELPHI_CKPT_READ) / args.ckpt
 model, ckpt_dict = load_ckpt(ckpt)
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -202,9 +201,9 @@ for d_int in np.unique(case_tokens):
 pprint.pp(result.get("death", result.get(next(iter(result)), {})))
 
 
-ckpt_write = Path(str(ckpt).replace(DELPHI_CKPT_READ, DELPHI_CKPT_WRITE))
-os.makedirs(ckpt_write.parent, exist_ok=True)
+ckpt_write = AnyPath(str(ckpt).replace(DELPHI_CKPT_READ, DELPHI_CKPT_WRITE))
+ckpt_write.parent.mkdir(parents=True, exist_ok=True)
 out_path = ckpt_write.parent / f"{args.fname}.json"
-with open(out_path, "w") as f:
+with out_path.open("w") as f:
     json.dump(result, f, indent=4)
 print(f"Saved to {out_path}")
