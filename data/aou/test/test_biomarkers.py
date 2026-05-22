@@ -1,7 +1,5 @@
-from pathlib import Path
-
-import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 from test_data import (
     age_in_days_in_human_range,
     parquet_sorted_by,
@@ -12,7 +10,7 @@ from delphi.data.aou import _infer_features
 BASE_COLUMNS = ("person_id", "age_in_days")
 
 
-def data_parquet_exists(panel_path: Path) -> bool:
+def data_parquet_exists(panel_path) -> bool:
     return (panel_path / "data.parquet").exists()
 
 
@@ -43,8 +41,9 @@ def test_biomarkers(dataset_dir, panel, panel_config):
     panel_path = dataset_dir / "biomarkers" / panel
     assert data_parquet_exists(panel_path=panel_path)
 
-    df = pd.read_parquet(panel_path / "data.parquet")
-    features = _infer_features(df.columns)
+    data_path = panel_path / "data.parquet"
+    features = _infer_features(pq.read_schema(str(data_path)).names)
+    df = pd.read_parquet(data_path, columns=list(BASE_COLUMNS) + features)
 
     assert has_base_columns(df=df)
     assert at_least_one_feature(features=features)

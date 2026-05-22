@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 import yaml
 from cloudpathlib import AnyPath
 
@@ -23,8 +24,10 @@ class AOUReader(TokenReader):
         with open(tokenizer_path, "r") as f:
             tokenizer = yaml.safe_load(f)
 
-        df = pd.read_parquet(self.base_dir / "data.parquet")
-        df = df.sort_values(["person_id", "age_in_days"])
+        df = pd.read_parquet(
+            self.base_dir / "data.parquet",
+            columns=["person_id", "age_in_days", "token"],
+        ).sort_values(["person_id", "age_in_days"])
 
         tokens = df["token"].to_numpy(dtype=np.uint32)
         timesteps = df["age_in_days"].to_numpy(dtype=np.float32)
@@ -80,8 +83,10 @@ class AOUBiomarker:
         assert path.exists(), FileNotFoundError(f"biomarker {path} not found")
         self.path = path
 
-        df = pd.read_parquet(path).sort_values(["person_id", "age_in_days"])
-        features = _infer_features(df.columns)
+        features = _infer_features(pq.read_schema(str(path)).names)
+        df = pd.read_parquet(
+            path, columns=["person_id", "age_in_days"] + features
+        ).sort_values(["person_id", "age_in_days"])
 
         self.features = features
         self.feat2idx = {f: i for i, f in enumerate(features)}
@@ -101,9 +106,7 @@ class AOUBiomarker:
 
     @classmethod
     def input_size(cls, name: str) -> int:
-        import pyarrow.parquet as pq
-
-        cols = pq.read_schema(cls.base_dir / name / "data.parquet").names
+        cols = pq.read_schema(str(cls.base_dir / name / "data.parquet")).names
         return len(_infer_features(cols))
 
     @classmethod
@@ -175,9 +178,10 @@ class AOUExpansionPack(TokenReader):
         with open(tokenizer_path, "r") as f:
             tokenizer = yaml.safe_load(f)
 
-        df = pd.read_parquet(path / "data.parquet").sort_values(
-            ["person_id", "age_in_days"]
-        )
+        df = pd.read_parquet(
+            path / "data.parquet",
+            columns=["person_id", "age_in_days", "token"],
+        ).sort_values(["person_id", "age_in_days"])
 
         tokens = df["token"].to_numpy(dtype=np.uint32)
         timesteps = df["age_in_days"].to_numpy(dtype=np.float32)
