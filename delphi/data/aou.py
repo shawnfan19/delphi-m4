@@ -56,3 +56,109 @@ class AOUReader(TokenReader):
             length = self.seq_len[int(pid)]
             out[i] = (self.tokens[start : start + length] == female_token).any()
         return out
+
+
+METADATA_SUFFIXES = (
+    "_raw_value",
+    "_unit_id",
+    "_unit_name",
+    "_concept_id",
+    "_concept_name",
+)
+
+
+def _infer_features(columns) -> list[str]:
+    cols = set(columns)
+    return [c for c in columns if all(f"{c}{suf}" in cols for suf in METADATA_SUFFIXES)]
+
+
+class AOUBiomarker:
+
+    base_dir = Path(DELPHI_DATA_DIR) / "aou_uk" / "biomarkers"
+
+    def __init__(self, name: str, first_time_only: bool = True):
+        path = self.base_dir / name / "data.parquet"
+        assert path.exists(), FileNotFoundError(f"biomarker {path} not found")
+        self.path = path
+
+        df = pd.read_parquet(path).sort_values(["person_id", "age_in_days"])
+        features = _infer_features(df.columns)
+
+        self.features = features
+        self.feat2idx = {f: i for i, f in enumerate(features)}
+        self.n_features = len(features)
+
+        self.data = df[features].to_numpy(dtype=np.float32)
+        self.time_steps = df["age_in_days"].to_numpy(dtype=np.float32)
+        self.pids = df["person_id"].to_numpy()
+
+        uniq, first_idx, counts = np.unique(
+            self.pids, return_index=True, return_counts=True
+        )
+        self.pid2idx = dict(zip(uniq, first_idx))
+        self.pid2cnt = dict(zip(uniq, counts))
+
+        self.first_time_only = first_time_only
+
+    @classmethod
+    def input_size(cls, name: str) -> int:
+        import pyarrow.parquet as pq
+
+        cols = pq.read_schema(cls.base_dir / name / "data.parquet").names
+        return len(_infer_features(cols))
+
+    @classmethod
+    def participants(cls, name: str) -> np.ndarray:
+        df = pd.read_parquet(
+            cls.base_dir / name / "data.parquet", columns=["person_id"]
+        )
+        return df["person_id"].unique()
+
+    @classmethod
+    def first_occurrence_times(cls, name: str, pids: np.ndarray) -> np.ndarray:
+        df = pd.read_parquet(
+            cls.base_dir / name / "data.parquet",
+            columns=["person_id", "age_in_days"],
+        ).sort_values(["person_id", "age_in_days"])
+        first = df.groupby("person_id")["age_in_days"].first()
+        result = np.full(len(pids), np.nan, dtype=np.float32)
+        for i, pid in enumerate(pids):
+            if pid in first.index:
+                result[i] = first.loc[pid]
+        return result
+
+    def __repr__(self):
+        return f"AOUBiomarker(path={self.path}, n_features={self.n_features})"
+
+    def __getitem__(
+        self, pid: int
+    ) -> tuple[None | list[np.ndarray], None | np.ndarray]:
+
+        if pid not in self.pid2idx:
+            return None, None
+
+        i = self.pid2idx[pid]
+        n = self.pid2cnt[pid]
+        if self.first_time_only:
+            return [self.data[i]], self.time_steps[i : i + 1]
+        pid_data = [self.data[j] for j in range(i, i + n)]
+        return pid_data, self.time_steps[i : i + n]
+
+    def to_array(self, subjects):
+        data, subs = list(), list()
+        include = np.isin(self.pids, subjects)
+        feat_data = self.data[include]
+        pids = self.pids[include]
+        seen = set()
+        for j, pid in enumerate(pids):
+            if self.first_time_only:
+                if pid in seen:
+                    continue
+                seen.add(pid)
+            data.append(feat_data[j])
+            subs.append(pid)
+        return np.stack(data, axis=0), np.array(subs)
+
+    def stats(self, subjects: np.ndarray):
+        data, _ = self.to_array(subjects)
+        return np.mean(data, axis=0), np.std(data, axis=0)
