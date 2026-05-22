@@ -1,21 +1,14 @@
 import os
-import pprint
-from functools import cached_property
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import yaml
 
-from delphi.data.reader import TokenReader
-from delphi.data.utils import (
-    sort_by_time,
-    update_tokenizer,
-)
+from delphi.data.reader import MultimodalReader, TokenReader
 from delphi.env import DELPHI_DATA_READ as DELPHI_DATA_DIR
 
 NO_EVENT_TOKEN = 1
-RESERVED_MOD_IDX = 2  # 0 = padding, 1 = event tokens
 
 
 class UKBReader(TokenReader):
@@ -83,143 +76,6 @@ class UKBReader(TokenReader):
         event_times = self.event_times(pids)
         lifestyle_tokens = np.array([self.tokenizer[e] for e in self.lifestyle_keys])
         return np.nanmin(event_times[:, lifestyle_tokens], axis=1)
-
-
-class MultimodalUKBReader:
-    bmi_keys = UKBReader.bmi_keys
-    smoking_keys = UKBReader.smoking_keys
-    alcohol_keys = UKBReader.alcohol_keys
-    lifestyle_keys = UKBReader.lifestyle_keys
-    sex_keys = UKBReader.sex_keys
-
-    def __init__(
-        self,
-        expansion_packs: list[str] | None = None,
-        biomarkers: list[str] | dict[str, int] | None = None,
-        memmap: bool = False,
-    ):
-        """
-        args:
-            expansion_packs: a list of expansion packs to include
-            biomarkers: either a list of biomarker names (sorted and assigned
-                indices starting at RESERVED_MOD_IDX), or a {name: idx} mapping
-                to use as-is (e.g. loaded from a checkpoint). Keys/names are
-                normalized to lowercase.
-            memmap: whether to load data files in memmap mode
-        """
-
-        self.token_reader = UKBReader(memmap=memmap)
-        self.tokenizer = self.token_reader.tokenizer
-        self.base_tokenizer = self.tokenizer.copy()
-
-        self.expansion_packs = dict()
-        self.expansion_offset = dict()
-        if expansion_packs is not None:
-            for name in sorted(expansion_packs):
-                self.expansion_packs[name] = ExpansionPack(name=name, memmap=memmap)
-                self.tokenizer, offset = update_tokenizer(
-                    base_tokenizer=self.tokenizer,
-                    add_tokenizer=self.expansion_packs[name].tokenizer,
-                )
-                self.expansion_offset[name] = offset
-        self.vocab_size = len(self.tokenizer)
-
-        self.biomarkers = dict()
-        self.biomarker2idx = dict()
-        if isinstance(biomarkers, list):
-            self.biomarker2idx = {
-                name.lower(): i + RESERVED_MOD_IDX
-                for i, name in enumerate(sorted(biomarkers))
-            }
-        elif isinstance(biomarkers, dict):
-            self.biomarker2idx = {k.lower(): v for k, v in biomarkers.items()}
-            bad = [k for k, v in self.biomarker2idx.items() if v < RESERVED_MOD_IDX]
-            if bad:
-                raise ValueError(
-                    f"biomarker indices must be >= {RESERVED_MOD_IDX} "
-                    f"(0=padding, 1=event token); got {bad}"
-                )
-        elif biomarkers is not None:
-            raise ValueError(
-                f"biomarkers must be list[str] or dict[str, int], "
-                f"got {type(biomarkers).__name__}"
-            )
-        for biomarker in self.biomarker2idx:
-            self.biomarkers[biomarker] = Biomarker(name=biomarker, memmap=memmap)
-
-    @classmethod
-    def participants(cls, fold):
-        return UKBReader.participants(fold)
-
-    @classmethod
-    def labels(cls):
-        return UKBReader.labels()
-
-    def describe(self) -> None:
-        print(f"{type(self).__name__}:")
-        config = {
-            "expansion_packs": sorted(self.expansion_packs.keys()),
-            "biomarkers": sorted(self.biomarkers),
-        }
-        pprint.pp(config)
-
-    @cached_property
-    def detokenizer(self):
-        return {v: k for k, v in self.tokenizer.items()}
-
-    @property
-    def expansion_tokens(self):
-        return list(set(self.tokenizer.values()) - set(self.base_tokenizer.values()))
-
-    def is_female(self, pids: np.ndarray) -> np.ndarray:
-        return self.token_reader.is_female(pids)
-
-    def event_times(self, pids: np.ndarray) -> np.ndarray:
-        return self.token_reader.event_times(pids)
-
-    def recruitment_times(self, pids: np.ndarray) -> np.ndarray:
-        return self.token_reader.recruitment_times(pids)
-
-    def exit_times(self, pids: np.ndarray) -> np.ndarray:
-        return self.token_reader.exit_times(pids)
-
-    def __getitem__(self, pid: int):
-
-        x, t = self.token_reader[pid]
-        x_lst, t_lst = [x], [t]
-        for name, expansion_pack in self.expansion_packs.items():
-            if pid not in expansion_pack.start_pos:
-                continue
-            exp_x, exp_t = expansion_pack[pid]
-            x_lst.append(exp_x + self.expansion_offset[name])
-            t_lst.append(exp_t)
-        x = np.concatenate(x_lst)
-        t = np.concatenate(t_lst)
-
-        bio_x_dict = dict()
-        bio_t_lst = list()
-        bio_m_lst = list()
-        for modality, ds in self.biomarkers.items():
-            bio_x, mod_t = ds[pid]
-            if bio_x is None:
-                continue
-            bio_x_dict[modality] = bio_x
-            mod_m = np.full_like(mod_t, fill_value=self.biomarker2idx[modality])
-            bio_t_lst.append(mod_t)
-            bio_m_lst.append(mod_m)
-
-        if len(bio_x_dict) == 0:
-            assert len(bio_t_lst) == 0
-            assert len(bio_m_lst) == 0
-            bio_t = np.array([])
-            bio_m = np.array([])
-        else:
-            bio_t = np.concatenate(bio_t_lst)
-            bio_m = np.concatenate(bio_m_lst)
-
-            bio_t, bio_m = sort_by_time(bio_t, bio_m)
-
-        return x, t, bio_x_dict, bio_t, bio_m
 
 
 class Biomarker:
@@ -374,6 +230,61 @@ class ExpansionPack(TokenReader):
             if pid in pack.start_pos:
                 result[i] = pack.timesteps[pack.start_pos[pid]]
         return result
+
+
+class MultimodalUKBReader(MultimodalReader):
+    token_reader: UKBReader
+
+    bmi_keys = UKBReader.bmi_keys
+    smoking_keys = UKBReader.smoking_keys
+    alcohol_keys = UKBReader.alcohol_keys
+    lifestyle_keys = UKBReader.lifestyle_keys
+    sex_keys = UKBReader.sex_keys
+
+    def __init__(
+        self,
+        expansion_packs: list[str] | None = None,
+        biomarkers: list[str] | dict[str, int] | None = None,
+        memmap: bool = False,
+    ):
+        """
+        args:
+            expansion_packs: a list of expansion packs to include
+            biomarkers: either a list of biomarker names (sorted and assigned
+                indices starting at RESERVED_MOD_IDX), or a {name: idx} mapping
+                to use as-is (e.g. loaded from a checkpoint). Keys/names are
+                normalized to lowercase.
+            memmap: whether to load data files in memmap mode
+        """
+        bm_names, biomarker2idx = self._normalize_biomarkers(biomarkers)
+        super().__init__(
+            token_reader=UKBReader(memmap=memmap),
+            expansion_packs={
+                n: ExpansionPack(name=n, memmap=memmap) for n in expansion_packs or []
+            },
+            biomarkers={n: Biomarker(name=n, memmap=memmap) for n in bm_names},
+            biomarker2idx=biomarker2idx,
+        )
+
+    @classmethod
+    def participants(cls, fold):
+        return UKBReader.participants(fold)
+
+    @classmethod
+    def labels(cls):
+        return UKBReader.labels()
+
+    def is_female(self, pids: np.ndarray) -> np.ndarray:
+        return self.token_reader.is_female(pids)
+
+    def event_times(self, pids: np.ndarray) -> np.ndarray:
+        return self.token_reader.event_times(pids)
+
+    def exit_times(self, pids: np.ndarray) -> np.ndarray:
+        return self.token_reader.exit_times(pids)
+
+    def recruitment_times(self, pids: np.ndarray) -> np.ndarray:
+        return self.token_reader.recruitment_times(pids)
 
 
 def filter_participants(pids, filter_list, any=True):
