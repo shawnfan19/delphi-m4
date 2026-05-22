@@ -18,5 +18,6 @@ pyyaml
 scikit-learn
 scipy
 torchdiffeq
+typing_extensions
 cloudpathlib[gs]
 db-dtypes

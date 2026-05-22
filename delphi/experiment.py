@@ -9,13 +9,14 @@ from collections import defaultdict
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Optional, Self
+from typing import Any, Iterable, Iterator, Optional
 
 import numpy as np
 import torch
 import torch.distributed as dist
 import yaml
 from omegaconf import OmegaConf
+from typing_extensions import Self
 
 from delphi import distributed
 from delphi.env import DELPHI_CKPT_DIR
