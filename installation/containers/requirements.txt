@@ -9,5 +9,12 @@ tqdm
 statsmodels
 wandb
 omegaconf
-pre-commit
-dacite
+pre-commit  # CLI tool — not imported, drives .pre-commit-config.yaml
+plotly
+polars
+pyarrow
+pytest
+pyyaml
+scikit-learn
+scipy
+torchdiffeq
