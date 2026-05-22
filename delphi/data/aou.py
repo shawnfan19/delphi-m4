@@ -162,3 +162,51 @@ class AOUBiomarker:
     def stats(self, subjects: np.ndarray):
         data, _ = self.to_array(subjects)
         return np.mean(data, axis=0), np.std(data, axis=0)
+
+
+class AOUExpansionPack(TokenReader):
+
+    base_dir = Path(DELPHI_DATA_DIR) / "aou_uk" / "expansion_packs"
+
+    def __init__(self, name: str):
+        path = self.base_dir / name
+        assert path.exists(), FileNotFoundError(f"expansion pack {path} not found")
+
+        tokenizer_path = path / "tokenizer.yaml"
+        with open(tokenizer_path, "r") as f:
+            tokenizer = yaml.safe_load(f)
+
+        df = pd.read_parquet(path / "data.parquet").sort_values(
+            ["person_id", "age_in_days"]
+        )
+
+        tokens = df["token"].to_numpy(dtype=np.uint32)
+        timesteps = df["age_in_days"].to_numpy(dtype=np.float32)
+
+        pids = df["person_id"].to_numpy()
+        uniq, first_idx, counts = np.unique(pids, return_index=True, return_counts=True)
+        self.pids = uniq
+        start_pos = pd.Series(first_idx, index=uniq)
+        seq_len = pd.Series(counts, index=uniq)
+
+        super().__init__(tokens, timesteps, start_pos, seq_len, tokenizer)
+
+    @classmethod
+    def participants(cls, name: str) -> np.ndarray:
+        df = pd.read_parquet(
+            cls.base_dir / name / "data.parquet", columns=["person_id"]
+        )
+        return df["person_id"].unique()
+
+    @classmethod
+    def first_occurrence_times(cls, name: str, pids: np.ndarray) -> np.ndarray:
+        df = pd.read_parquet(
+            cls.base_dir / name / "data.parquet",
+            columns=["person_id", "age_in_days"],
+        ).sort_values(["person_id", "age_in_days"])
+        first = df.groupby("person_id")["age_in_days"].first()
+        result = np.full(len(pids), np.nan, dtype=np.float32)
+        for i, pid in enumerate(pids):
+            if pid in first.index:
+                result[i] = first.loc[pid]
+        return result
