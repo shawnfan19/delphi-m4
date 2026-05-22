@@ -1,3 +1,5 @@
+# Register pandas extension dtypes for BigQuery-derived parquets (dbdate, dbtime).
+import db_dtypes  # noqa: F401
 import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
