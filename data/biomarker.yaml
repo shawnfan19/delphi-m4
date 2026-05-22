@@ -435,8 +435,6 @@ high_light_scatter_reticulocyte_count:
 
 high_light_scatter_reticulocyte_percentage:
   ukb: 30290 # unit: percent
-  aou:
-    range: [0, 20]
 
 immature_reticulocyte_fraction:
   ukb: 30280 # unit: ratio
@@ -525,8 +523,6 @@ mean_reticulocyte_volume:
 
 mean_sphered_cell_volume:
   ukb: 30270 # unit: femtoliter
-  aou:
-    range: [50, 130]
 
 monocyte_count:
   ukb: 30130 # unit: 10^9 cells/Litre
@@ -607,8 +603,6 @@ platelet_count:
 
 platelet_crit:
   ukb: 30090 # unit: percent
-  aou:
-    range: [0, 3]
 
 platelet_distribution_width:
   ukb: 30110 # unit: percent

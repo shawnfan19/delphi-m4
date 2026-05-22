@@ -22,6 +22,8 @@ from utils import DATA_BUCKET, PROJECT_ID, WORKSPACE_CDR, Client
 # -
 
 
+# !pip install --upgrade sqlalchemy-bigquery
+
 CWD = Path(os.getcwd())
 CWD
 
@@ -182,10 +184,19 @@ def create_biomarker_panel_query(biomarkers: dict[str:Biomarker]):
     )
 
     return final_query
+# +
+client = Client(dataset=WORKSPACE_CDR)
+storage_client = storage.Client()
+bucket = storage_client.bucket(DATA_BUCKET)
+
+def upload_yaml(data, path): 
+    blob = bucket.blob(path)
+    blob.upload_from_string(
+        yaml.dump(data), content_type="text/yaml",
+    )
 
 
 # -
-client = Client(dataset=WORKSPACE_CDR)
 
 
 with open(CWD.parent / "biomarker.yaml", "r") as f:
@@ -197,9 +208,12 @@ for key, value in _biomarker_dict.items():
 
 biomarker_dict
 
+# +
 # get availability of all biomarkers
+from tqdm import tqdm
+
 biomarker_count = dict()
-for name, biomarker in biomarker_dict.items():
+for name, biomarker in tqdm(biomarker_dict.items(), total=len(biomarker_dict)):
     ids = biomarker["id"]
     ids_str = ", ".join(str(i) for i in ids)
 
@@ -217,50 +231,42 @@ for name, biomarker in biomarker_dict.items():
     est_ct = df["est_count"].iloc[0]
     biomarker_count[name] = int(est_ct)
 print(biomarker_count)
+# -
 
 biomarker_count = {k: int(v) for k, v in biomarker_count.items()}
-with open(CWD / "biomarker_availability.yaml", "w") as f:
-    yaml.dump(biomarker_count, f)
+upload_yaml(data=biomarker_count, path="aou_uk/biomarker_availability.yaml")
 
 with open(CWD.parent / "panel" / "aou.yaml", "r") as f:
     panels = yaml.safe_load(f)
 panels
 
-# +
-storage_client = storage.Client()
-bucket = storage_client.bucket(DATA_BUCKET)
-
-for panel_name, biomarker_list in panels.items():
+for panel_name, biomarker_list in tqdm(panels.items(), total=len(panels)):
     if len(biomarker_list) == 1:
         q = create_biomarker_panel_query(
             {name: biomarker_dict[name] for name in biomarker_list}
-            # biomarker_list[0],
-            # biomarker_dict[biomarker_list[0]]
         )
     else:
-        continue
-        # q = create_biomarker_panel_query(
-        #     {name: biomarker_dict[name] for name in biomarker_list}
-        # )
-
-    print(panel_name)
+        q = create_biomarker_panel_query(
+            {name: biomarker_dict[name] for name in biomarker_list}
+        )
     # To see the generated SQL (the equivalent of a "dry run"):
     # Use the BigQuery dialect to compile it into Google Standard SQL
     compiled_q = q.compile(
         dialect=engine.dialect, compile_kwargs={"literal_binds": True}
     )
-
     df = client.run(str(compiled_q))
+
+    missing_counts = df[biomarker_list].isna().sum().to_dict()
+    upload_yaml(
+        data=missing_counts,
+        path=f"aou_uk/biomarkers/{panel_name}/missing_counts.yaml"
+    )
+
+    df = df.dropna(subset=biomarker_list)
     df.to_parquet(
         f"gs://{DATA_BUCKET}/aou_uk/biomarkers/{panel_name}/data.parquet", index=False
     )
 
-    missing_counts = df[biomarker_list].isna().sum().to_dict()
-    blob = bucket.blob(f"aou_uk/biomarkers/{panel_name}/missing_counts.yaml")
-    blob.upload_from_string(
-        yaml.dump(missing_counts),
-        content_type="text/yaml",
-    )
-# -
-
 DATA_BUCKET
+
+
