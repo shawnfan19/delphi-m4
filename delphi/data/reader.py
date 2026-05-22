@@ -28,8 +28,9 @@ class TokenReader:
         return x_pid, t_pid
 
     def event_times(self, pids: np.ndarray) -> np.ndarray:
-        """N by V array of first-occurrence times; NaN where a token never occurs."""
-        out = np.full((len(pids), self.vocab_size), np.nan, dtype=np.float32)
+        """N by (max_token_id+1) array of first-occurrence times; NaN where a token never occurs."""
+        n_cols = max(self.tokenizer.values()) + 1
+        out = np.full((len(pids), n_cols), np.nan, dtype=np.float32)
         for i, pid in enumerate(pids):
             start = self.start_pos[int(pid)]
             length = self.seq_len[int(pid)]

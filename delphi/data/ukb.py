@@ -188,6 +188,8 @@ class MultimodalUKBReader:
         x, t = self.token_reader[pid]
         x_lst, t_lst = [x], [t]
         for name, expansion_pack in self.expansion_packs.items():
+            if pid not in expansion_pack.start_pos:
+                continue
             exp_x, exp_t = expansion_pack[pid]
             x_lst.append(exp_x + self.expansion_offset[name])
             t_lst.append(exp_t)
@@ -330,7 +332,7 @@ class Biomarker:
         return pid_data, pid_time
 
 
-class ExpansionPack:
+class ExpansionPack(TokenReader):
 
     base_dir = Path(DELPHI_DATA_DIR) / "ukb_real_data" / "expansion_packs"
 
@@ -342,20 +344,22 @@ class ExpansionPack:
         )
         p2i = pd.read_csv(os.path.join(path, "p2i.csv"), index_col="pid")
         self.pids = p2i.index.to_numpy()
-        self.start_pos = p2i["start_pos"].to_dict()
-        self.seq_len = p2i["seq_len"].to_dict()
+        start_pos = p2i["start_pos"].to_dict()
+        seq_len = p2i["seq_len"].to_dict()
         data_path = os.path.join(path, "data.bin")
         time_path = os.path.join(path, "time.bin")
         if memmap:
-            self.tokens = np.memmap(data_path, dtype=np.uint32, mode="r")
-            self.time_steps = np.memmap(time_path, dtype=np.uint32, mode="r")
+            tokens = np.memmap(data_path, dtype=np.uint32, mode="r")
+            timesteps = np.memmap(time_path, dtype=np.uint32, mode="r")
         else:
-            self.tokens = np.fromfile(data_path, dtype=np.uint32)
-            self.time_steps = np.fromfile(time_path, dtype=np.uint32)
+            tokens = np.fromfile(data_path, dtype=np.uint32)
+            timesteps = np.fromfile(time_path, dtype=np.uint32)
 
         tokenizer_path = os.path.join(path, "tokenizer.yaml")
         with open(tokenizer_path, "r") as f:
-            self.tokenizer = yaml.safe_load(f)
+            tokenizer = yaml.safe_load(f)
+
+        super().__init__(tokens, timesteps, start_pos, seq_len, tokenizer)
 
     @classmethod
     def participants(cls, name: str) -> np.ndarray:
@@ -368,20 +372,8 @@ class ExpansionPack:
         result = np.full(len(pids), np.nan, dtype=np.float32)
         for i, pid in enumerate(pids):
             if pid in pack.start_pos:
-                result[i] = pack.time_steps[pack.start_pos[pid]]
+                result[i] = pack.timesteps[pack.start_pos[pid]]
         return result
-
-    def __getitem__(self, pid: int) -> tuple[np.ndarray, np.ndarray]:
-
-        if pid not in self.start_pos:
-            return np.empty(0, dtype=np.uint32), np.empty(0, dtype=np.uint32)
-
-        i = self.start_pos[pid]
-        l = self.seq_len[pid]
-        x_pid = self.tokens[i : i + l]
-        t_pid = self.time_steps[i : i + l]
-
-        return x_pid, t_pid
 
 
 def filter_participants(pids, filter_list, any=True):
