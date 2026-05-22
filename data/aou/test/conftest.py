@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from cloudpathlib import AnyPath
 from pytest import Config, FixtureRequest, Metafunc, Parser
 
 from delphi.env import DELPHI_DATA_DIR
@@ -21,7 +22,7 @@ def get_dataset_dir(config: Config):
 
     dataset = config.getoption("--dataset")
 
-    return Path(DELPHI_DATA_DIR) / str(dataset)
+    return AnyPath(DELPHI_DATA_DIR) / str(dataset)
 
 
 @pytest.fixture

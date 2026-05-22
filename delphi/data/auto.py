@@ -1,5 +1,6 @@
 import os
-from pathlib import Path
+
+from cloudpathlib import AnyPath
 
 from delphi.env import DELPHI_DATA_READ
 
@@ -11,7 +12,7 @@ def detect_dataset() -> str:
     'ukb' counts as UKB; same for 'aou'. Prefix rather than substring so the
     current 'aou_uk' dir resolves to AoU rather than colliding with UKB.
     """
-    base = Path(DELPHI_DATA_READ)
+    base = AnyPath(DELPHI_DATA_READ)
     if not base.is_dir():
         raise RuntimeError(f"DELPHI_DATA_READ is not a directory: {base}")
     has_ukb = any(

@@ -1,15 +1,14 @@
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 import yaml
+from cloudpathlib import AnyPath
 
 from delphi.data.reader import MultimodalReader, TokenReader
 from delphi.env import DELPHI_DATA_READ as DELPHI_DATA_DIR
 
 
 class AOUReader(TokenReader):
-    base_dir = Path(DELPHI_DATA_DIR) / "aou_uk"
+    base_dir = AnyPath(DELPHI_DATA_DIR) / "aou_uk"
     bmi_keys = [
         "bmi_low",
         "bmi_mid",
@@ -74,7 +73,7 @@ def _infer_features(columns) -> list[str]:
 
 class AOUBiomarker:
 
-    base_dir = Path(DELPHI_DATA_DIR) / "aou_uk" / "biomarkers"
+    base_dir = AnyPath(DELPHI_DATA_DIR) / "aou_uk" / "biomarkers"
 
     def __init__(self, name: str, first_time_only: bool = True):
         path = self.base_dir / name / "data.parquet"
@@ -166,7 +165,7 @@ class AOUBiomarker:
 
 class AOUExpansionPack(TokenReader):
 
-    base_dir = Path(DELPHI_DATA_DIR) / "aou_uk" / "expansion_packs"
+    base_dir = AnyPath(DELPHI_DATA_DIR) / "aou_uk" / "expansion_packs"
 
     def __init__(self, name: str):
         path = self.base_dir / name
