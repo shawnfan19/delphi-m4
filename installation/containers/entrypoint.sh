@@ -5,8 +5,14 @@ DELPHI_REPO="${DELPHI_REPO:-https://github.com/gerstung-lab/Delphi.git}"
 DELPHI_BRANCH="${DELPHI_BRANCH:-main}"
 
 if [ ! -d /workspace/Delphi ]; then
+    if [ -n "$GH_TOKEN" ]; then
+        AUTH_REPO="${DELPHI_REPO/https:\/\//https://x-access-token:$GH_TOKEN@}"
+    else
+        AUTH_REPO="$DELPHI_REPO"
+    fi
     cd /workspace
-    git clone --branch "$DELPHI_BRANCH" "$DELPHI_REPO"
+    git clone --branch "$DELPHI_BRANCH" "$AUTH_REPO"
+    unset GH_TOKEN AUTH_REPO
 fi
 cd /workspace/Delphi
 pip install --no-cache-dir -e .
