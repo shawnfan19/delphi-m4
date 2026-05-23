@@ -10,8 +10,7 @@ if [ ! -d /workspace/Delphi ]; then
     else
         AUTH_REPO="$DELPHI_REPO"
     fi
-    cd /workspace
-    git clone --branch "$DELPHI_BRANCH" "$AUTH_REPO"
+    git clone --branch "$DELPHI_BRANCH" "$AUTH_REPO" /workspace/Delphi
     unset GH_TOKEN AUTH_REPO
 fi
 cd /workspace/Delphi
