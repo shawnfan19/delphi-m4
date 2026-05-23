@@ -23,8 +23,13 @@ nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader 2>
 python -c "import torch; print(f'PyTorch {torch.__version__}, CUDA available: {torch.cuda.is_available()}, devices: {torch.cuda.device_count()}')" 2>&1 || true
 echo "=========================================="
 
-if [ $# -eq 0 ]; then
-    exec /bin/bash
-else
-    exec "$@"
+# Only exec when this file is run directly (e.g. as the SAK ENTRYPOINT).
+# When sourced (e.g. from a dsub --script), skip exec so the caller can
+# continue after the source line.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    if [ $# -eq 0 ]; then
+        exec /bin/bash
+    else
+        exec "$@"
+    fi
 fi
