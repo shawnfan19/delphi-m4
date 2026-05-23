@@ -12,9 +12,16 @@ if [ ! -d /workspace/Delphi ]; then
     fi
     git clone --branch "$DELPHI_BRANCH" "$AUTH_REPO" /workspace/Delphi
     unset GH_TOKEN AUTH_REPO
+    # The just-cloned tree isn't pip-installed yet; install it.
+    # (When /workspace/Delphi was pre-baked into the image, the install
+    # already happened at build time, so this branch is skipped — that
+    # matters for AoU Batch VMs where PyPI is unreachable from inside
+    # the perimeter.)
+    cd /workspace/Delphi
+    pip install --no-cache-dir -e .
+else
+    cd /workspace/Delphi
 fi
-cd /workspace/Delphi
-pip install --no-cache-dir -e .
 
 echo "=========================================="
 echo "GPU Status"
