@@ -13,8 +13,15 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 WORKDIR /workspace
 
-COPY requirements.txt requirements.txt
+# Install Python deps first so this layer stays cached when only code changes.
+COPY installation/containers/requirements.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Bake the codebase in. AoU Batch VMs cannot reach github.com (no external IP,
+# no NAT through the VPC-SC perimeter), so runtime clone is not viable for
+# dsub jobs. Build-time COPY rides in via the GitHub Actions runner.
+COPY . /workspace/Delphi
+RUN pip install --no-cache-dir --no-deps -e /workspace/Delphi
 
 # Must run as root: DNAnexus swiss-army-knife invokes
 # `docker run -v /home/dnanexus/out/out:/tmp -w /tmp` with no --user flag and
@@ -23,6 +30,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Refs: https://academy.dnanexus.com/docker/swissarmyknife
 #       https://community.ukbiobank.ac.uk/hc/en-gb/community/posts/16019643692061
 
-COPY --chmod=755 entrypoint.sh /entrypoint.sh
+COPY --chmod=755 installation/containers/entrypoint.sh /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["/bin/bash"]

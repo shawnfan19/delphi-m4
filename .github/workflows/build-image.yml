@@ -3,9 +3,6 @@ name: build-image
 on:
   push:
     branches: [main]
-    paths:
-      - 'installation/containers/**'
-      - '.github/workflows/build-image.yml'
   workflow_dispatch:        # allow manual runs from the Actions tab
 
 jobs:
@@ -28,7 +25,8 @@ jobs:
 
       - uses: docker/build-push-action@v5
         with:
-          context: installation/containers/
+          context: .
+          file: installation/containers/Dockerfile
           push: true
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/delphi:${{ steps.vars.outputs.short_sha }}

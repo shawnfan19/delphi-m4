@@ -1,0 +1,29 @@
+# Git
+.git/
+.github/
+
+# Tool config / local dev
+.claude/
+.pre-commit/
+.pre-commit-config.yaml
+
+# Python cache
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# Test / notebook artefacts
+.pytest_cache/
+.ipynb_checkpoints/
+.virtual_documents/
+
+# Runtime artefacts
+wandb/
+slurm/
+*.log
+
+# Local env
+.env
+.envrc
+.DS_Store

@@ -105,30 +105,20 @@ wb resource create gcs-bucket --id=ws_files \
 Referenced as `${WORKBENCH_ws_files}` in dsub flags (below). `wb resource list`
 to verify.
 
-## GitHub PAT for cloning the private repo
+## Where the code lives in the image
 
-The entrypoint clones the Delphi repo at runtime via
-`git clone $DELPHI_REPO`. Since the repo is private, the Batch VM needs
-auth. The entrypoint handles this transparently: if `$GH_TOKEN` is set
-in the container env, the clone URL is rewritten to
-`https://x-access-token:${GH_TOKEN}@github.com/...`. Otherwise the clone
-runs unchanged (so public-repo testing on your laptop still works).
+The Delphi codebase is **baked into the image at `/workspace/Delphi`** at
+build time (GitHub Actions `COPY .` + `pip install -e .`). The Batch VM
+runs a self-contained image; nothing is fetched from GitHub at runtime.
 
-One-time setup:
+Why: AoU Batch VMs have no external IP (required by VPC-SC) and the
+perimeter has no Cloud NAT, so github.com is unreachable from a job VM.
+The runtime-clone path in `entrypoint.sh` is retained as a fallback for
+non-AoU environments (e.g. SAK on DNAnexus) — when `/workspace/Delphi`
+already exists, the entrypoint's clone block is skipped.
 
-1. On GitHub: Settings → Developer settings → Personal access tokens →
-   Fine-grained tokens → **Generate new token**. Scope to the Delphi
-   repo only; Repository permissions → Contents = Read; set a 90-day
-   expiry. Copy the token (`github_pat_...`).
-2. On the Jupyter VM: store the token in a mode-600 file.
-   ```bash
-   nano ~/.gh_token        # paste, save
-   chmod 600 ~/.gh_token
-   ```
-3. Pass via dsub `--env GH_TOKEN=$(cat ~/.gh_token)` (see below).
-
-When the token expires, regenerate at the same GitHub URL and overwrite
-`~/.gh_token`. No image rebuild needed.
+Implication: **every code change pushed to main triggers an image
+rebuild via GitHub Actions** (~30 s incremental with the layer cache).
 
 ## Submit a job
 
@@ -136,9 +126,18 @@ When the token expires, regenerate at the same GitHub URL and overwrite
 ```bash
 #!/bin/bash
 set -e
-# The entrypoint has already cloned the repo and `pip install -e .`'d it.
+source /entrypoint.sh                                   # cd /workspace/Delphi + GPU detection
 python -m delphi.train --input "$TRAIN_DATA" --out "$OUT_DIR"
 ```
+
+dsub's google-batch provider overrides the image's `ENTRYPOINT` and runs
+your `--script` directly with bash. That means the setup steps in
+`installation/containers/entrypoint.sh` (cd into the repo, pip install,
+GPU detection) do **not** auto-run — you have to `source /entrypoint.sh`
+from inside your job script. The entrypoint file is baked into the image
+at `/`, written to be safe under `source` (its trailing `exec` block is
+guarded so it only fires when the file is run directly, e.g. as the SAK
+ENTRYPOINT).
 
 Submission:
 ```bash
@@ -156,8 +155,6 @@ dsub --provider google-batch \
   --machine-type n1-standard-8 \
   --accelerator-type nvidia-tesla-t4 \
   --accelerator-count 1 \
-  --env DELPHI_BRANCH=main \
-  --env GH_TOKEN=$(cat ~/.gh_token) \
   --input TRAIN_DATA=${WORKBENCH_ws_files}/data/train.parquet \
   --output-recursive OUT_DIR=${WORKBENCH_ws_files}/runs/run1/ \
   --logging ${WORKBENCH_ws_files}/runs/run1/logs/ \
@@ -181,8 +178,7 @@ Flag cheat sheet:
 | `--image` | container image, must go through the AoU proxy |
 | `--machine-type` | VM shape (n1-* required for T4/P100/V100) |
 | `--accelerator-type/-count` | GPU spec |
-| `--env KEY=VAL` | env vars inside the container (e.g. `DELPHI_BRANCH`) |
-| `--env GH_TOKEN=...` | runtime GitHub auth for cloning the private repo |
+| `--env KEY=VAL` | env vars inside the container |
 | `--input KEY=gs://...` | localise one file; `$KEY` inside container is the local path |
 | `--input-recursive KEY=gs://.../` | localise a whole directory |
 | `--output-recursive KEY=gs://.../` | on exit 0, upload local `$KEY` directory back to GCS |
@@ -304,11 +300,18 @@ SLURM mapping: `dsub` ≈ `sbatch`, `dstat` ≈ `squeue`, `ddel` ≈ `scancel`.
 
 ## Network reachability from the perimeter
 
-github.com is reachable from inside the AoU perimeter (confirmed in
-testing from a Workbench Jupyter terminal). Runtime cloning works.
+github.com is reachable from a **Workbench Jupyter terminal** (so
+`git push` etc. work), but **not** from Batch VMs (which run with
+`--use-private-address` per VPC-SC, no external IP, no NAT). That's why
+the code has to be baked into the image at build time rather than
+cloned at job start.
 
 ## Gotchas
 
+- **dsub bypasses the image ENTRYPOINT.** Your `--script` runs directly under
+  bash; the Dockerfile's `ENTRYPOINT ["/entrypoint.sh"]` is not auto-invoked
+  on dsub. Every dsub job script must `source /entrypoint.sh` explicitly
+  to get the clone + pip install + GPU-detection setup.
 - **No Cloud Build on AoU.** Don't try `wb gcloud builds submit` — the API
   isn't initialized on workspace projects. Build externally and pull through
   the proxy. (`$ARTIFACT_REGISTRY_DOCKER_REPO` is the supported pattern.)
@@ -327,9 +330,10 @@ testing from a Workbench Jupyter terminal). Runtime cloning works.
 - **GPU types**: T4/P100/V100 only on n1. A100/L4 require a2/g2 — verify quota
   before assuming.
 - **Container runs as root.** See header comment in `../Dockerfile` for why.
-- **PAT in dsub env is visible in Batch metadata.** Fine-grained PAT scoped
-  to one repo, read-only contents, with an expiry minimises blast radius.
-  Rotate regularly.
+- **Image rebuilds on every push to main.** The codebase is baked in at build
+  time, so any code change implies a new image tag. ~30 s with GHA layer
+  cache (only the COPY + `pip install -e .` layers invalidate); much less
+  than the free CI tier.
 
 ## References
 
