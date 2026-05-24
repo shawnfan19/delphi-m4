@@ -46,8 +46,10 @@ for pid in pids:
     prompt_age[pid] = bio_t[is_pmt].max()
 
 token_transform = TokenTransform(block_size=None, crop_mode="left")
-biomarker_transform = BiomarkerTransform()
-prompt_transform = MultimodalPrompt(prompt_age=prompt_age)
+biomarker_transform = BiomarkerTransform(biomarker2idx=reader.biomarker2idx)
+prompt_transform = MultimodalPrompt(
+    prompt_age=prompt_age, biomarker2idx=reader.biomarker2idx
+)
 
 ds = MultimodalDataset(
     reader=reader,

@@ -249,11 +249,17 @@ def crop_contiguous(
             return x[cut]
 
 
-def filter_biomarker_array(bio_x_dict, bio_t, bio_m, mask: np.ndarray):
-    """Boolean mask over t/m, propagated per-modality into x."""
+def filter_biomarker_array(
+    bio_x_dict, bio_t, bio_m, mask: np.ndarray, biomarker2idx: dict[str, int]
+):
+    """Boolean mask over t/m, propagated per-modality into x.
+
+    bio_x_dict is keyed by lowercase biomarker name; biomarker2idx maps that
+    name to the integer used in bio_m.
+    """
     new_bio_x_dict = {}
     for mod, vals in bio_x_dict.items():
-        mod_mask = mask[bio_m == mod.value]
+        mod_mask = mask[bio_m == biomarker2idx[mod]]
         filtered = [v for v, k in zip(vals, mod_mask) if k]
         if filtered:
             new_bio_x_dict[mod] = filtered
@@ -266,16 +272,19 @@ def dropout_biomarkers(
     bio_m: np.ndarray,
     rng: np.random.Generator,
     p: float,
+    biomarker2idx: dict[str, int],
 ) -> tuple[dict, np.ndarray, np.ndarray]:
     if len(bio_t) == 0:
         return bio_x_dict, bio_t, bio_m
 
     keep = rng.random(size=len(bio_t)) >= p
 
-    return filter_biomarker_array(bio_x_dict, bio_t, bio_m, mask=keep)
+    return filter_biomarker_array(
+        bio_x_dict, bio_t, bio_m, mask=keep, biomarker2idx=biomarker2idx
+    )
 
 
-def remove_after_np(x, t, bio_x_dict, bio_t, bio_m, cutoff_t):
+def remove_after_np(x, t, bio_x_dict, bio_t, bio_m, cutoff_t, biomarker2idx):
     """Remove tokens and biomarker measurements after cutoff_t.
 
     Unbatched version for __getitem__ outputs: x, t are 1D numpy arrays;
@@ -286,7 +295,7 @@ def remove_after_np(x, t, bio_x_dict, bio_t, bio_m, cutoff_t):
     t = t[x_mask]
 
     bio_x_dict, bio_t, bio_m = filter_biomarker_array(
-        bio_x_dict, bio_t, bio_m, mask=bio_t <= cutoff_t
+        bio_x_dict, bio_t, bio_m, mask=bio_t <= cutoff_t, biomarker2idx=biomarker2idx
     )
 
     return x, t, bio_x_dict, bio_t, bio_m
@@ -318,10 +327,12 @@ def exclude_tokens(x: np.ndarray, t: np.ndarray, blacklist: np.ndarray):
     return x, t
 
 
-def remove_after(x, t, bio_x_dict, bio_t, bio_m, cutoff_t):
+def remove_after(x, t, bio_x_dict, bio_t, bio_m, cutoff_t, biomarker2idx):
     """Remove tokens and biomarker measurements after cutoff_t.
 
     Batched version: x, t are 2D tensors; bio_t, bio_m are 2D tensors.
+    bio_x_dict is keyed by lowercase biomarker name; biomarker2idx maps that
+    name to the integer used in bio_m.
     """
     x_mask = t.ravel() <= cutoff_t
     x = x[:, x_mask].clone()
@@ -329,7 +340,7 @@ def remove_after(x, t, bio_x_dict, bio_t, bio_m, cutoff_t):
 
     bio_mask = bio_t.ravel() <= cutoff_t
     bio_x_dict = {
-        mod: v[bio_mask[bio_m.ravel() == mod.value]].clone()
+        mod: v[bio_mask[bio_m.ravel() == biomarker2idx[mod]]].clone()
         for mod, v in bio_x_dict.items()
     }
     bio_t = bio_t[:, bio_mask].clone()

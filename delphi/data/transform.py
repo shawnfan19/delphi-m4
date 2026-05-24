@@ -151,6 +151,7 @@ class BiomarkerTransform:
 
     def __init__(
         self,
+        biomarker2idx: dict[str, int],
         first_time_only: bool = False,
         dropout: None | float = None,
         z_score: bool = False,
@@ -161,18 +162,22 @@ class BiomarkerTransform:
     ):
         """
         args:
+            biomarker2idx: mapping from lowercase biomarker name to the integer
+                used in bio_m. Source of truth lives on the reader.
             first_time_only: if True only use the first occurrence of each biomarker
             dropout: if not None, each biomarker measurement is independently dropped with this probability
             z_score: whether to z-score biomarker values
         """
         self._init_args = {k: v for k, v in locals().items() if k != "self"}
 
+        self.biomarker2idx = biomarker2idx
         self.first_time_only = first_time_only
 
         if dropout is not None:
             self.dropout_biomarkers = functools.partial(
                 dropout_biomarkers,
                 p=dropout,
+                biomarker2idx=biomarker2idx,
             )
         else:
             self.dropout_biomarkers = identity_transform
@@ -189,7 +194,12 @@ class BiomarkerTransform:
 
     @property
     def config(self) -> dict:
-        return {k: v for k, v in self._init_args.items() if k not in {"mean", "std"}}
+        # biomarker2idx lives on the model config; don't duplicate it here
+        return {
+            k: v
+            for k, v in self._init_args.items()
+            if k not in {"mean", "std", "biomarker2idx"}
+        }
 
     @classmethod
     def from_ckpt(cls, ckpt_dict: dict) -> "BiomarkerTransform | None":
@@ -197,7 +207,13 @@ class BiomarkerTransform:
         if not args:
             return None
         stats = ckpt_dict.get("biomarker_stats") or {}
-        return cls(**args, mean=stats.get("mean"), std=stats.get("std"))
+        biomarker2idx = ckpt_dict["model_args"]["biomarker2idx"]
+        return cls(
+            biomarker2idx=biomarker2idx,
+            **args,
+            mean=stats.get("mean"),
+            std=stats.get("std"),
+        )
 
     def to_ckpt(self) -> dict:
         return {
@@ -252,7 +268,7 @@ class BiomarkerTransform:
                     seen.add(m)
                     keep[i] = True
             bio_x_dict, bio_t, bio_m = filter_biomarker_array(
-                bio_x_dict, bio_t, bio_m, mask=keep
+                bio_x_dict, bio_t, bio_m, mask=keep, biomarker2idx=self.biomarker2idx
             )
 
         if self.z_score:
@@ -315,11 +331,13 @@ class MultimodalPrompt:
     def __init__(
         self,
         prompt_age: float | dict,
+        biomarker2idx: dict[str, int],
         append_no_event: bool = False,
     ):
         self._init_args = {k: v for k, v in locals().items() if k != "self"}
 
         self.prompt_age = prompt_age
+        self.biomarker2idx = biomarker2idx
         self.append_no_event = append_no_event
 
     def __call__(self, x, t, bio_x_dict, bio_t, bio_m, pid=None):
@@ -341,7 +359,7 @@ class MultimodalPrompt:
         # filter biomarkers to prompt window
         bio_keep = bio_t <= cutoff
         bio_x_dict, bio_t, bio_m = filter_biomarker_array(
-            bio_x_dict, bio_t, bio_m, mask=bio_keep
+            bio_x_dict, bio_t, bio_m, mask=bio_keep, biomarker2idx=self.biomarker2idx
         )
 
         return pmt_x, pmt_t, bio_x_dict, bio_t, bio_m, x, t

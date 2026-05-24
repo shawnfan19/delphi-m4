@@ -104,6 +104,7 @@ def train(cfg: TrainConfig):
             mean_dict = None
             std_dict = None
         train_biomarker_transform = BiomarkerTransform(
+            biomarker2idx=reader.biomarker2idx,
             first_time_only=cfg.first_time_only,
             dropout=cfg.biomarker_dropout,
             seed=cfg.seed,

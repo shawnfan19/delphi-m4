@@ -98,11 +98,6 @@ print(f"{val_pids.size} / {total_val} val pids (biomarker filter)")
 prompt_age = first_modality_timestep(
     pids=val_pids, biomarkers=args.biomarkers, expansion_packs=args.expansion_packs
 )
-prompt_transform = MultimodalPrompt(
-    prompt_age={pid: age for pid, age in zip(val_pids, prompt_age.tolist())},
-    append_no_event=args.method != "hazards",
-)
-
 
 reader_args = ckpt_dict["reader_args"]
 pprint.pp(
@@ -123,6 +118,12 @@ token_transform = TokenTransform.from_ckpt(ckpt_dict)
 biomarker_transform = BiomarkerTransform.from_ckpt(ckpt_dict)
 if biomarker_transform is not None:
     biomarker_transform.describe()
+
+prompt_transform = MultimodalPrompt(
+    prompt_age={pid: age for pid, age in zip(val_pids, prompt_age.tolist())},
+    biomarker2idx=reader.biomarker2idx,
+    append_no_event=args.method != "hazards",
+)
 
 
 ds = MultimodalDataset(

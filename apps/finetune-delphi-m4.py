@@ -128,6 +128,7 @@ def finetune(cfg: FinetuneConfig):
         std_dict = None
 
     train_bio_transform = BiomarkerTransform(
+        biomarker2idx=reader.biomarker2idx,
         dropout=cfg.biomarker_dropout,
         z_score=cfg.z_score_biomarkers,
         mean=mean_dict,
@@ -137,6 +138,7 @@ def finetune(cfg: FinetuneConfig):
     )
     train_bio_transform.describe()
     val_bio_transform = BiomarkerTransform(
+        biomarker2idx=reader.biomarker2idx,
         dropout=False,
         z_score=cfg.z_score_biomarkers,
         mean=mean_dict,
