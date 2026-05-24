@@ -1,16 +1,16 @@
 # +
 import json
 from dataclasses import dataclass
-from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from cloudpathlib import AnyPath
 from matplotlib.patches import Patch
 
 from delphi.env import DELPHI_CKPT_READ as DELPHI_CKPT_DIR
 from delphi.experiment import CliConfig
-from delphi.plot import plot_diff_by_chapter
+from delphi.plot import plot_by_chapter
 
 plt.rcParams["figure.dpi"] = 150
 # -
@@ -24,13 +24,13 @@ class TaskConfig(CliConfig):
 
 
 args = TaskConfig.from_cli()
-ckpt_a_json = Path(DELPHI_CKPT_DIR) / args.baseline_json
-ckpt_b_json = Path(DELPHI_CKPT_DIR) / args.json
+ckpt_a_json = AnyPath(DELPHI_CKPT_DIR) / args.baseline_json
+ckpt_b_json = AnyPath(DELPHI_CKPT_DIR) / args.json
 
-with open(ckpt_a_json, "r") as f:
+with ckpt_a_json.open("r") as f:
     results = json.load(f)
 
-with open(ckpt_b_json, "r") as f:
+with ckpt_b_json.open("r") as f:
     bl_results = json.load(f)
 
 
@@ -108,10 +108,11 @@ for h in horizons:
             columns={"disease": "key", "dis_count": "n_events"}
         )
 
-        plot_diff_by_chapter(
+        plot_by_chapter(
             df=diff_df,
-            label_a="baseline",
-            label_b="blood",
+            value_col="diff",
+            ylabel="Δ AUC",
+            hline=0,
             title=f"h={h}y, {sex}",
         )
 

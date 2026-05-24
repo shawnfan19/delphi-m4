@@ -3,13 +3,13 @@ import json
 import os
 import pprint
 from dataclasses import asdict, dataclass
-from pathlib import Path
 from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn.functional as F
+from cloudpathlib import AnyPath
 
 from delphi.data import Dataset
 from delphi.data.transform import TokenTransform
@@ -52,8 +52,8 @@ class TaskConfig(CliConfig):
 args = TaskConfig.from_cli()
 args.print()
 
-json_path = Path(DELPHI_CKPT_DIR) / args.json
-baseline_json_path = Path(DELPHI_CKPT_DIR) / args.baseline_json
+json_path = AnyPath(DELPHI_CKPT_DIR) / args.json
+baseline_json_path = AnyPath(DELPHI_CKPT_DIR) / args.baseline_json
 
 data_a, _ = load_json(json_path)
 data_b, _ = load_json(baseline_json_path)

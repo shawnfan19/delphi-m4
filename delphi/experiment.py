@@ -502,7 +502,7 @@ def flexi_list(panel):
 
 
 def load_json(json_path):
-    with open(json_path) as f:
+    with AnyPath(json_path).open() as f:
         data = json.load(f)
         if "config" in data.keys():
             config = copy.deepcopy(data["config"])

@@ -22,15 +22,15 @@ import json
 
 # %%
 from dataclasses import dataclass
-from pathlib import Path
 
 # %%
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import pandas as pd
+from cloudpathlib import AnyPath
 
 from delphi.data.ukb import UKBReader
-from delphi.env import DELPHI_CKPT_READ as DELPHI_CKPT_DIR
+from delphi.env import DELPHI_CKPT_READ, DELPHI_CKPT_WRITE
 from delphi.experiment import CliConfig
 from delphi.plot import plot_by_chapter
 
@@ -46,10 +46,11 @@ class TaskConfig(CliConfig):
 args = TaskConfig.from_cli()
 
 # %%
-ckpt_json = Path(DELPHI_CKPT_DIR) / args.json
+ckpt_json = AnyPath(DELPHI_CKPT_READ) / args.json
+out_dir = AnyPath(str(ckpt_json.parent).replace(DELPHI_CKPT_READ, DELPHI_CKPT_WRITE))
 min_events = args.min
 
-with open(ckpt_json) as f:
+with ckpt_json.open() as f:
     data = json.load(f)
     if "config" in data.keys():
         del data["config"]
@@ -95,7 +96,8 @@ for s, d in dfs.items():
     print(f"{s}: {len(d)} diseases")
 
 # %%
-# Per-sex chapter plot, saved next to the json
+# Per-sex chapter plot, saved next to the json (under WRITE root)
+out_dir.mkdir(parents=True, exist_ok=True)
 for sex in ("either", "male", "female"):
     fig, ax = plot_by_chapter(
         dfs[sex],
@@ -105,7 +107,8 @@ for sex in ("either", "male", "female"):
         ylim=(0.5, 1.0),
         title=f"C-index by disease — {sex}",
     )
-    fig.savefig(ckpt_json.parent / f"cindex_{sex}.png")
+    with (out_dir / f"cindex_{sex}.png").open("wb") as f:
+        fig.savefig(f, format="png")
     plt.show()
 
 # %%

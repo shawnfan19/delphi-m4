@@ -1,12 +1,12 @@
 import os
 import pprint
 from dataclasses import asdict, dataclass
-from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn.functional as F
+from cloudpathlib import AnyPath
 
 from delphi.data import Dataset
 from delphi.data.transform import TokenTransform
@@ -27,7 +27,7 @@ class TaskConfig(CliConfig):
 args = TaskConfig.from_cli()
 args.print()
 
-ckpt = Path(DELPHI_CKPT_READ) / args.ckpt
+ckpt = AnyPath(DELPHI_CKPT_READ) / args.ckpt
 model, ckpt_dict = load_ckpt(ckpt)
 device = "cuda" if torch.cuda.is_available() else "cpu"
 

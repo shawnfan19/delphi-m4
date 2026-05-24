@@ -23,13 +23,13 @@ import json
 
 # %%
 from dataclasses import dataclass
-from pathlib import Path
 
 # %%
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from cloudpathlib import AnyPath
 
 from delphi.data.ukb import UKBReader
 from delphi.env import DELPHI_CKPT_READ as DELPHI_CKPT_DIR
@@ -49,8 +49,8 @@ class TaskConfig(CliConfig):
 args = TaskConfig.from_cli()
 
 # %%
-ckpt_a_json = Path(DELPHI_CKPT_DIR) / args.baseline_json
-ckpt_b_json = Path(DELPHI_CKPT_DIR) / args.json
+ckpt_a_json = AnyPath(DELPHI_CKPT_DIR) / args.baseline_json
+ckpt_b_json = AnyPath(DELPHI_CKPT_DIR) / args.json
 
 label_a = str(ckpt_a_json.parent)
 label_b = str(ckpt_b_json.parent)
@@ -60,12 +60,12 @@ sex = "either"  # "female" | "male" | "either"
 min_events = args.min  # drop diseases with fewer events in either checkpoint
 
 # %%
-with open(ckpt_a_json) as f:
+with ckpt_a_json.open() as f:
     data_a = json.load(f)
     if "config" in data_a.keys():
         del data_a["config"]
 
-with open(ckpt_b_json) as f:
+with ckpt_b_json.open() as f:
     data_b = json.load(f)
     if "config" in data_b.keys():
         del data_b["config"]

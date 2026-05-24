@@ -15,10 +15,10 @@
 
 # %%
 import os
-from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from cloudpathlib import AnyPath
 from statsmodels.nonparametric.smoothers_lowess import lowess as sm_lowess
 
 from delphi.data.ukb import Biomarker
@@ -28,7 +28,7 @@ from delphi.experiment import load_ckpt
 
 # %%
 def load_ig(dirpath: str | os.PathLike):
-    dirpath = Path(dirpath)
+    dirpath = AnyPath(dirpath)
     attributions = np.load(dirpath / "attributions.npy", mmap_mode="r")
     logits = np.load(dirpath / "logits.npy", mmap_mode="r")
     pids = np.load(dirpath / "pids.npy")
@@ -48,9 +48,12 @@ def load_ckpt_meta(ckpt_path):
 
 def load_biomarker(modality: str, data_args: dict) -> Biomarker:
     return Biomarker(
-        path=Path(DELPHI_DATA_DIR) / "ukb_real_data" / "biomarkers" / modality.lower(),
+        path=AnyPath(DELPHI_DATA_DIR)
+        / "ukb_real_data"
+        / "biomarkers"
+        / modality.lower(),
         stats_subjects=np.fromfile(
-            Path(DELPHI_DATA_DIR) / "ukb_real_data" / data_args["subject_list"],
+            AnyPath(DELPHI_DATA_DIR) / "ukb_real_data" / data_args["subject_list"],
             dtype=np.uint32,
         ),
         first_time_only=True,
@@ -59,7 +62,7 @@ def load_biomarker(modality: str, data_args: dict) -> Biomarker:
 
 
 # %%
-ckpt_path = Path(DELPHI_CKPT_DIR) / "interpret/blood/ckpt.pt"
+ckpt_path = AnyPath(DELPHI_CKPT_DIR) / "interpret/blood/ckpt.pt"
 ig_dir = ckpt_path.parent / "ig-biomarker"
 
 attrs, logits, pids, feature_names, target_ids = load_ig(ig_dir)

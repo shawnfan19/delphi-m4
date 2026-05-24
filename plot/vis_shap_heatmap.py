@@ -18,11 +18,11 @@ import argparse
 import gzip
 import pickle
 import sys
-from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
+from cloudpathlib import AnyPath
 from matplotlib.patches import Patch
 from tqdm import tqdm
 
@@ -45,13 +45,18 @@ else:
     args = parser.parse_args()
 
 # %% Load pickle
-shap_path = Path(args.shap_path)
+shap_path = AnyPath(args.shap_path)
 if not shap_path.exists():
-    from delphi.env import DELPHI_CKPT_DIR
+    from delphi.env import DELPHI_CKPT_READ, DELPHI_CKPT_WRITE
 
-    shap_path = Path(DELPHI_CKPT_DIR) / args.shap_path
+    shap_path = AnyPath(DELPHI_CKPT_READ) / args.shap_path
+    out_dir = AnyPath(
+        str(shap_path.parent).replace(DELPHI_CKPT_READ, DELPHI_CKPT_WRITE)
+    )
+else:
+    out_dir = shap_path.parent
 
-with gzip.open(shap_path, "rb") as f:
+with shap_path.open("rb") as raw, gzip.open(raw, "rb") as f:
     shap_pickle = pickle.load(f)
 
 tokenizer = shap_pickle.pop("tokenizer")
@@ -306,8 +311,11 @@ plt.suptitle(
 )
 
 if args.output:
-    g.savefig(shap_path.parent / f"{args.output}.png", dpi=300, bbox_inches="tight")
-    print(f"Saved to {shap_path.parent / args.output}.png")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{args.output}.png"
+    with out_path.open("wb") as f:
+        g.savefig(f, format="png", dpi=300, bbox_inches="tight")
+    print(f"Saved to {out_path}")
 
 plt.show()
 
@@ -436,10 +444,10 @@ plt.suptitle(
 )
 
 if args.output:
-    g2.savefig(
-        shap_path.parent / f"{args.output}_token.png", dpi=300, bbox_inches="tight"
-    )
-    print(f"Saved to {shap_path.parent / args.output}_token.png")
+    out_path = out_dir / f"{args.output}_token.png"
+    with out_path.open("wb") as f:
+        g2.savefig(f, format="png", dpi=300, bbox_inches="tight")
+    print(f"Saved to {out_path}")
 
 plt.show()
 

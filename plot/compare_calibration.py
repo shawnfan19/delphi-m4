@@ -1,13 +1,13 @@
 import json
 import math
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 import matplotlib.lines as mlines
 import matplotlib.pyplot as plt
 import numpy as np
 import yaml
+from cloudpathlib import AnyPath
 
 from delphi.env import DELPHI_CKPT_READ
 from delphi.experiment import CliConfig
@@ -38,7 +38,7 @@ class TaskConfig(CliConfig):
 args = TaskConfig.from_cli()
 args.print()
 
-with open(Path(DELPHI_CKPT_READ) / args.logbook, "r") as f:
+with (AnyPath(DELPHI_CKPT_READ) / args.logbook).open("r") as f:
     logbook = json.load(f)
 
 time_horizon = list(logbook.keys())

@@ -18,13 +18,13 @@ import gzip
 import pickle
 import warnings
 from collections import defaultdict
-from pathlib import Path
 from typing import Dict, List, Literal, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from cloudpathlib import AnyPath
 from statsmodels.nonparametric.smoothers_lowess import lowess as sm_lowess
 
 from delphi.data.ukb import Biomarker, MultimodalUKBDataset
@@ -32,9 +32,9 @@ from delphi.env import DELPHI_CKPT_DIR, DELPHI_DATA_DIR
 from delphi.multimodal import Modality
 
 
-def load_shap_data(filepath: str) -> dict:
+def load_shap_data(filepath) -> dict:
     """Load the gzip-compressed pickle file containing SHAP results."""
-    with gzip.open(filepath, "rb") as f:
+    with AnyPath(filepath).open("rb") as raw, gzip.open(raw, "rb") as f:
         shap_data = pickle.load(f)
     tokenizer = shap_data["tokenizer"].copy()
     del shap_data["tokenizer"]
@@ -342,7 +342,7 @@ def plot_shap_dependence(
 
     # 2. Load raw biomarker values
     biomarker = Biomarker(
-        path=Path(DELPHI_DATA_DIR) / f"ukb_real_data/biomarkers/{modality.lower()}",
+        path=AnyPath(DELPHI_DATA_DIR) / f"ukb_real_data/biomarkers/{modality.lower()}",
         z_score=False,
     )
     shap_pids = np.array(list(pid_shap.keys()))
@@ -878,7 +878,7 @@ def plot_feature_disease_heatmap(
 
 # %%
 shap_data, tokenizer = load_shap_data(
-    Path(DELPHI_CKPT_DIR) / "interpret/blood_0.1/shap_biomarkers.pickle.gz"
+    AnyPath(DELPHI_CKPT_DIR) / "interpret/blood_0.1/shap_biomarkers.pickle.gz"
 )
 
 # Get summary
@@ -908,7 +908,7 @@ detokenizer = {v: k for k, v in tokenizer.items()}
 def moi_pids(modality: str, feature: str, greater: bool, cutoff: float):
 
     moi_ds = Biomarker(
-        path=Path(DELPHI_DATA_DIR) / f"ukb_real_data/biomarkers/{modality.lower()}",
+        path=AnyPath(DELPHI_DATA_DIR) / f"ukb_real_data/biomarkers/{modality.lower()}",
         z_score=True,
     )
     moi_data, moi_subs = moi_ds.to_transformed_array(participants)

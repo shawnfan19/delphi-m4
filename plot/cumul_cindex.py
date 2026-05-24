@@ -1,10 +1,10 @@
 import json
-from pathlib import Path
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from cloudpathlib import AnyPath
 
 from delphi.data.ukb import UKBReader
 from delphi.env import DELPHI_CKPT_DIR
@@ -16,10 +16,10 @@ mpl.rcParams["figure.dpi"] = 300
 labels = UKBReader.labels()
 
 json_lst = [
-    Path(DELPHI_CKPT_DIR) / "m4/baseline/cindex_blood+urine+prs.json",
-    Path(DELPHI_CKPT_DIR) / "m4/blood/cindex_blood+urine+prs.json",
-    Path(DELPHI_CKPT_DIR) / "m4/blood+urine/cindex_blood+urine+prs.json",
-    Path(DELPHI_CKPT_DIR) / "m4/blood+urine+prs/cindex_blood+urine+prs.json",
+    AnyPath(DELPHI_CKPT_DIR) / "m4/baseline/cindex_blood+urine+prs.json",
+    AnyPath(DELPHI_CKPT_DIR) / "m4/blood/cindex_blood+urine+prs.json",
+    AnyPath(DELPHI_CKPT_DIR) / "m4/blood+urine/cindex_blood+urine+prs.json",
+    AnyPath(DELPHI_CKPT_DIR) / "m4/blood+urine+prs/cindex_blood+urine+prs.json",
 ]
 
 
@@ -47,7 +47,7 @@ def get_cindex(stats, sex_key):
 
 def to_df(json_path, sex="either", min_events=50):
 
-    with open(json_path) as f:
+    with json_path.open() as f:
         data = json.load(f)
 
     biomarkers = data["config"]["biomarkers"]

@@ -1,16 +1,16 @@
 # +
 import json
 import os
-from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
 import yaml
+from cloudpathlib import AnyPath
 
 from delphi.env import DELPHI_CKPT_DIR
-from delphi.plot import plot_diff_by_chapter
+from delphi.plot import plot_by_chapter
 
 # -
 
@@ -79,11 +79,11 @@ def agg_stats(
 # +
 disease_lst = "config/disease_list/ukb/all_at_least_100.yaml"
 json_path = (
-    Path(DELPHI_CKPT_DIR)
+    AnyPath(DELPHI_CKPT_DIR)
     / "delphi-m4/blood_seed43/auc-min_time_gap-0.01-ckpt-ckpt.json"
 )
 bl_json_path = (
-    Path(DELPHI_CKPT_DIR)
+    AnyPath(DELPHI_CKPT_DIR)
     / "delphi-m4/baseline_seed43/auc-min_time_gap-0.01-ckpt-ckpt.json"
 )
 
@@ -95,11 +95,11 @@ title = "disease cluster modeling"
 with open(disease_lst, "r") as f:
     diseases = yaml.safe_load(f)
 
-with open(json_path, "r") as f:
+with json_path.open("r") as f:
     auc_logbook = json.load(f)
 n_dis, aucs = agg_stats(auc_logbook, diseases, "weighted")
 
-with open(bl_json_path, "r") as f:
+with bl_json_path.open("r") as f:
     bl_auc_logbook = json.load(f)
 _, bl_aucs = agg_stats(bl_auc_logbook, diseases, "weighted")
 
@@ -152,7 +152,9 @@ plt.show()
 
 df = pd.DataFrame({"key": diseases, "diff": aucs - bl_aucs, "n_events": n_dis})
 df = df.dropna(subset=["diff"])
-plot_diff_by_chapter(df, xlabel, ylabel, title="AUC difference by disease")
+plot_by_chapter(
+    df, value_col="diff", ylabel="Δ AUC", hline=0, title="AUC difference by disease"
+)
 plt.show()
 
 
@@ -174,7 +176,7 @@ json_paths = {
 # +
 auc_dict = dict()
 for key, json_path in json_paths.items():
-    with open(Path(DELPHI_CKPT_DIR) / json_path, "r") as f:
+    with (AnyPath(DELPHI_CKPT_DIR) / json_path).open("r") as f:
         auc_logbook = json.load(f)
     n_dis, aucs = agg_stats(auc_logbook, diseases)
     auc_dict[key] = aucs
