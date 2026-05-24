@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import yaml
+from cloudpathlib import AnyPath
 
 from delphi.data.reader import MultimodalReader, TokenReader
 from delphi.env import DELPHI_DATA_READ as DELPHI_DATA_DIR
@@ -12,7 +13,7 @@ NO_EVENT_TOKEN = 1
 
 
 class UKBReader(TokenReader):
-    base_dir = Path(DELPHI_DATA_DIR) / "ukb_real_data"
+    base_dir = AnyPath(DELPHI_DATA_DIR) / "ukb_real_data"
     bmi_keys = [
         "bmi_low",
         "bmi_mid",
@@ -61,7 +62,7 @@ class UKBReader(TokenReader):
     @classmethod
     def labels(cls) -> pd.DataFrame:
         """Load disease label metadata (ICD chapters, colors)."""
-        return pd.read_csv(cls.base_dir / "labels_chapters_colours.csv")
+        return pd.read_csv(str(cls.base_dir / "labels_chapters_colours.csv"))
 
     def is_female(self, pids: np.ndarray) -> np.ndarray:
         female_token = self.tokenizer["female"]
