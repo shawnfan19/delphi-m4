@@ -34,7 +34,7 @@ import pandas as pd
 from delphi.data.ukb import UKBReader
 from delphi.env import DELPHI_CKPT_READ as DELPHI_CKPT_DIR
 from delphi.experiment import CliConfig
-from delphi.plot import plot_diff_by_chapter
+from delphi.plot import plot_by_chapter
 
 mpl.rcParams["figure.dpi"] = 300
 
@@ -186,8 +186,12 @@ for _, row in df_either.nsmallest(k, "diff")[
 
 
 # %%
-plot_diff_by_chapter(
-    df_either, label_a=label_a, label_b=label_b, title="C-index difference by disease"
+plot_by_chapter(
+    df_either,
+    value_col="diff",
+    ylabel="Δ concordance",
+    hline=0,
+    title="C-index difference by disease",
 )
 plt.show()
 

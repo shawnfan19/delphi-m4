@@ -57,23 +57,28 @@ def _icd_from_key(key: str) -> str:
     return key.split("_")[0].upper()
 
 
-def plot_diff_by_chapter(
+def plot_by_chapter(
     df,
-    label_a: str,
-    label_b: str,
+    value_col: str,
+    ylabel: str,
+    hline: float | None = 0,
     skip_chapters=("Technical", "Sex", "Smoking, Alcohol and BMI"),
     ylim=(-0.1, 0.1),
     figsize=(10, 4),
-    title="Metric difference by disease",
+    title="Metric by disease",
 ):
-    """Scatter of per-disease metric difference (B − A), grouped by ICD-10 chapter.
+    """Scatter of a per-disease metric, grouped by ICD-10 chapter.
 
     Parameters
     ----------
     df : DataFrame
-        Must have columns: ``key``, ``diff``, ``n_events``.
-    label_a, label_b : str
-        Human-readable labels for the two runs.
+        Must have columns: ``key``, ``<value_col>``, ``n_events``.
+    value_col : str
+        Column in ``df`` to plot on the y-axis.
+    ylabel : str
+        Y-axis label.
+    hline : float or None
+        If not None, draws a dashed horizontal reference line at this y-value.
     skip_chapters : tuple of str
         Chapters to exclude from the plot.
     ylim : tuple or None
@@ -81,7 +86,7 @@ def plot_diff_by_chapter(
     figsize : tuple
         Figure size.
     title : str
-        Plot title (mean diff is appended automatically).
+        Plot title.
 
     Returns
     -------
@@ -124,7 +129,7 @@ def plot_diff_by_chapter(
     for i in range(len(df)):
         ax.scatter(
             df["x"].iloc[i],
-            df["diff"].iloc[i],
+            df[value_col].iloc[i],
             c=[df["color"].iloc[i]],
             s=[sizes[i]],
             edgecolor="white",
@@ -132,13 +137,14 @@ def plot_diff_by_chapter(
             zorder=zorders[i],
             clip_on=(i != len(df) - 1),
         )
-    ax.axhline(0, ls="--", c="0.5", lw=0.75, zorder=5)
+    if hline is not None:
+        ax.axhline(hline, ls="--", c="0.5", lw=0.75, zorder=5)
 
     # Per-chapter: mean line, alternating background
     min_half_width = 3
     chapter_mids, chapter_labels = [], []
     for num, (chapter, g) in enumerate(df.groupby("chapter", sort=False)):
-        m = g["diff"].mean()
+        m = g[value_col].mean()
         x0, x1 = g["x"].min(), g["x"].max()
         xmid = (x0 + x1) / 2
         x0_vis = min(x0, xmid - min_half_width)
@@ -156,8 +162,7 @@ def plot_diff_by_chapter(
 
     if ylim:
         ax.set_ylim(ylim)
-    ax.set_ylabel(f"Δ concordance")
-    # title = f"{title}\nmean diff {df['diff'].mean():.3f}"
+    ax.set_ylabel(ylabel)
     ax.set_title(title, y=1.15)
 
     # Size legend
