@@ -1,12 +1,12 @@
 # !pip install db-dtypes
 import os
-from cloudpathlib import AnyPath as Path
 
 import db_dtypes  # registers the 'dbdate' dtype with pandas
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import yaml
+from cloudpathlib import AnyPath as Path
 
 from delphi.env import DELPHI_DATA_DIR
 
@@ -38,6 +38,8 @@ panels
 # -
 
 odir = Path(DELPHI_DATA_DIR) / f"aou_uk/biomarker_stats"
+rows = []
+seen = set()
 for panel_name, biomarkers in panels.items():
     data_dir = Path(DELPHI_DATA_DIR) / f"aou_uk/biomarkers/{panel_name}"
     df = pd.read_parquet(data_dir / "data.parquet")
@@ -51,6 +53,23 @@ for panel_name, biomarkers in panels.items():
     for biomarker in biomarkers:
         low, high = biomarker_dict[biomarker]["range"]
         df.loc[(df[biomarker] < low) | (df[biomarker] > high), biomarker] = np.nan
+
+        if biomarker not in seen:
+            seen.add(biomarker)
+            values = df[biomarker].dropna().to_numpy()
+            rows.append(
+                {
+                    "biomarker": biomarker,
+                    "n": int(len(values)),
+                    "mean": float(np.mean(values)),
+                    "std": float(np.std(values)),
+                    "median": float(np.median(values)),
+                    "q25": float(np.quantile(values, 0.25)),
+                    "q75": float(np.quantile(values, 0.75)),
+                    "min": float(np.min(values)),
+                    "max": float(np.max(values)),
+                }
+            )
 
         bins = 50
 
@@ -80,10 +99,13 @@ for panel_name, biomarkers in panels.items():
 
         fig.tight_layout()
         with (odir / f"{biomarker}.png").open("wb") as f:
-              plt.savefig(f, format="png", dpi=300)
+            plt.savefig(f, format="png", dpi=300)
         # plt.savefig(odir / f"{biomarker}.png", dpi=300)
         plt.close()
 
     df = df.dropna(subset=biomarkers)
     n_accept = df.shape[0]
     print(f"n_accept: {n_accept}; n_participants: {len(df['person_id'].unique())}")
+
+with (odir / "stats.csv").open("w") as f:
+    pd.DataFrame(rows).to_csv(f, index=False)
