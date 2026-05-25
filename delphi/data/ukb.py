@@ -87,7 +87,6 @@ class Biomarker:
         self,
         name: str,
         memmap: bool = False,
-        first_time_only: bool = True,
     ):
 
         path = self.base_dir / name
@@ -113,8 +112,6 @@ class Biomarker:
         cumul_ct = np.insert(np.cumsum(ct), 0, 0, axis=0)
         self.pid2idx = dict(zip(self.uniq_pids, cumul_ct))
         self.pid2cnt = dict(zip(self.uniq_pids, ct))
-
-        self.first_time_only = first_time_only
 
     @classmethod
     def input_size(cls, name: str):
@@ -143,7 +140,7 @@ class Biomarker:
     def __repr__(self):
         return f"Biomarker(path={self.path}, n_features={self.n_features})"
 
-    def to_array(self, subjects):
+    def to_array(self, subjects, first_time_only: bool = False):
         data, subs = list(), list()
         include = np.isin(self.pids, subjects)
         start_pos = self.start_pos[include]
@@ -151,7 +148,7 @@ class Biomarker:
         pids = self.pids[include]
         seen = set()
         for pid, i, l in zip(pids, start_pos, seq_len):
-            if self.first_time_only:
+            if first_time_only:
                 if pid in seen:
                     continue
                 seen.add(pid)
@@ -161,8 +158,8 @@ class Biomarker:
         data = np.stack(data, axis=0)
         return data, np.array(subs)
 
-    def stats(self, subjects: np.ndarray):
-        data, _ = self.to_array(subjects)
+    def stats(self, subjects: np.ndarray, first_time_only: bool = True):
+        data, _ = self.to_array(subjects, first_time_only=first_time_only)
         return np.mean(data, axis=0), np.std(data, axis=0)
 
     def __getitem__(
@@ -176,16 +173,10 @@ class Biomarker:
         pid_l = self.pid2cnt[pid]
         pid_slice = slice(pid_i, pid_i + pid_l)
 
-        pid_data = list()
         pid_time = self.time_steps[pid_slice]
         pid_seq_len = self.seq_len[pid_slice]
         pid_start_pos = self.start_pos[pid_slice]
-        for i, l in zip(pid_start_pos, pid_seq_len):
-            x = self.data[i : i + l]
-            pid_data.append(x)
-            if self.first_time_only:
-                pid_time = pid_time[[0]]
-                break
+        pid_data = [self.data[i : i + l] for i, l in zip(pid_start_pos, pid_seq_len)]
         return pid_data, pid_time
 
 

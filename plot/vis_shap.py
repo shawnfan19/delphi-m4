@@ -346,7 +346,7 @@ def plot_shap_dependence(
         z_score=False,
     )
     shap_pids = np.array(list(pid_shap.keys()))
-    bio_data, bio_subs = biomarker.to_array(shap_pids)
+    bio_data, bio_subs = biomarker.to_array(shap_pids, first_time_only=True)
 
     # 3. Align: keep only participants present in both
     bio_shap_values = np.array([pid_shap[pid] for pid in bio_subs])

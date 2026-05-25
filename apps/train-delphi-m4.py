@@ -31,7 +31,7 @@ class TrainConfig(TrainBaseConfig):
     )
     panel: None | str = None
     biomarkers: None | list[str] = None
-    first_time_only: bool = False
+    first_time_only: bool = True
     must_have: bool = False
     z_score_biomarkers: bool = True
     expansion_packs: None | list[str] = None

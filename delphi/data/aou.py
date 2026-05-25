@@ -84,7 +84,7 @@ class AOUBiomarker:
 
     base_dir = AnyPath(DELPHI_DATA_DIR) / "aou_uk" / "biomarkers"
 
-    def __init__(self, name: str, first_time_only: bool = True):
+    def __init__(self, name: str):
         path = self.base_dir / name / "data.parquet"
         assert path.exists(), FileNotFoundError(f"biomarker {path} not found")
         self.path = path
@@ -107,8 +107,6 @@ class AOUBiomarker:
         )
         self.pid2idx = dict(zip(uniq, first_idx))
         self.pid2cnt = dict(zip(uniq, counts))
-
-        self.first_time_only = first_time_only
 
     @classmethod
     def input_size(cls, name: str) -> int:
@@ -147,19 +145,17 @@ class AOUBiomarker:
 
         i = self.pid2idx[pid]
         n = self.pid2cnt[pid]
-        if self.first_time_only:
-            return [self.data[i]], self.time_steps[i : i + 1]
         pid_data = [self.data[j] for j in range(i, i + n)]
         return pid_data, self.time_steps[i : i + n]
 
-    def to_array(self, subjects):
+    def to_array(self, subjects, first_time_only: bool = False):
         data, subs = list(), list()
         include = np.isin(self.pids, subjects)
         feat_data = self.data[include]
         pids = self.pids[include]
         seen = set()
         for j, pid in enumerate(pids):
-            if self.first_time_only:
+            if first_time_only:
                 if pid in seen:
                     continue
                 seen.add(pid)
@@ -167,8 +163,8 @@ class AOUBiomarker:
             subs.append(pid)
         return np.stack(data, axis=0), np.array(subs)
 
-    def stats(self, subjects: np.ndarray):
-        data, _ = self.to_array(subjects)
+    def stats(self, subjects: np.ndarray, first_time_only: bool = True):
+        data, _ = self.to_array(subjects, first_time_only=first_time_only)
         return np.mean(data, axis=0), np.std(data, axis=0)
 
 

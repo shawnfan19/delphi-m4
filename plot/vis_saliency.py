@@ -55,7 +55,6 @@ def load_biomarker(modality: str, data_args: dict) -> Biomarker:
             AnyPath(DELPHI_DATA_DIR) / "ukb_real_data" / data_args["subject_list"],
             dtype=np.uint32,
         ),
-        first_time_only=True,
         z_score=data_args.get("z_score_biomarkers", False),
     )
 
@@ -71,7 +70,7 @@ detokenizer = {v: k for k, v in tokenizer.items()}
 
 bio = load_biomarker(modality_name, data_args)
 features = bio.features
-biomarker_val, _ = bio.to_array(pids)
+biomarker_val, _ = bio.to_array(pids, first_time_only=True)
 bio_timesteps = bio.first_occurrence_times(pids)
 
 # %%

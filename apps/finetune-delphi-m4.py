@@ -37,7 +37,7 @@ class FinetuneConfig(TrainBaseConfig):
         default_factory=lambda: DelphiM4Config(block_size=None)
     )
     biomarkers: list[str] = field(default_factory=list)
-    first_time_only: bool = False
+    first_time_only: bool = True
     z_score_biomarkers: bool = True
     biomarker_dropout: None | float = None
     freeze_backbone: bool = False
@@ -133,7 +133,7 @@ def finetune(cfg: FinetuneConfig):
         z_score=cfg.z_score_biomarkers,
         mean=mean_dict,
         std=std_dict,
-        first_time_only=False,
+        first_time_only=cfg.first_time_only,
         seed=cfg.seed,
     )
     train_bio_transform.describe()
@@ -143,7 +143,7 @@ def finetune(cfg: FinetuneConfig):
         z_score=cfg.z_score_biomarkers,
         mean=mean_dict,
         std=std_dict,
-        first_time_only=False,
+        first_time_only=cfg.first_time_only,
         seed=cfg.seed,
     )
 
