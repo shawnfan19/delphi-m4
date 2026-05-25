@@ -1,12 +1,14 @@
 # !pip install db-dtypes
 import os
-from pathlib import Path
+from cloudpathlib import AnyPath as Path
 
 import db_dtypes  # registers the 'dbdate' dtype with pandas
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import yaml
+
+from delphi.env import DELPHI_DATA_DIR
 
 CWD = Path(os.getcwd())
 CWD
@@ -35,8 +37,9 @@ panels
 # panels
 # -
 
+odir = Path(DELPHI_DATA_DIR) / f"aou_uk/biomarker_stats"
 for panel_name, biomarkers in panels.items():
-    data_dir = Path.home() / f"workspace/data/aou_uk/biomarkers/{panel_name}"
+    data_dir = Path(DELPHI_DATA_DIR) / f"aou_uk/biomarkers/{panel_name}"
     df = pd.read_parquet(data_dir / "data.parquet")
     n_raw = df.shape[0]
     df = df.dropna(subset=biomarkers)
@@ -76,7 +79,9 @@ for panel_name, biomarkers in panels.items():
         fig.suptitle(biomarker)
 
         fig.tight_layout()
-        plt.savefig(data_dir / f"{biomarker}.png", dpi=300)
+        with (odir / f"{biomarker}.png").open("wb") as f:
+              plt.savefig(f, format="png", dpi=300)
+        # plt.savefig(odir / f"{biomarker}.png", dpi=300)
         plt.close()
 
     df = df.dropna(subset=biomarkers)

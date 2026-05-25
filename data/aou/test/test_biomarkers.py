@@ -43,7 +43,7 @@ def features_within_range(
         entry = biomarker_config.get(feat)
         if entry is None:
             raise AssertionError(f"{feat!r} not found in data/biomarker.yaml")
-        lo, hi = entry["range"]
+        lo, hi = entry["aou"]["range"]
         if not ((df[feat] >= lo) & (df[feat] <= hi)).all():
             return False
     return True
