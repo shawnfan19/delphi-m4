@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 from typing import TypedDict
 
+import numpy as np
 import yaml
 from google.cloud import storage
 from sqlalchemy import (
@@ -184,15 +185,19 @@ def create_biomarker_panel_query(biomarkers: dict[str:Biomarker]):
     )
 
     return final_query
+
+
 # +
 client = Client(dataset=WORKSPACE_CDR)
 storage_client = storage.Client()
 bucket = storage_client.bucket(DATA_BUCKET)
 
-def upload_yaml(data, path): 
+
+def upload_yaml(data, path):
     blob = bucket.blob(path)
     blob.upload_from_string(
-        yaml.dump(data), content_type="text/yaml",
+        yaml.dump(data),
+        content_type="text/yaml",
     )
 
 
@@ -256,17 +261,34 @@ for panel_name, biomarker_list in tqdm(panels.items(), total=len(panels)):
     )
     df = client.run(str(compiled_q))
 
+    n_raw = len(df)
     missing_counts = df[biomarker_list].isna().sum().to_dict()
     upload_yaml(
-        data=missing_counts,
-        path=f"aou_uk/biomarkers/{panel_name}/missing_counts.yaml"
+        data=missing_counts, path=f"aou_uk/biomarkers/{panel_name}/missing_counts.yaml"
+    )
+    df.to_parquet(
+        f"gs://{DATA_BUCKET}/aou_uk/biomarkers/{panel_name}/raw.parquet", index=False
     )
 
     df = df.dropna(subset=biomarker_list)
+    n_after_dropna = len(df)
+
+    oob_counts = dict()
+    for bm in biomarker_list:
+        lo, hi = biomarker_dict[bm]["range"]
+        oob = (df[bm] < lo) | (df[bm] > hi)
+        oob_counts[bm] = int(oob.sum())
+        df.loc[oob, bm] = np.nan
+    df = df.dropna(subset=biomarker_list)
+    n_final = len(df)
+
+    print(
+        f"[{panel_name}] n_raw={n_raw}, n_after_dropna={n_after_dropna}, "
+        f"n_final={n_final}, oob_per_bm={oob_counts}"
+    )
+
     df.to_parquet(
         f"gs://{DATA_BUCKET}/aou_uk/biomarkers/{panel_name}/data.parquet", index=False
     )
 
 DATA_BUCKET
-
-
