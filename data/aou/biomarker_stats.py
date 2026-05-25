@@ -46,9 +46,17 @@ for panel_name, biomarkers in panels.items():
     n_raw = df.shape[0]
     df = df.dropna(subset=biomarkers)
     n_complete = df.shape[0]
+    # First occurrence per participant (matches BiomarkerTransform(first_time_only=True)
+    # at eval time): keep the earliest visit for each person_id.
+    df = df.sort_values(["person_id", "age_in_days"]).drop_duplicates(
+        subset=["person_id"], keep="first"
+    )
+    n_first = df.shape[0]
     print(panel_name)
     print(f"n_raw: {n_raw}")
-    print(f"n_complete: {n_complete}; n_participants: {len(df['person_id'].unique())}")
+    print(
+        f"n_complete: {n_complete}; n_first: {n_first}; n_participants: {len(df['person_id'].unique())}"
+    )
 
     for biomarker in biomarkers:
         low, high = biomarker_dict[biomarker]["range"]

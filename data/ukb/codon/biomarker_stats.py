@@ -32,8 +32,11 @@ rows = []
 for biomarker in biomarkers:
     fid = name_to_fid[biomarker]
     df = db.load_fid(fid).apply(pd.to_numeric, errors="coerce")
-    values = df.to_numpy().ravel()
-    values = values[~np.isnan(values)]
+    # First occurrence per participant: bfill across visit-instance columns
+    # (which are in chronological order: instance 0 = init_assess, 1 = repeat, ...)
+    # and take the first column, then drop participants with no measurement.
+    df = df.reindex(sorted(df.columns), axis=1)
+    values = df.bfill(axis=1).iloc[:, 0].dropna().to_numpy()
     print(f"{biomarker} (fid={fid}): n_values={len(values)}")
 
     rows.append(
