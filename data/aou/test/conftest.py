@@ -38,6 +38,13 @@ def panel_config():
         return yaml.safe_load(f)
 
 
+@pytest.fixture
+def biomarker_config():
+    path = Path(__file__).resolve().parent.parent.parent / "biomarker.yaml"
+    with open(path, "r") as f:
+        return yaml.safe_load(f)
+
+
 def pytest_generate_tests(metafunc: Metafunc):
     if "panel" in metafunc.fixturenames:
         biomarkers_dir = get_dataset_dir(metafunc.config) / "biomarkers"

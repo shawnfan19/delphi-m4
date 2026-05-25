@@ -36,7 +36,20 @@ def n_features_matches_config(
     return len(features) == len(declared)
 
 
-def test_biomarkers(dataset_dir, panel, panel_config):
+def features_within_range(
+    df: pd.DataFrame, features: list[str], biomarker_config: dict
+) -> bool:
+    for feat in features:
+        entry = biomarker_config.get(feat)
+        if entry is None:
+            raise AssertionError(f"{feat!r} not found in data/biomarker.yaml")
+        lo, hi = entry["range"]
+        if not ((df[feat] >= lo) & (df[feat] <= hi)).all():
+            return False
+    return True
+
+
+def test_biomarkers(dataset_dir, panel, panel_config, biomarker_config):
 
     panel_path = dataset_dir / "biomarkers" / panel
     assert data_parquet_exists(panel_path=panel_path)
@@ -52,4 +65,7 @@ def test_biomarkers(dataset_dir, panel, panel_config):
     assert parquet_sorted_by(df=df, cols=list(BASE_COLUMNS))
     assert n_features_matches_config(
         features=features, panel_name=panel, panel_config=panel_config
+    )
+    assert features_within_range(
+        df=df, features=features, biomarker_config=biomarker_config
     )
