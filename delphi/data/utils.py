@@ -360,3 +360,12 @@ def update_tokenizer(base_tokenizer: dict, add_tokenizer: dict) -> tuple[dict, i
         else:
             raise ValueError(f"{key} already exists in base tokenizer")
     return base_tokenizer, offset
+
+
+def filter_participants(pids, filter_list, any=True):
+    if any:
+        union = np.concatenate(filter_list)
+        return pids[np.isin(pids, union)]
+    for f in filter_list:
+        pids = pids[np.isin(pids, f)]
+    return pids

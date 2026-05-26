@@ -6,12 +6,7 @@ from omegaconf import OmegaConf
 from delphi import distributed
 from delphi.data import MultimodalDataset
 from delphi.data.transform import BiomarkerTransform, TokenTransform
-from delphi.data.ukb import (
-    Biomarker,
-    MultimodalUKBReader,
-    filter_participants_with_biomarkers,
-    filter_participants_with_expansion_packs,
-)
+from delphi.data.ukb import Biomarker, MultimodalUKBReader
 from delphi.experiment import BaseTrainer, Logger, TrainBaseConfig, seed_everything
 from delphi.log import Checkpointer
 from delphi.model.multimodal import DelphiM4, DelphiM4Config
@@ -56,10 +51,10 @@ def train(cfg: TrainConfig):
     if cfg.must_have:
         print(f"keeping participants with any of: {cfg.biomarkers}")
         total_train, total_val = train_pids.size, val_pids.size
-        train_pids = filter_participants_with_biomarkers(
+        train_pids = MultimodalUKBReader.filter_participants_with_biomarkers(
             train_pids, biomarkers=cfg.biomarkers, any=True
         )
-        val_pids = filter_participants_with_biomarkers(
+        val_pids = MultimodalUKBReader.filter_participants_with_biomarkers(
             val_pids, biomarkers=cfg.biomarkers, any=True
         )
         print(f"{train_pids.size} / {total_train} train pids")
@@ -68,10 +63,10 @@ def train(cfg: TrainConfig):
     if cfg.must_have_expansion_packs:
         print(f"keeping participants with any of: {cfg.expansion_packs}")
         total_train, total_val = train_pids.size, val_pids.size
-        train_pids = filter_participants_with_expansion_packs(
+        train_pids = MultimodalUKBReader.filter_participants_with_expansion_packs(
             train_pids, expansion_packs=cfg.expansion_packs, any=True
         )
-        val_pids = filter_participants_with_expansion_packs(
+        val_pids = MultimodalUKBReader.filter_participants_with_expansion_packs(
             val_pids, expansion_packs=cfg.expansion_packs, any=True
         )
         print(f"{train_pids.size} / {total_train} train pids")

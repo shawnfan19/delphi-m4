@@ -25,12 +25,7 @@ from tqdm import tqdm
 
 from delphi.data import MultimodalDataset
 from delphi.data.transform import BiomarkerTransform, MultimodalPrompt, TokenTransform
-from delphi.data.ukb import (
-    Biomarker,
-    ExpansionPack,
-    MultimodalUKBReader,
-    filter_participants_with_biomarkers,
-)
+from delphi.data.ukb import Biomarker, ExpansionPack, MultimodalUKBReader
 from delphi.env import DELPHI_CKPT_READ, DELPHI_CKPT_WRITE
 from delphi.eval.auc import batched_mann_whitney_auc
 from delphi.eval.survival import NelsonAalenEstimator
@@ -90,7 +85,7 @@ assert model.config.block_size is None
 
 val_pids = MultimodalUKBReader.participants("val")
 total_val = val_pids.size
-val_pids = filter_participants_with_biomarkers(
+val_pids = MultimodalUKBReader.filter_participants_with_biomarkers(
     val_pids, biomarkers=args.biomarkers, any=False
 )
 print(f"{val_pids.size} / {total_val} val pids (biomarker filter)")

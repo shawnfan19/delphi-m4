@@ -7,6 +7,7 @@ import yaml
 from cloudpathlib import AnyPath
 
 from delphi.data.reader import MultimodalReader, TokenReader
+from delphi.data.utils import filter_participants
 from delphi.env import DELPHI_DATA_READ as DELPHI_DATA_DIR
 
 NO_EVENT_TOKEN = 1
@@ -55,6 +56,10 @@ class UKBReader(TokenReader):
 
     @classmethod
     def participants(cls, fold):
+        if fold == "all":
+            return pd.read_csv(cls.base_dir / "p2i.csv", usecols=["pid"])[
+                "pid"
+            ].to_numpy(dtype=np.uint32)
         return np.fromfile(
             cls.base_dir / "participants" / f"{fold}_fold.bin", dtype=np.uint32
         )
@@ -278,51 +283,29 @@ class MultimodalUKBReader(MultimodalReader):
     def recruitment_times(self, pids: np.ndarray) -> np.ndarray:
         return self.token_reader.recruitment_times(pids)
 
+    @classmethod
+    def filter_participants_with_biomarkers(cls, pids, biomarkers, any=True):
+        filter_list = [Biomarker.participants(b) for b in biomarkers]
+        return filter_participants(pids, filter_list, any)
 
-def filter_participants(pids, filter_list, any=True):
+    @classmethod
+    def filter_participants_with_expansion_packs(cls, pids, expansion_packs, any=True):
+        filter_list = [ExpansionPack.participants(p) for p in expansion_packs]
+        return filter_participants(pids, filter_list, any)
 
-    if any:
-        union = np.concatenate([f for f in filter_list])
-        pids = pids[np.isin(pids, union)]
-    else:
-        for f in filter_list:
-            pids = pids[np.isin(pids, f)]
-    return pids
-
-
-def filter_participants_with_biomarkers(pids, biomarkers, any=True):
-
-    filter_list = list()
-    for biomarker in biomarkers:
-        filter_list.append(Biomarker.participants(biomarker))
-
-    return filter_participants(pids, filter_list, any)
-
-
-def filter_participants_with_expansion_packs(pids, expansion_packs, any=True):
-
-    filter_list = list()
-    for pack in expansion_packs:
-        filter_list.append(ExpansionPack.participants(pack))
-
-    return filter_participants(pids, filter_list, any)
-
-
-def filter_participants_with_modalities(pids, biomarkers, expansion_packs):
-    if biomarkers is not None:
-        total = pids.size
-        pids = filter_participants_with_biomarkers(
-            pids, biomarkers=biomarkers, any=True
-        )
-        print(f"{pids.size} / {total} val pids (biomarker filter)")
-    if expansion_packs is not None:
-        total = pids.size
-        pids = filter_participants_with_expansion_packs(
-            pids, expansion_packs=expansion_packs, any=True
-        )
-        print(f"{pids.size} / {total} val pids (expansion pack filter)")
-
-    return pids
+    @classmethod
+    def filter_participants_with_modalities(cls, pids, biomarkers, expansion_packs):
+        if biomarkers is not None:
+            total = pids.size
+            pids = cls.filter_participants_with_biomarkers(pids, biomarkers, any=True)
+            print(f"{pids.size} / {total} pids (biomarker filter)")
+        if expansion_packs is not None:
+            total = pids.size
+            pids = cls.filter_participants_with_expansion_packs(
+                pids, expansion_packs, any=True
+            )
+            print(f"{pids.size} / {total} pids (expansion pack filter)")
+        return pids
 
 
 def first_modality_timestep(pids, biomarkers, expansion_packs):

@@ -48,3 +48,31 @@ def multimodal_reader_cls():
 
         return MultimodalAOUReader
     raise ValueError(f"unknown dataset: {dataset!r} (expected 'ukb' or 'aou')")
+
+
+def reader_cls():
+    """Return the TokenReader class for the active dataset."""
+    dataset = os.environ.get("DELPHI_DATASET") or detect_dataset()
+    if dataset == "ukb":
+        from delphi.data.ukb import UKBReader
+
+        return UKBReader
+    if dataset == "aou":
+        from delphi.data.aou import AOUReader
+
+        return AOUReader
+    raise ValueError(f"unknown dataset: {dataset!r} (expected 'ukb' or 'aou')")
+
+
+def biomarker_cls():
+    """Return the Biomarker class for the active dataset."""
+    dataset = os.environ.get("DELPHI_DATASET") or detect_dataset()
+    if dataset == "ukb":
+        from delphi.data.ukb import Biomarker
+
+        return Biomarker
+    if dataset == "aou":
+        from delphi.data.aou import AOUBiomarker
+
+        return AOUBiomarker
+    raise ValueError(f"unknown dataset: {dataset!r} (expected 'ukb' or 'aou')")

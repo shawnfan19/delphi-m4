@@ -8,11 +8,7 @@ from omegaconf import OmegaConf
 from delphi import distributed
 from delphi.data import MultimodalDataset
 from delphi.data.transform import BiomarkerTransform, TokenTransform
-from delphi.data.ukb import (
-    Biomarker,
-    MultimodalUKBReader,
-    filter_participants_with_biomarkers,
-)
+from delphi.data.ukb import Biomarker, MultimodalUKBReader
 from delphi.env import DELPHI_CKPT_READ as DELPHI_CKPT_DIR
 from delphi.experiment import BaseTrainer, Logger, TrainBaseConfig, seed_everything
 from delphi.log import Checkpointer
@@ -84,10 +80,10 @@ def finetune(cfg: FinetuneConfig):
     val_pids = MultimodalUKBReader.participants("val")
     print(f"keeping participants with any of: {cfg.biomarkers}")
     total_train, total_val = train_pids.size, val_pids.size
-    train_pids = filter_participants_with_biomarkers(
+    train_pids = MultimodalUKBReader.filter_participants_with_biomarkers(
         train_pids, biomarkers=cfg.biomarkers, any=True
     )
-    val_pids = filter_participants_with_biomarkers(
+    val_pids = MultimodalUKBReader.filter_participants_with_biomarkers(
         val_pids, biomarkers=cfg.biomarkers, any=True
     )
     print(f"{train_pids.size} / {total_train} train pids")

@@ -8,11 +8,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from delphi.data.ukb import (
-    Biomarker,
-    UKBReader,
-    filter_participants_with_biomarkers,
-)
+from delphi.data.auto import biomarker_cls, multimodal_reader_cls, reader_cls
+from delphi.data.reader import TokenReader
 from delphi.experiment import CliConfig
 
 
@@ -29,13 +26,15 @@ args = TaskConfig.from_cli()
 args.print()
 
 
-def pick_pids(args: TaskConfig) -> list[int]:
+def pick_pids(args: TaskConfig, reader_cls_, mm_cls) -> list[int]:
     if args.pid is not None:
         return [args.pid]
 
-    pids = np.fromfile(UKBReader.base_dir / "participants" / "all.bin", dtype=np.uint32)
+    pids = reader_cls_.participants("all")
     if args.biomarkers:
-        pids = filter_participants_with_biomarkers(pids, args.biomarkers, any=True)
+        pids = mm_cls.filter_participants_with_biomarkers(
+            pids, biomarkers=args.biomarkers, any=True
+        )
     rng = np.random.default_rng(args.seed)
     sampled = rng.choice(pids, size=args.n, replace=False)
     return [int(p) for p in sampled]
@@ -43,8 +42,8 @@ def pick_pids(args: TaskConfig) -> list[int]:
 
 def build_rows(
     pid: int,
-    reader: UKBReader,
-    bios: dict[str, Biomarker],
+    reader: TokenReader,
+    bios: dict[str, object],
     label_by_id: dict[int, str],
 ) -> tuple[str | None, list[tuple]]:
     tokens, times = reader[pid]
@@ -131,14 +130,22 @@ def render(
     print("═" * width)
 
 
-reader = UKBReader()
-bios = {name: Biomarker(name) for name in args.biomarkers}
-labels_df = UKBReader.labels()
-label_by_id = {
-    int(idx): str(name) for idx, name in zip(labels_df["index"], labels_df["name"])
-}
+reader_cls_ = reader_cls()
+bio_cls = biomarker_cls()
+mm_cls = multimodal_reader_cls()
+reader = reader_cls_()
+bios = {name: bio_cls(name) for name in args.biomarkers}
 
-pids = pick_pids(args)
+labels_fn = getattr(reader_cls_, "labels", None)
+if labels_fn is not None:
+    labels_df = labels_fn()
+    label_by_id = {
+        int(idx): str(name) for idx, name in zip(labels_df["index"], labels_df["name"])
+    }
+else:
+    label_by_id = {}
+
+pids = pick_pids(args, reader_cls_, mm_cls)
 
 for pid in pids:
     sex, rows = build_rows(pid, reader, bios, label_by_id)

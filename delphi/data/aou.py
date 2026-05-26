@@ -7,6 +7,7 @@ import yaml
 from cloudpathlib import AnyPath
 
 from delphi.data.reader import MultimodalReader, TokenReader
+from delphi.data.utils import filter_participants
 from delphi.env import DELPHI_DATA_READ as DELPHI_DATA_DIR
 
 
@@ -252,3 +253,27 @@ class MultimodalAOUReader(MultimodalReader):
 
     def exit_times(self, pids: np.ndarray) -> np.ndarray:
         return self.token_reader.exit_times(pids)
+
+    @classmethod
+    def filter_participants_with_biomarkers(cls, pids, biomarkers, any=True):
+        filter_list = [AOUBiomarker.participants(b) for b in biomarkers]
+        return filter_participants(pids, filter_list, any)
+
+    @classmethod
+    def filter_participants_with_expansion_packs(cls, pids, expansion_packs, any=True):
+        filter_list = [AOUExpansionPack.participants(p) for p in expansion_packs]
+        return filter_participants(pids, filter_list, any)
+
+    @classmethod
+    def filter_participants_with_modalities(cls, pids, biomarkers, expansion_packs):
+        if biomarkers is not None:
+            total = pids.size
+            pids = cls.filter_participants_with_biomarkers(pids, biomarkers, any=True)
+            print(f"{pids.size} / {total} pids (biomarker filter)")
+        if expansion_packs is not None:
+            total = pids.size
+            pids = cls.filter_participants_with_expansion_packs(
+                pids, expansion_packs, any=True
+            )
+            print(f"{pids.size} / {total} pids (expansion pack filter)")
+        return pids

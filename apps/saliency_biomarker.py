@@ -11,11 +11,7 @@ from tqdm import tqdm
 
 from delphi.data import MultimodalDataset
 from delphi.data.transform import BiomarkerTransform, MultimodalPrompt, TokenTransform
-from delphi.data.ukb import (
-    Biomarker,
-    MultimodalUKBReader,
-    filter_participants_with_biomarkers,
-)
+from delphi.data.ukb import Biomarker, MultimodalUKBReader
 from delphi.env import DELPHI_CKPT_DIR
 from delphi.experiment import eval_iter, load_ckpt, move_batch_to_device
 
@@ -74,7 +70,7 @@ if biomarker_transform is not None:
 
 val_pids = MultimodalUKBReader.participants("val")
 total_val = val_pids.size
-val_pids = filter_participants_with_biomarkers(
+val_pids = MultimodalUKBReader.filter_participants_with_biomarkers(
     val_pids, biomarkers=[mod_name], any=True
 )
 print(f"{val_pids.size} / {total_val} val pids (has {mod_name})")
