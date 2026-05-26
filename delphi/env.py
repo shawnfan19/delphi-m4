@@ -28,6 +28,7 @@ def load_env_file() -> None:
 
 
 load_env_file()
+DELPHI_DATASET = os.environ.get("DELPHI_DATASET", "")
 
 
 dx_id = os.getenv("DX_PROJECT_CONTEXT_ID")
