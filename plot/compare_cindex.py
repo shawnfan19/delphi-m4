@@ -29,6 +29,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import yaml
 from cloudpathlib import AnyPath
 
 from delphi.data.ukb import UKBReader
@@ -44,6 +45,9 @@ class TaskConfig(CliConfig):
     json: str
     baseline_json: str
     min: int = 50
+    # If set, write the list of diseases whose c-index improved by >= 0.02
+    # (using "either" sex grouping) to this YAML path, relative to this script's dir.
+    improved_yaml: None | str = None
 
 
 args = TaskConfig.from_cli()
@@ -231,11 +235,14 @@ fig.tight_layout()
 plt.show()
 
 # %%
-# import yaml
-#
-# with open("diseases.yaml", "w") as f:
-#     yaml.dump(df_either[df_either["diff"] >= 0.02].key.tolist(), f)
-# df_either[df_either["diff"] >= 0.02].key.tolist()
+# Optionally dump the list of improved diseases (Δ c-index >= 0.02, "either" sex)
+if args.improved_yaml is not None:
+    improved = df_either[df_either["diff"] >= 0.02]["key"].tolist()
+    out_path = AnyPath(__file__).parent / args.improved_yaml
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w") as f:
+        yaml.dump(improved, f)
+    print(f"Wrote {len(improved)} improved diseases to {out_path}")
 
 # %%
 
