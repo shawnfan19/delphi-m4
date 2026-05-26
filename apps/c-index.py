@@ -78,7 +78,7 @@ with torch.no_grad():
         x0, t0, x1, t1 = batch_input
 
         out_dict, _, _ = model(x0, t0)
-        tpp = tpp_dispatch(model, out_dict, device)
+        tpp = tpp_dispatch(model, out_dict)
 
         intensity, nearest_t0 = tpp.intensity(t1 - offset_days)
 
@@ -117,7 +117,7 @@ with torch.no_grad():
         x0, t0, _, _ = batch_input
 
         out_dict, _, _ = model(x0, t0)
-        tpp = tpp_dispatch(model, out_dict, device)
+        tpp = tpp_dispatch(model, out_dict)
         concordance_collator.step(tpp=tpp)
 
 case_sex, case_tokens, total_pairs, concordant = concordance_collator.finalize()

@@ -10,11 +10,9 @@ from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 from typing_extensions import Required
 
 from delphi.model.tpp import (
-    HomoPoissonTPP,
     NeuralIntensity,
     NeuralODEIntensity,
-    NeuralODETPP,
-    NeuralTPP,
+    tpp_dispatch,
 )
 from delphi.model.transformer import (
     AgeEncoding,
@@ -400,40 +398,7 @@ class DelphiM4(torch.nn.Module):
         targets_age: torch.Tensor,
         reduce: bool = True,
     ):
-        terminate_except = torch.tensor(
-            self.config.self_terminate_except, device=targets.device
-        )
-
-        if self.config.loss == "homo_poisson":
-            tpp = HomoPoissonTPP(
-                hidden_states=outputs["h"],
-                logits=outputs["logits"],
-                timesteps=outputs["age"],
-                tokens=outputs["idx"],
-                terminate_except=terminate_except,
-                time_unit=self.config.time_unit,
-            )
-        elif self.config.loss == "neural_tpp":
-            tpp = NeuralTPP(
-                hidden_states=outputs["h"],
-                intensity_func=self.neural_tpp_head,
-                timesteps=outputs["age"],
-                tokens=outputs["idx"],
-                n_grid=self.config.n_integrate_grid,
-                integrate_method=self.config.integrate_method,
-                time_unit=self.config.time_unit,
-            )
-        elif self.config.loss == "neural_ode":
-            tpp = NeuralODETPP(
-                hidden_states=outputs["h"],
-                ode=self.neural_head,
-                timesteps=outputs["age"],
-                tokens=outputs["idx"],
-                method=self.config.ode_method,
-                step_size=self.config.ode_step_size,
-            )
-        else:
-            raise NotImplementedError
+        tpp = tpp_dispatch(self, outputs)
 
         log_p = tpp.log_likelihood(x1=targets, t1=targets_age)
         nll = -log_p

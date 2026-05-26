@@ -544,14 +544,15 @@ class NeuralODETPP:
         return ll.masked_fill(invalid, torch.nan)
 
 
-def tpp_dispatch(model, out_dict, device):
+def tpp_dispatch(model, outputs):
     loss = model.config.loss
+    device = outputs["h"].device
     if loss == "homo_poisson":
         return HomoPoissonTPP(
-            hidden_states=out_dict["h"],
-            logits=out_dict["logits"],
-            tokens=out_dict["idx"],
-            timesteps=out_dict["age"],
+            hidden_states=outputs["h"],
+            logits=outputs["logits"],
+            tokens=outputs["idx"],
+            timesteps=outputs["age"],
             terminate_except=torch.tensor(
                 model.config.self_terminate_except, device=device
             ),
@@ -559,22 +560,22 @@ def tpp_dispatch(model, out_dict, device):
         )
     if loss == "neural_tpp":
         return NeuralTPP(
-            hidden_states=out_dict["h"],
+            hidden_states=outputs["h"],
             intensity_func=model.neural_tpp_head,
-            timesteps=out_dict["age"],
-            tokens=out_dict["idx"],
-            time_unit=model.config.time_unit,
+            timesteps=outputs["age"],
+            tokens=outputs["idx"],
             n_grid=model.config.n_integrate_grid,
-            integrate_method=getattr(model.config, "integrate_method", "trapezoid"),
+            integrate_method=model.config.integrate_method,
+            time_unit=model.config.time_unit,
         )
     if loss == "neural_ode":
         return NeuralODETPP(
             ode=model.neural_head,
-            hidden_states=out_dict["h"],
-            timesteps=out_dict["age"],
-            tokens=out_dict["idx"],
+            hidden_states=outputs["h"],
+            timesteps=outputs["age"],
+            tokens=outputs["idx"],
             time_unit=model.config.time_unit,
             method=model.config.ode_method,
             step_size=model.config.ode_step_size,
         )
-    raise ValueError(f"c-index unsupported for model.config.loss={loss!r}")
+    raise ValueError(f"tpp_dispatch: unsupported model.config.loss={loss!r}")

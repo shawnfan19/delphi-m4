@@ -52,7 +52,7 @@ ds = Dataset(
 for i in range(len(ds)):
     x0, t0, x1, t1 = move_batch_to_device(ds.get_batch([i]), device=device)
     outputs, _, _ = model(x0, t0)
-    tpp = tpp_dispatch(model, outputs, device)
+    tpp = tpp_dispatch(model, outputs)
     # Reshape to (1, 1, N) for the interpolate function
     t1 = t1.unsqueeze(0)
     # Calculate the new total length

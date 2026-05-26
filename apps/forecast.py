@@ -106,7 +106,7 @@ if args.method == "hazards":
         with torch.no_grad():
             outputs, _, _ = model(pmt_idx, pmt_age)
 
-        tpp = tpp_dispatch(model, outputs, device, time_unit=model.config.time_unit)
+        tpp = tpp_dispatch(model, outputs)
 
         t0 = torch.tensor(prompt_age[batch_idx], device=device).to(torch.float32)
         for horizon in args.horizons:
