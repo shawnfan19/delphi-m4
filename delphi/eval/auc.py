@@ -137,6 +137,7 @@ class ConcordanceCollator:
         chunk_size=8192,
         max_gap_days=1826.25,
         cutoff=None,
+        same_sex_only=True,
     ):
         # Flatten case events: each non-NaN entry in dis_rates is a case
         case_participants, case_tokens = (~torch.isnan(dis_rates)).nonzero(
@@ -147,11 +148,13 @@ class ConcordanceCollator:
         self.case_times = case_times[case_participants, case_tokens].float()
         self.case_tokens = case_tokens
         self.case_participants = case_participants
+        self.is_female = is_female
         self.case_sex = is_female[case_participants].cpu().numpy()
 
         self.chunk_size = chunk_size
         self.max_gap_days = max_gap_days
         self.cutoff = cutoff
+        self.same_sex_only = same_sex_only
 
         E = len(case_participants)
         self.concordant_pairs = np.zeros(E, dtype=np.float64)
@@ -204,6 +207,11 @@ class ConcordanceCollator:
             valid &= j_onset.isnan() | (j_onset > chunk_case_times.unsqueeze(0))
             # Do not compare a case to itself
             valid &= j_globals.unsqueeze(1) != chunk_participants.unsqueeze(0)
+            # Restrict controls to the same sex as the case, if requested
+            if self.same_sex_only:
+                case_is_female = self.is_female[chunk_participants]
+                ctrl_is_female = self.is_female[j_globals]
+                valid &= ctrl_is_female.unsqueeze(1) == case_is_female.unsqueeze(0)
 
             self.concordant_pairs[e_start:e_end] += (
                 (valid & (ctrl_scores.float() < chunk_scores.unsqueeze(0)))

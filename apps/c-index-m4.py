@@ -38,6 +38,7 @@ class TaskConfig(CliConfig):
     fname: None | str = None
     panel_name: None | str = None
     fold: str = "val"
+    same_sex: bool = True
 
     def __post_init__(self):
         if self.panel:
@@ -158,6 +159,7 @@ concordance_collator = ConcordanceCollator(
     is_female=is_female,
     max_gap_days=args.max_gap * 365.25,
     chunk_size=args.chunk_size,
+    same_sex_only=args.same_sex,
 )
 
 it2 = tqdm(

@@ -101,6 +101,7 @@ concordance_collator = ConcordanceCollator(
     is_female=is_female,
     max_gap_days=args.max_gap * 365.25,
     chunk_size=args.chunk_size,
+    same_sex_only=False,
 )
 
 it2 = tqdm(
