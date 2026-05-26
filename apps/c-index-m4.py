@@ -5,6 +5,7 @@ import pprint
 from dataclasses import asdict, dataclass
 
 import numpy as np
+import pandas as pd
 import torch
 from cloudpathlib import AnyPath
 from tqdm import tqdm
@@ -174,6 +175,8 @@ with torch.no_grad():
         concordance_collator.step(tpp=tpp)
 
 case_sex, case_tokens, total_pairs, concordant = concordance_collator.finalize()
+case_times = concordance_collator.case_times.cpu().numpy()
+case_participants = concordance_collator.case_participants.cpu().numpy()
 # -
 
 # Aggregate C-index per disease per sex
@@ -207,3 +210,21 @@ out_path = ckpt_write.parent / f"{args.fname}.json"
 with out_path.open("w") as f:
     json.dump(result, f, indent=4)
 print(f"Saved to {out_path}")
+
+pids_np = np.array(val_pids)
+ts_df = pd.DataFrame(
+    {
+        "icd": pd.Categorical(
+            [reader.detokenizer.get(int(d), str(d)) for d in case_tokens]
+        ),
+        "sex": pd.Categorical(np.where(case_sex, "female", "male")),
+        "participant_id": pids_np[case_participants].astype(np.int64),
+        "case_time": case_times.astype(np.float32),
+        "concordant": concordant.astype(np.float32),
+        "total_pairs": total_pairs.astype(np.int32),
+    }
+)
+ts_path = ckpt_write.parent / f"{args.fname}_timeseries.parquet"
+with ts_path.open("wb") as f:
+    ts_df.to_parquet(f, engine="pyarrow", compression="snappy", index=False)
+print(f"Saved time series to {ts_path}")
