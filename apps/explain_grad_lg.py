@@ -1,19 +1,15 @@
 # +
 import argparse
 import pprint
-import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from tqdm import tqdm
 
-from delphi.data.ukb import MultimodalUKBDataset
-from delphi.data.utils import remove_after_np
+from delphi.data.ukb import Biomarker, MultimodalUKBReader
 from delphi.env import DELPHI_CKPT_DIR
 from delphi.experiment import load_ckpt
-from delphi.multimodal import Modality
 
 # +
 parser = argparse.ArgumentParser()
@@ -22,38 +18,41 @@ parser.add_argument("--saliency-dir", type=str)
 parser.add_argument("--modality", type=str)
 parser.add_argument("--feature", type=str)
 parser.add_argument("--target", type=str)
-parser.add_argument("--alpha", type=float, default=1.0)
+parser.add_argument(
+    "--lam",
+    type=float,
+    default=1.0,
+    help="per-sample ridge penalty on the unit-scale standardized design; "
+    "lam ~ (1 - rho) sets the feature correlation it meaningfully shrinks",
+)
 parser.add_argument("--top-k", type=int, default=20)
 parser.add_argument("--bin-lo", type=float, default=None)
 parser.add_argument("--bin-hi", type=float, default=None)
 
-if "ipykernel" in sys.modules:
-    args = parser.parse_args([])
-    args.ckpt = "interpret/blood/ckpt.pt"
-    args.alpha = 100
+args = parser.parse_args()
+args.ckpt = "interpret/blood/ckpt.pt"
+args.lam = 0.1
 
-    args.modality = "RENAL"
-    args.saliency_dir = "saliency-RENAL"
-    args.feature = "creatinine"
-    args.target = "n18_(chronic_renal_failure)"
-    args.bin_lo = 50
-    args.bin_hi = 100
+args.modality = "renal"
+args.saliency_dir = "saliency-RENAL"
+args.feature = "creatinine"
+args.target = "n18_(chronic_renal_failure)"
+args.bin_lo = 50
+args.bin_hi = 100
 
-    # args.modality = "LFT"
-    # args.saliency_dir = "saliency-LFT"
-    # args.feature = "gamma_glutamyltransferase"
-    # args.target = "k70_(alcoholic_liver_disease)"
-    # args.bin_lo = 0
-    # args.bin_hi = 100
+# args.modality = "lft"
+# args.saliency_dir = "saliency-lft"
+# args.feature = "gamma_glutamyltransferase"
+# args.target = "k70_(alcoholic_liver_disease)"
+# args.bin_lo = 0
+# args.bin_hi = 100
 
-    # args.modality = "LIPID"
-    # args.saliency_dir = "saliency-LIPID"
-    # args.feature = "ldl_direct"
-    # args.target = "i21_(acute_myocardial_infarction)"
-    # args.bin_lo = 3.9
-    # args.bin_hi = 4.3
-else:
-    args = parser.parse_args()
+# args.modality = "lipid"
+# args.saliency_dir = "saliency-lipid"
+# args.feature = "ldl_direct"
+# args.target = "i21_(acute_myocardial_infarction)"
+# args.bin_lo = 3.9
+# args.bin_hi = 4.3
 
 pprint.pp(vars(args))
 
@@ -72,75 +71,62 @@ saliency_dir = ckpt_path.parent / args.saliency_dir
 jacobians = np.load(saliency_dir / "jacobians.npy", mmap_mode="r")
 sal_pids = np.load(saliency_dir / "pids.npy")
 
-data_args = ckpt_dict["data_args"].copy()
-data_args["subject_list"] = sal_pids
-data_args["stats_subject_list"] = ckpt_dict["data_args"]["subject_list"]
-data_args["deterministic"] = True
-data_args["must_have_biomarkers"] = data_args["biomarkers"]
-data_args["z_score_biomarkers"] = False
-data_args["biomarker_dropout"] = False
-data_args["first_time_only"] = True
-
-ds = MultimodalUKBDataset(**data_args)
-
-# align jacobians with ds.participants (must_have_biomarkers may have dropped some)
-keep_mask = np.isin(sal_pids, ds.participants)
-jacobians = jacobians[keep_mask]
-sal_pids = sal_pids[keep_mask]
-
-# +
-modality = Modality[args.modality.upper()]
-bio = ds.mod_ds[modality]
+# sal_pids already aligns row-for-row with the saved jacobians, so no further
+# participant filtering is needed.
+mod_name = args.modality.lower()
+reader_args = ckpt_dict["reader_args"]
+reader = MultimodalUKBReader(
+    biomarkers=reader_args["biomarkers"],
+    expansion_packs=reader_args["expansion_packs"],
+)
+assert mod_name in reader.biomarkers, f"{mod_name!r} not in {sorted(reader.biomarkers)}"
+bio = reader.biomarkers[mod_name]
 feature_idx = bio.feat2idx[args.feature]
 print(f"explaining saliency of {args.feature} → {args.target}")
+
+# cutoff = target modality's (first/only) measurement time, per participant
+cutoff = Biomarker.first_occurrence_times(mod_name, sal_pids)
 
 # y: saliency value per participant
 y = jacobians[:, feature_idx, target_idx].copy()
 
 # +
-# build covariate matrix: token presence + biomarker values + age
-# using ds[i] + remove_after_np to get temporally consistent covariates
-exclude_ids = {tokenizer.get("padding", 0), tokenizer.get("no_event", 1)}
+# build covariate matrix: past-disease history + biomarker values + age,
+# all evaluated at the cutoff (the target modality's measurement time).
+
+# past-disease history: tokens whose first occurrence is at/before the cutoff.
+# use the base tokenizer so columns line up with reader.event_times (base-indexed).
+base_tok = reader.base_tokenizer
+exclude_ids = {base_tok.get("padding", 0), base_tok.get("no_event", 1)}
 token_names = sorted(
-    [(name, tok) for name, tok in tokenizer.items() if tok not in exclude_ids],
+    [(name, tok) for name, tok in base_tok.items() if tok not in exclude_ids],
     key=lambda x: x[1],
 )
 token_name_list = [name for name, _ in token_names]
 token_ids = np.array([tok for _, tok in token_names])
 
+present = reader.event_times(sal_pids) <= cutoff[:, None]  # (N, base_vocab)
+token_matrix = present[:, token_ids].astype(np.float32)
+
+# biomarker values: each modality's first-occurrence vector, zeroed where the
+# measurement is absent or falls after the cutoff (temporal consistency).
 all_bio_features = []
-for mod, mod_ds in ds.mod_ds.items():
-    all_bio_features.extend([f"{mod.name}:{f}" for f in mod_ds.features])
-target_feature_col = all_bio_features.index(f"{modality.name}:{args.feature}")
+for name, bm in reader.biomarkers.items():
+    all_bio_features.extend([f"{name}:{f}" for f in bm.features])
+target_feature_col = all_bio_features.index(f"{mod_name}:{args.feature}")
 
-n = len(ds)
-token_matrix = np.zeros((n, len(token_ids)), dtype=np.float32)
+n = len(sal_pids)
 bio_values = np.zeros((n, len(all_bio_features)), dtype=np.float32)
-age = np.zeros(n, dtype=np.float32)
+col = 0
+for name, bm in reader.biomarkers.items():
+    n_feat = bm.n_features
+    foc = Biomarker.first_occurrence_times(name, sal_pids)  # NaN if absent
+    vals = bm.to_array(sal_pids)  # (N, n_feat), NaN if absent
+    vals[~(foc <= cutoff)] = 0.0  # absent (NaN) or measured after cutoff -> 0
+    bio_values[:, col : col + n_feat] = vals
+    col += n_feat
 
-for i in tqdm(range(n), desc="building covariate matrix"):
-    x0, t0, bio_x_dict, bio_t, bio_m, x1, t1 = ds[i]
-
-    # remove tokens and biomarkers after the target modality measurement
-    cutoff_t = bio_t[bio_m == modality.value].max()
-    x0, t0, bio_x_dict, bio_t, bio_m = remove_after_np(
-        x0, t0, bio_x_dict, bio_t, bio_m, cutoff_t
-    )
-
-    # token presence
-    present = np.isin(token_ids, x0)
-    token_matrix[i] = present.astype(np.float32)
-
-    # biomarker values
-    col = 0
-    for mod, mod_ds in ds.mod_ds.items():
-        n_feat = mod_ds.n_features
-        if mod in bio_x_dict and len(bio_x_dict[mod]) > 0:
-            bio_values[i, col : col + n_feat] = bio_x_dict[mod][0]
-        col += n_feat
-
-    # age at measurement (years)
-    age[i] = cutoff_t / 365.25
+age = (cutoff / 365.25).astype(np.float32)
 
 # drop tokens with zero or near-zero prevalence
 prevalence = token_matrix.sum(axis=0)
@@ -208,16 +194,20 @@ X = (X - X_mean) / X_std
 X = np.concatenate([X, np.ones((X.shape[0], 1))], axis=1)
 feature_names.append("intercept")
 
-# ridge regression on GPU
+# ridge regression on GPU.
+# per-sample penalty: minimize (1/N)||y - Xw||^2 + lam*||w||^2, whose normal
+# equations are (X^T X + N*lam*I) w = X^T y. lam therefore lives on the unit
+# scale of the standardized design (~the correlation matrix), independent of N.
 device = "cuda" if torch.cuda.is_available() else "cpu"
 X_t = torch.tensor(X, dtype=torch.float32, device=device)
 y_t = torch.tensor(y, dtype=torch.float32, device=device)
 
+n_obs = X_t.shape[0]
 XtX = X_t.T @ X_t
 Xty = X_t.T @ y_t
 I = torch.eye(XtX.shape[0], device=device)
 I[-1, -1] = 0  # don't regularize intercept
-w = torch.linalg.solve(XtX + args.alpha * I, Xty)
+w = torch.linalg.solve(XtX + n_obs * args.lam * I, Xty)
 w = w.cpu().numpy()
 
 # R² score
