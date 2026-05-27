@@ -149,24 +149,22 @@ class AOUBiomarker:
         pid_data = [self.data[j] for j in range(i, i + n)]
         return pid_data, self.time_steps[i : i + n]
 
-    def to_array(self, subjects, first_time_only: bool = False):
-        data, subs = list(), list()
-        include = np.isin(self.pids, subjects)
-        feat_data = self.data[include]
-        pids = self.pids[include]
-        seen = set()
-        for j, pid in enumerate(pids):
-            if first_time_only:
-                if pid in seen:
-                    continue
-                seen.add(pid)
-            data.append(feat_data[j])
-            subs.append(pid)
-        return np.stack(data, axis=0), np.array(subs)
+    def to_array(self, subjects) -> np.ndarray:
+        """First-occurrence feature vector per subject, aligned to `subjects`.
 
-    def stats(self, subjects: np.ndarray, first_time_only: bool = True):
-        data, _ = self.to_array(subjects, first_time_only=first_time_only)
-        return np.mean(data, axis=0), np.std(data, axis=0)
+        Returns an (len(subjects), n_features) array; rows for subjects with no
+        measurement are NaN. pid2idx maps a pid to its first row in self.data.
+        """
+        out = np.full((len(subjects), self.n_features), np.nan, dtype=np.float32)
+        for k, pid in enumerate(subjects):
+            j = self.pid2idx.get(int(pid))
+            if j is not None:
+                out[k] = self.data[j]
+        return out
+
+    def stats(self, subjects: np.ndarray):
+        data = self.to_array(subjects)
+        return np.nanmean(data, axis=0), np.nanstd(data, axis=0)
 
 
 class AOUExpansionPack(TokenReader):
