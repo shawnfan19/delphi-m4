@@ -5,7 +5,6 @@ from typing import TypedDict
 
 import numpy as np
 import yaml
-from google.cloud import storage
 from sqlalchemy import (
     MetaData,
     Table,
@@ -18,7 +17,7 @@ from sqlalchemy import (
     select,
 )
 from sqlalchemy.orm import declarative_base
-from utils import DATA_BUCKET, PROJECT_ID, WORKSPACE_CDR, Client
+from utils import DATA_BUCKET, PROJECT_ID, WORKSPACE_CDR, Client, upload_yaml
 
 # -
 
@@ -187,21 +186,7 @@ def create_biomarker_panel_query(biomarkers: dict[str:Biomarker]):
     return final_query
 
 
-# +
 client = Client(dataset=WORKSPACE_CDR)
-storage_client = storage.Client()
-bucket = storage_client.bucket(DATA_BUCKET)
-
-
-def upload_yaml(data, path):
-    blob = bucket.blob(path)
-    blob.upload_from_string(
-        yaml.dump(data),
-        content_type="text/yaml",
-    )
-
-
-# -
 
 
 with open(CWD.parent / "biomarker.yaml", "r") as f:

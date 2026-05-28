@@ -1,8 +1,10 @@
+import functools
 import json
 import os
 import subprocess
 
-from google.cloud import bigquery
+import yaml
+from google.cloud import bigquery, storage
 
 from delphi.env import load_env_file
 
@@ -153,3 +155,13 @@ class Client:
         """
         self.dry_run(q)
         return self.run(q)
+
+
+@functools.cache
+def _bucket():
+    return storage.Client().bucket(DATA_BUCKET)
+
+
+def upload_yaml(data, path: str) -> None:
+    """Dump `data` to YAML and upload to gs://{DATA_BUCKET}/{path}."""
+    _bucket().blob(path).upload_from_string(yaml.dump(data), content_type="text/yaml")

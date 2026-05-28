@@ -1,12 +1,19 @@
 # +
 import os
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import yaml
-from utils import DATA_BUCKET, WORKSPACE_CDR, Client
+from utils import DATA_BUCKET, WORKSPACE_CDR, Client, upload_yaml
 
 # -
+
+try:
+    _CORE_DIR = Path(__file__).resolve().parent
+except NameError:  # Jupyter cell execution
+    _CORE_DIR = Path(os.getcwd())
+TOKENIZER_PATH = _CORE_DIR.parent / "ukb" / "dictionary" / "tokenizer.yaml"
 
 client = Client(dataset=WORKSPACE_CDR)
 
@@ -166,8 +173,7 @@ len(unmappable), snomed_df.concept_id.unique().shape
 snomed2name
 
 unmappable = {snomed_code: snomed2name[snomed_code] for snomed_code in unmappable}
-with open("unmapped_snomed.yaml", "w") as f:
-    yaml.dump(unmappable, f)
+upload_yaml(unmappable, "aou_uk/unmapped_snomed.yaml")
 
 snomed_df = snomed_df[snomed_df.concept_id.isin(snomed2icd.snomed_code)]
 snomed_df.shape
@@ -192,8 +198,7 @@ for snomed_code in duplicates.index:
         "icd_codes": dict(zip(icd_codes, icd_names)),
     }
 
-with open("many_to_one.yaml", "w") as f:
-    yaml.dump(duplicates_dict, f)
+upload_yaml(duplicates_dict, "aou_uk/many_to_one.yaml")
 # -
 
 snomed_df.concept_id.isin(duplicates.index).sum()
@@ -325,7 +330,7 @@ import re
 
 import yaml
 
-with open("tokenizer.yaml", "r") as f:
+with open(TOKENIZER_PATH, "r") as f:
     tokenizer = yaml.safe_load(f)
 event_prefix_re = re.compile(r"^([A-Za-z]\d{2})_")
 tokenizer = {
@@ -345,8 +350,7 @@ uniq_tokens = df.icd_code.str.lower().unique()
 missing_tokens = uniq_tokens[~np.isin(uniq_tokens, list(tokenizer.keys()))]
 
 missing_tokens = {token: icd2name[token] for token in missing_tokens}
-with open("missing_icd_codes.yaml", "w") as f:
-    yaml.dump(missing_tokens, f)
+upload_yaml(missing_tokens, "aou_uk/missing_icd_codes.yaml")
 
 # ## apply tokenizer
 
