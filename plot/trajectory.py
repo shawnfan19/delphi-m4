@@ -15,7 +15,7 @@ from delphi.experiment import CliConfig
 
 @dataclass(kw_only=True)
 class TaskConfig(CliConfig):
-    seed: int = 42
+    seed: int | None = None
     pid: int | None = None
     n: int = 1
     biomarkers: list[str] = field(default_factory=list)
