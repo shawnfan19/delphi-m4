@@ -1,58 +1,53 @@
 # +
-import argparse
 import pprint
+from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+import patsy
 import torch
 
 from delphi.data.ukb import Biomarker, MultimodalUKBReader
 from delphi.env import DELPHI_CKPT_DIR
-from delphi.experiment import load_ckpt
+from delphi.experiment import CliConfig, load_ckpt
+
 
 # +
-parser = argparse.ArgumentParser()
-parser.add_argument("--ckpt", type=str)
-parser.add_argument("--saliency-dir", type=str)
-parser.add_argument("--modality", type=str)
-parser.add_argument("--feature", type=str)
-parser.add_argument("--target", type=str)
-parser.add_argument(
-    "--lam",
-    type=float,
-    default=1.0,
-    help="per-sample ridge penalty on the unit-scale standardized design; "
-    "lam ~ (1 - rho) sets the feature correlation it meaningfully shrinks",
-)
-parser.add_argument("--top-k", type=int, default=20)
-parser.add_argument("--bin-lo", type=float, default=None)
-parser.add_argument("--bin-hi", type=float, default=None)
+@dataclass(kw_only=True)
+class TaskConfig(CliConfig):
+    ckpt: str = "interpret/blood/ckpt.pt"
+    saliency_dir: str = "saliency-RENAL"
+    modality: str = "renal"
+    feature: str = "creatinine"
+    target: str = "n18_(chronic_renal_failure)"
+    # per-sample ridge penalty on the unit-scale standardized design;
+    # lam ~ (1 - rho) sets the feature correlation it meaningfully shrinks.
+    lam: float = 0.1
+    top_k: int = 20
 
-args = parser.parse_args()
-args.ckpt = "interpret/blood/ckpt.pt"
-args.lam = 0.1
+
+args = TaskConfig.from_cli()
 
 args.modality = "renal"
 args.saliency_dir = "saliency-RENAL"
 args.feature = "creatinine"
 args.target = "n18_(chronic_renal_failure)"
-args.bin_lo = 50
-args.bin_hi = 100
 
-# args.modality = "lft"
-# args.saliency_dir = "saliency-lft"
-# args.feature = "gamma_glutamyltransferase"
-# args.target = "k70_(alcoholic_liver_disease)"
-# args.bin_lo = 0
-# args.bin_hi = 100
+args.modality = "lft"
+args.saliency_dir = "saliency-LFT"
+args.feature = "gamma_glutamyltransferase"
+args.target = "k70_(alcoholic_liver_disease)"
 
-# args.modality = "lipid"
-# args.saliency_dir = "saliency-lipid"
-# args.feature = "ldl_direct"
-# args.target = "i21_(acute_myocardial_infarction)"
-# args.bin_lo = 3.9
-# args.bin_hi = 4.3
+# args.modality = "wbc"
+# args.saliency_dir = "saliency-WBC"
+# args.feature = "haemoglobin_concentration"
+# args.target = "c19_malignant_neoplasm_of_rectosigmoid_junction"
+#
+args.modality = "lipid"
+args.saliency_dir = "saliency-LIPID"
+args.feature = "ldl_direct"
+args.target = "i21_(acute_myocardial_infarction)"
 
 pprint.pp(vars(args))
 
@@ -152,18 +147,26 @@ bio_values = bio_values[valid]
 age = age[valid]
 print(f"valid (non-NaN) saliency: {valid.sum()} / {len(valid)}")
 
-# scatter: saliency vs biomarker value
+# scatter: saliency vs biomarker value, with the fitted value-only spline overlaid
 raw_vals = bio_values[:, target_feature_col]
 fig, ax = plt.subplots()
 sc = ax.scatter(raw_vals, y, s=1, alpha=0.3, c=age, cmap="viridis", rasterized=True)
 fig.colorbar(sc, ax=ax, label="age (years)")
-if args.bin_lo is not None or args.bin_hi is not None:
-    lo = args.bin_lo if args.bin_lo is not None else -np.inf
-    hi = args.bin_hi if args.bin_hi is not None else np.inf
-    if args.bin_lo is not None:
-        ax.axvline(lo, color="k", ls="--", lw=0.8)
-    if args.bin_hi is not None:
-        ax.axvline(hi, color="k", ls="--", lw=0.8)
+
+# fitted value-only model: saliency ~ spline(value); overlay the smooth curve
+value_dm = patsy.dmatrix("cr(v, df=5)", {"v": raw_vals})
+value_beta, *_ = np.linalg.lstsq(np.asarray(value_dm), y, rcond=None)
+grid = np.linspace(raw_vals.min(), raw_vals.max(), 200)
+grid_dm = patsy.build_design_matrices([value_dm.design_info], {"v": grid})[0]
+ax.plot(
+    grid,
+    np.asarray(grid_dm) @ value_beta,
+    color="crimson",
+    lw=2,
+    label="fitted value spline",
+)
+ax.legend()
+
 ax.set_xlabel(args.feature)
 ax.set_ylabel("saliency")
 ax.set_title(args.target)
@@ -173,15 +176,19 @@ plt.show()
 y.std()
 
 # +
-# filter to biomarker bin if specified
-if args.bin_lo is not None or args.bin_hi is not None:
-    raw_vals = bio_values[:, target_feature_col]
-    lo = args.bin_lo if args.bin_lo is not None else -np.inf
-    hi = args.bin_hi if args.bin_hi is not None else np.inf
-    bin_mask = (raw_vals >= lo) & (raw_vals < hi)
-    X = X[bin_mask]
-    y = y[bin_mask]
-    print(f"bin [{lo}, {hi}): {bin_mask.sum()} / {len(bin_mask)} participants")
+# regress out the biomarker value with an unpenalized natural cubic spline:
+# replace its single linear column with a flexible basis, so the context
+# coefficients become "effect on saliency holding the biomarker value fixed"
+# (Frisch-Waugh-Lovell). This supersedes binning and uses all the data.
+target_vals = bio_values[:, target_feature_col].astype(float)  # aligned to X rows
+S = np.asarray(patsy.dmatrix("cr(x, df=5) - 1", {"x": target_vals}), dtype=np.float32)
+
+value_col = token_matrix.shape[1] + target_feature_col  # value column within X
+X = np.delete(X, value_col, axis=1)
+feature_names.pop(value_col)
+spline_cols = np.arange(X.shape[1], X.shape[1] + S.shape[1])
+X = np.concatenate([X, S], axis=1)
+feature_names += [f"value_spline{i}" for i in range(S.shape[1])]
 
 print(f"X shape: {X.shape}, y shape: {y.shape}")
 
@@ -198,6 +205,8 @@ feature_names.append("intercept")
 # per-sample penalty: minimize (1/N)||y - Xw||^2 + lam*||w||^2, whose normal
 # equations are (X^T X + N*lam*I) w = X^T y. lam therefore lives on the unit
 # scale of the standardized design (~the correlation matrix), independent of N.
+# the intercept and the value-spline are left unpenalized so the
+# spline fully absorbs the value effect instead of leaking it into context.
 device = "cuda" if torch.cuda.is_available() else "cpu"
 X_t = torch.tensor(X, dtype=torch.float32, device=device)
 y_t = torch.tensor(y, dtype=torch.float32, device=device)
@@ -205,17 +214,30 @@ y_t = torch.tensor(y, dtype=torch.float32, device=device)
 n_obs = X_t.shape[0]
 XtX = X_t.T @ X_t
 Xty = X_t.T @ y_t
-I = torch.eye(XtX.shape[0], device=device)
-I[-1, -1] = 0  # don't regularize intercept
-w = torch.linalg.solve(XtX + n_obs * args.lam * I, Xty)
+
+penalty = torch.ones(X_t.shape[1], device=device)
+penalty[-1] = 0.0  # intercept
+penalty[torch.as_tensor(spline_cols, device=device)] = 0.0  # value control
+w = torch.linalg.solve(XtX + n_obs * args.lam * torch.diag(penalty), Xty)
 w = w.cpu().numpy()
 
-# R² score
-y_pred = X @ w
-ss_res = ((y - y_pred) ** 2).sum()
+# R²: full model, and a value-only baseline (spline + intercept, unpenalized OLS)
+# so we can report how much context explains beyond the biomarker value itself.
 ss_tot = ((y - y.mean()) ** 2).sum()
-r2 = 1 - ss_res / ss_tot
-print(f"R² = {r2:.4f}")
+y_pred = X @ w
+r2 = 1 - ((y - y_pred) ** 2).sum() / ss_tot
+
+value_cols = torch.as_tensor(
+    np.append(spline_cols, X_t.shape[1] - 1), device=device  # spline + intercept
+)
+X0 = X_t[:, value_cols]
+w0 = torch.linalg.solve(X0.T @ X0, X0.T @ y_t)
+y_pred0 = (X0 @ w0).cpu().numpy()
+r2_0 = 1 - ((y - y_pred0) ** 2).sum() / ss_tot
+
+print(f"R² (value spline + context) = {r2:.4f}")
+print(f"R² (value spline only)      = {r2_0:.4f}")
+print(f"context beyond value        = {r2 - r2_0:.4f}")
 
 # +
 # top-k positive and negative coefficients
