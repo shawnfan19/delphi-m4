@@ -112,6 +112,7 @@ token_transform.describe()
 
 biomarker_transform = BiomarkerTransform.from_ckpt(ckpt_dict) if biomarkers else None
 if biomarker_transform is not None:
+    biomarker_transform = biomarker_transform.replace(dropout=None)
     biomarker_transform.describe()
 
 ds = MultimodalDataset(

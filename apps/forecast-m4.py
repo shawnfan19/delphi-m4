@@ -112,6 +112,7 @@ reader = MultimodalUKBReader(
 token_transform = TokenTransform.from_ckpt(ckpt_dict)
 biomarker_transform = BiomarkerTransform.from_ckpt(ckpt_dict)
 if biomarker_transform is not None:
+    biomarker_transform = biomarker_transform.replace(dropout=None)
     biomarker_transform.describe()
 
 prompt_transform = MultimodalPrompt(
