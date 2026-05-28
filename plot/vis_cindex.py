@@ -16,9 +16,7 @@
 # %% [markdown]
 # # Visualize C-index per Disease for a Single Checkpoint
 #
-# One chapter plot per sex (either / male / female), saved next to the json.
-
-import json
+# One chapter plot per sex (either / male / female), saved next to the parquet.
 
 # %%
 from dataclasses import dataclass
@@ -39,59 +37,60 @@ mpl.rcParams["figure.dpi"] = 300
 
 @dataclass(kw_only=True)
 class TaskConfig(CliConfig):
-    json: str
+    parquet: str
     min: int = 50
+    # Filter out cases whose case_time < participant's recruitment time.
+    after_recruit: bool = True
 
 
 args = TaskConfig.from_cli()
 
 # %%
-ckpt_json = AnyPath(DELPHI_CKPT_READ) / args.json
-out_dir = AnyPath(str(ckpt_json.parent).replace(DELPHI_CKPT_READ, DELPHI_CKPT_WRITE))
+ckpt_path = AnyPath(DELPHI_CKPT_READ) / args.parquet
+out_dir = AnyPath(str(ckpt_path.parent).replace(DELPHI_CKPT_READ, DELPHI_CKPT_WRITE))
 min_events = args.min
 
-with ckpt_json.open() as f:
-    data = json.load(f)
-    if "config" in data.keys():
-        del data["config"]
+reader = UKBReader()
+
+with ckpt_path.open("rb") as f:
+    df = pd.read_parquet(f, engine="pyarrow")
+
+if args.after_recruit:
+    pids = df["participant_id"].unique()
+    recruit = dict(zip(pids, reader.recruitment_times(pids)))
+    df = df.assign(
+        recruit_time=df["participant_id"].map(recruit).astype("float32"),
+    )
+    df = df.dropna(subset=["recruit_time"])
+    df = df[df["case_time"] >= df["recruit_time"]]
 
 
 # %%
-def _get_cindex(stats, sex_key):
-    """Return (c_index, n_events) for a disease entry, deriving 'either' as weighted avg."""
-    if sex_key != "either":
-        entry = stats.get(sex_key, {})
-        return entry.get("c_index"), entry.get("n_events", 0) or 0
-
-    m = stats.get("male", {})
-    f = stats.get("female", {})
-    ci_m, n_m = m.get("c_index"), m.get("n_events", 0) or 0
-    ci_f, n_f = f.get("c_index"), f.get("n_events", 0) or 0
-    total = n_m + n_f
-    if total == 0:
-        return None, 0
-    if ci_m is not None and ci_f is not None:
-        return (ci_m * n_m + ci_f * n_f) / total, total
-    if ci_m is not None:
-        return ci_m, total
-    if ci_f is not None:
-        return ci_f, total
-    return None, 0
+def per_disease_cindex(df, sex_key):
+    """Per-disease (n_events, c_index) under a sex grouping."""
+    sub = df if sex_key == "either" else df[df["sex"] == sex_key]
+    g = sub.groupby("icd", observed=True).agg(
+        n_events=("case_time", "size"),
+        conc=("concordant", "sum"),
+        tot=("total_pairs", "sum"),
+    )
+    g["c_index"] = g["conc"] / g["tot"]
+    return g[["n_events", "c_index"]]
 
 
-def build_df(data, sex_key, min_events):
-    rows = []
-    for key, stats in data.items():
-        ci, n = _get_cindex(stats, sex_key)
-        if ci is None:
-            continue
-        if n < min_events:
-            continue
-        rows.append({"key": key, "val": ci, "n_events": n})
-    return pd.DataFrame(rows)
+def build_df(df, sex_key, min_events):
+    g = per_disease_cindex(df, sex_key)
+    g = g[g["n_events"] >= min_events]
+    return pd.DataFrame(
+        {
+            "key": g.index,
+            "val": g["c_index"].to_numpy(),
+            "n_events": g["n_events"].to_numpy(),
+        }
+    )
 
 
-dfs = {s: build_df(data, s, min_events) for s in ("either", "male", "female")}
+dfs = {s: build_df(df, s, min_events) for s in ("either", "male", "female")}
 for s, d in dfs.items():
     print(f"{s}: {len(d)} diseases")
 

@@ -1,8 +1,7 @@
 # +
-import json
 import math
 import pprint
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
@@ -34,7 +33,6 @@ class TaskConfig(CliConfig):
     biomarkers: None | list = None
     expansion_packs: None | list[str] = None
     max_gap: float = 5
-    after_recruit: bool = False
     fname: None | str = None
     panel_name: None | str = None
     fold: str = "val"
@@ -54,8 +52,6 @@ class TaskConfig(CliConfig):
                     self.fname += f"-{'-'.join(self.biomarkers)}"
                 if self.expansion_packs is not None:
                     self.fname += f"-{'-'.join(self.expansion_packs)}"
-            if self.after_recruit:
-                self.fname += f"-recruit"
 
 
 args = TaskConfig.from_cli()
@@ -71,22 +67,40 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 reader_args = ckpt_dict["reader_args"]
 
 ReaderCls = multimodal_reader_cls()
-if args.after_recruit and not hasattr(ReaderCls, "recruitment_times"):
-    raise ValueError(
-        "--after_recruit requires recruitment_times on the reader; "
-        f"{ReaderCls.__name__} doesn't support it"
-    )
 val_pids = ReaderCls.participants(args.fold)
 
 # -
-biomarkers = list(
-    set(reader_args["biomarkers"] or []).intersection(set(args.biomarkers or []))
-)
-expansion_packs = list(
-    set(reader_args["expansion_packs"] or []).intersection(
-        set(args.expansion_packs or [])
+ckpt_biomarkers = list(reader_args["biomarkers"] or [])
+ckpt_expansion_packs = list(reader_args["expansion_packs"] or [])
+
+# Default: inherit the ckpt's training set. Overrides (panel / biomarkers /
+# expansion_packs flags) are clamped to that set so typos or panels the ckpt
+# doesn't know about don't silently sneak through.
+if args.biomarkers is None:
+    biomarkers = ckpt_biomarkers
+else:
+    biomarkers = sorted(set(ckpt_biomarkers).intersection(args.biomarkers))
+    if not biomarkers:
+        print(
+            f"WARNING: biomarkers override {args.biomarkers} has no overlap "
+            f"with ckpt biomarkers {ckpt_biomarkers}; using empty set"
+        )
+
+if args.expansion_packs is None:
+    expansion_packs = ckpt_expansion_packs
+else:
+    expansion_packs = sorted(
+        set(ckpt_expansion_packs).intersection(args.expansion_packs)
     )
-)
+    if not expansion_packs:
+        print(
+            f"WARNING: expansion_packs override {args.expansion_packs} has no "
+            f"overlap with ckpt expansion_packs {ckpt_expansion_packs}; "
+            "using empty set"
+        )
+
+print(f"biomarkers: {biomarkers}")
+print(f"expansion_packs: {expansion_packs}")
 # pass dict (not list) so reader uses the checkpoint's index assignments
 # instead of re-deriving them from sorted order
 biomarker2idx = {name: model.config.biomarker2idx[name] for name in biomarkers}
@@ -135,17 +149,10 @@ with torch.no_grad():
         dis_collator.step(tokens=x1, timesteps=nearest_t0, logits=intensity)
         onset_collator.step(tokens=x1.cpu(), timestep=t1.cpu())
 
-dis_rates, nearest_t0 = dis_collator.finalize()  # (N, V)
+dis_rates, _ = dis_collator.finalize()  # (N, V)
 is_female = torch.from_numpy(reader.is_female(val_pids))  # (N,)
 onset_times, _ = onset_collator.finalize()
 onset_times = torch.from_numpy(onset_times)  # (N, V)
-
-if args.after_recruit:
-    cutoff = reader.recruitment_times(val_pids)
-    reject = nearest_t0.numpy() < cutoff[:, None]
-    reject = reject | np.isnan(cutoff[:, None])
-    dis_rates[torch.from_numpy(reject)] = torch.nan
-    cutoff = torch.from_numpy(cutoff).to(device)
 
 # Move tensors to device for Phase 2
 dis_rates = dis_rates.to(device)
@@ -181,37 +188,8 @@ case_times = concordance_collator.case_times.cpu().numpy()
 case_participants = concordance_collator.case_participants.cpu().numpy()
 # -
 
-# Aggregate C-index per disease per sex
-result = {"config": asdict(args)}
-for d_int in np.unique(case_tokens):
-    d_mask = case_tokens == d_int
-    icd = reader.detokenizer.get(int(d_int), str(d_int))
-    result[icd] = {}
-    for sex_label, sex_mask in [
-        ("female", case_sex),
-        ("male", ~case_sex),
-    ]:
-        mask = d_mask & sex_mask
-        n_events = int(mask.sum())
-        n_pairs = int(total_pairs[mask].sum())
-        conc = concordant[mask].sum()
-        c_index = round(float(conc / n_pairs), 4) if n_pairs > 0 else None
-        result[icd][sex_label] = {
-            "c_index": c_index,
-            "n_events": n_events,
-            "n_pairs": n_pairs,
-        }
-
-
-pprint.pp(result.get("death", result.get(next(iter(result)), {})))
-
-
 ckpt_write = AnyPath(str(ckpt).replace(DELPHI_CKPT_READ, DELPHI_CKPT_WRITE))
 ckpt_write.parent.mkdir(parents=True, exist_ok=True)
-out_path = ckpt_write.parent / f"{args.fname}.json"
-with out_path.open("w") as f:
-    json.dump(result, f, indent=4)
-print(f"Saved to {out_path}")
 
 pids_np = np.array(val_pids)
 ts_df = pd.DataFrame(
