@@ -333,7 +333,7 @@ class DelphiM4(torch.nn.Module):
         elif config.loss == "homo_poisson":
             self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
             if config.weight_tying:
-                self.transformer.embed.token_embedding.weight = self.lm_head.weight
+                self.transformer.wte.weight = self.lm_head.weight
         elif config.loss == "neural_ode":
             self.neural_head = NeuralODEIntensity(
                 n_embd=config.n_embd, vocab_size=config.vocab_size

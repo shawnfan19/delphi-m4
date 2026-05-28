@@ -457,6 +457,84 @@ class GenerateConfig(CliConfig):
     prompt_no_event: bool = False
 
 
+def _backfill_biomarker2idx(model_args: dict) -> None:
+    """Reconstruct biomarker2idx for legacy checkpoints that predate the field.
+
+    Old checkpoints indexed modalities by the Modality enum values, so the saved
+    mod_embedding weights and bio_m channel are keyed by those values. Rebuild the
+    same mapping from the enum so the loaded model (and BiomarkerTransform.from_ckpt)
+    agree with the trained weights. Mutates model_args in place.
+    """
+    biomarkers = model_args.get("biomarkers") or {}
+    if not biomarkers or model_args.get("biomarker2idx"):
+        return
+    from delphi.multimodal import Modality  # local: legacy-only dependency
+
+    try:
+        model_args["biomarker2idx"] = {
+            name: Modality[name.upper()].value for name in biomarkers
+        }
+    except KeyError as e:
+        raise ValueError(
+            f"legacy checkpoint references biomarker {e} not in the Modality enum; "
+            "cannot reconstruct biomarker2idx"
+        )
+    print("[load_ckpt] back-filled biomarker2idx from Modality enum (legacy ckpt)")
+
+
+def _backfill_reader_args(ckpt_dict: dict) -> None:
+    """Synthesize reader_args for legacy checkpoints that stored a combined data_args.
+
+    Older checkpoints saved a single data_args blob instead of today's split
+    reader_args / token_transform_args / biomarker_transform_args. reader_args only
+    carries the biomarker and expansion-pack lists, both already present in data_args.
+    Mutates ckpt_dict in place. (token/biomarker transform args are not reconstructed:
+    name mismatches and the missing biomarker_stats make that lossy; out of scope here.)
+    """
+    if "reader_args" in ckpt_dict or "data_args" not in ckpt_dict:
+        return
+    data_args = ckpt_dict["data_args"]
+    ckpt_dict["reader_args"] = {
+        "biomarkers": data_args.get("biomarkers"),
+        "expansion_packs": data_args.get("expansion_packs"),
+    }
+    print("[load_ckpt] synthesized reader_args from legacy data_args")
+
+
+# Legacy DelphiM4 used a nested transformer.embed sub-module bundling all input
+# embeddings; the current model flattens these out. Map old keys -> new keys by
+# longest-matching prefix substitution. Order doesn't matter (all prefixes are
+# disjoint after the common 'transformer.embed.' root).
+_LEGACY_STATE_DICT_REMAP = [
+    ("transformer.embed.token_embedding.", "transformer.wte."),
+    ("transformer.embed.age_encoding.", "transformer.wae."),
+    ("transformer.embed.biomarker_embed.", "bio_embed.embed."),
+    ("transformer.embed.mod_embedding.", "mod_embedding."),
+]
+
+
+def _remap_legacy_state_dict(state_dict: dict) -> dict:
+    """Translate state_dict keys from the legacy nested transformer.embed layout
+    to the current flattened model. Returns a new dict; no-op if no legacy keys
+    are present.
+    """
+    out, remapped = {}, 0
+    for k, v in state_dict.items():
+        new_k = k
+        for old_prefix, new_prefix in _LEGACY_STATE_DICT_REMAP:
+            if k.startswith(old_prefix):
+                new_k = new_prefix + k[len(old_prefix) :]
+                remapped += 1
+                break
+        out[new_k] = v
+    if remapped:
+        print(
+            f"[load_ckpt] remapped {remapped} legacy state_dict keys "
+            "(transformer.embed.* -> current layout)"
+        )
+    return out
+
+
 def load_ckpt(ckpt_path):
 
     ckpt_path = AnyPath(ckpt_path)
@@ -473,15 +551,24 @@ def load_ckpt(ckpt_path):
     else:
         raise ValueError
 
+    if model_type == "delphi-m4":
+        _backfill_biomarker2idx(ckpt_dict["model_args"])
+    _backfill_reader_args(ckpt_dict)
+
     pprint.pp(ckpt_dict["model_args"])
     valid_fields = {f.name for f in fields(model_cfg_cls)}
     model_args = {k: v for k, v in ckpt_dict["model_args"].items() if k in valid_fields}
     model_cfg = model_cfg_cls(**model_args)
     model = model_cls(model_cfg)  # type: ignore
-    model.load_state_dict(ckpt_dict["model"], strict=False)
+    ckpt_dict["model"] = _remap_legacy_state_dict(ckpt_dict["model"])
     missing, unexpected = model.load_state_dict(ckpt_dict["model"], strict=False)
-    print("missing:", missing)
-    print("unexpected:", unexpected)
+    if missing:
+        raise RuntimeError(
+            f"checkpoint missing {len(missing)} required parameter(s); these would "
+            f"be silently random-initialized: {missing}"
+        )
+    if unexpected:
+        print(f"[load_ckpt] {len(unexpected)} unexpected key(s) ignored: {unexpected}")
     model.to(device)
     model = model.eval()
 
