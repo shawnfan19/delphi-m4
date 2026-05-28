@@ -43,6 +43,13 @@ class TaskConfig(CliConfig):
     # Saha-Chaudhuri & Heagerty h_n: half-width of uniform kernel in days.
     # 365.25 -> 1 year on either side, 2-year smoothing window.
     bandwidth: float = 365.25
+    # If set, switch from fixed-time-window to adaptive (fixed-K) neighborhood:
+    # average over the K nearest unique event times at each query. Takes
+    # precedence over `bandwidth` when non-None.
+    n_neighbors: None | int = None
+    # Weighting within the neighborhood: "uniform" (equal) or "tricube"
+    # (lowess-style, weight ~ (1 - (d/d_max)^3)^3).
+    kernel: str = "uniform"
     n_grid: int = 200
     age_since_recruit: bool = False
 
@@ -88,12 +95,36 @@ if args.age_since_recruit:
 
 
 # %%
-def saha_chaudhuri_heagerty(case_times, concordant, total_pairs, query_times, h_days):
-    """WMR with uniform rectangular kernel.
+def _kernel_weights(d, d_max, kernel):
+    if kernel == "uniform":
+        return np.ones_like(d)
+    if kernel == "tricube":
+        if d_max <= 0:
+            return np.ones_like(d)
+        u = np.clip(d / d_max, 0.0, 1.0)
+        return (1 - u**3) ** 3
+    raise ValueError(f"unknown kernel: {kernel!r}")
 
-    Aggregates per-case rows into per-(unique-time) A(t_k), then averages
-    A(t_k) over unique event times within `h_days` of each query time.
+
+def saha_chaudhuri_heagerty(
+    case_times,
+    concordant,
+    total_pairs,
+    query_times,
+    h_days=None,
+    n_neighbors=None,
+    kernel="uniform",
+):
+    """WMR smoother.
+
+    Neighborhood: fixed time window (`h_days`) or adaptive K nearest unique
+    event times (`n_neighbors`). Weighting within the neighborhood is
+    controlled by `kernel` ("uniform" or "tricube"); the two axes are
+    independent.
     """
+    assert (h_days is None) != (
+        n_neighbors is None
+    ), "specify exactly one of h_days, n_neighbors"
     agg = (
         pd.DataFrame(
             {
@@ -110,9 +141,24 @@ def saha_chaudhuri_heagerty(case_times, concordant, total_pairs, query_times, h_
 
     out = np.full_like(query_times, np.nan, dtype=float)
     for i, q in enumerate(query_times):
-        in_window = np.abs(t_k - q) < h_days
-        if in_window.any():
-            out[i] = A_k[in_window].mean()
+        d = np.abs(t_k - q)
+        if n_neighbors is not None:
+            k_eff = min(n_neighbors, len(t_k))
+            if k_eff == 0:
+                continue
+            idx = np.argpartition(d, k_eff - 1)[:k_eff]
+            d_local = d[idx]
+            d_max = d_local.max()
+            A_local = A_k[idx]
+        else:
+            mask = d < h_days
+            if not mask.any():
+                continue
+            d_local = d[mask]
+            d_max = h_days
+            A_local = A_k[mask]
+        w = _kernel_weights(d_local, d_max, kernel)
+        out[i] = (w * A_local).sum() / w.sum()
     return out
 
 
@@ -129,7 +175,9 @@ for sex, color in [("female", "tab:red"), ("male", "tab:blue")]:
         concordant=sub["concordant"].to_numpy(),
         total_pairs=sub["total_pairs"].to_numpy(),
         query_times=query_times,
-        h_days=args.bandwidth,
+        h_days=args.bandwidth if args.n_neighbors is None else None,
+        n_neighbors=args.n_neighbors,
+        kernel=args.kernel,
     )
     ax.plot(
         query_times / 365.25, auc_smooth, color=color, label=f"{sex} (n={len(sub)})"
@@ -139,7 +187,12 @@ ax.axhline(0.5, color="grey", linestyle="--", linewidth=0.8)
 xlabel = "Years since recruitment" if args.age_since_recruit else "Age at event (years)"
 ax.set_xlabel(xlabel)
 ax.set_ylabel("I/D AUC")
-ax.set_title(f"Dynamic AUC — {icd} (uniform kernel, h={args.bandwidth:.0f} days)")
+mode_str = (
+    f"k={args.n_neighbors} events"
+    if args.n_neighbors is not None
+    else f"h={args.bandwidth:.0f} days"
+)
+ax.set_title(f"Dynamic AUC — {icd} ({args.kernel} kernel, {mode_str})")
 ax.set_ylim(0.4, 1.0)
 ax.legend()
 

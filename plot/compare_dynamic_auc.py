@@ -55,6 +55,12 @@ class TaskConfig(CliConfig):
     labels: None | list[str] = None
     # Saha-Chaudhuri & Heagerty h_n: half-width of uniform kernel in days.
     bandwidth: float = 1000
+    # If set, switch from fixed-time-window to adaptive (fixed-K) neighborhood:
+    # average over the K nearest unique event times at each query. Takes
+    # precedence over `bandwidth` when non-None.
+    n_neighbors: None | int = None
+    # Weighting within the neighborhood: "uniform" or "tricube".
+    kernel: str = "uniform"
     n_grid: int = 20
     age_since_recruit: bool = True
     # Auto-derivation: include disease if (c_index_i - c_index_baseline) >=
@@ -86,8 +92,30 @@ def resolve_disease(d: str) -> str:
         return d
 
 
-def saha_chaudhuri_heagerty(case_times, concordant, total_pairs, query_times, h_days):
-    """WMR with uniform rectangular kernel; see plot/dynamic_auc.py."""
+def _kernel_weights(d, d_max, kernel):
+    if kernel == "uniform":
+        return np.ones_like(d)
+    if kernel == "tricube":
+        if d_max <= 0:
+            return np.ones_like(d)
+        u = np.clip(d / d_max, 0.0, 1.0)
+        return (1 - u**3) ** 3
+    raise ValueError(f"unknown kernel: {kernel!r}")
+
+
+def saha_chaudhuri_heagerty(
+    case_times,
+    concordant,
+    total_pairs,
+    query_times,
+    h_days=None,
+    n_neighbors=None,
+    kernel="uniform",
+):
+    """WMR smoother; see plot/dynamic_auc.py for details."""
+    assert (h_days is None) != (
+        n_neighbors is None
+    ), "specify exactly one of h_days, n_neighbors"
     agg = (
         pd.DataFrame(
             {
@@ -103,9 +131,24 @@ def saha_chaudhuri_heagerty(case_times, concordant, total_pairs, query_times, h_
     A_k = (agg["concordant"] / agg["total_pairs"]).to_numpy()
     out = np.full_like(query_times, np.nan, dtype=float)
     for i, q in enumerate(query_times):
-        in_window = np.abs(t_k - q) < h_days
-        if in_window.any():
-            out[i] = A_k[in_window].mean()
+        d = np.abs(t_k - q)
+        if n_neighbors is not None:
+            k_eff = min(n_neighbors, len(t_k))
+            if k_eff == 0:
+                continue
+            idx = np.argpartition(d, k_eff - 1)[:k_eff]
+            d_local = d[idx]
+            d_max = d_local.max()
+            A_local = A_k[idx]
+        else:
+            mask = d < h_days
+            if not mask.any():
+                continue
+            d_local = d[mask]
+            d_max = h_days
+            A_local = A_k[mask]
+        w = _kernel_weights(d_local, d_max, kernel)
+        out[i] = (w * A_local).sum() / w.sum()
     return out
 
 
@@ -145,6 +188,12 @@ labels = args.labels or [p.stem for p in paths]
 _tab10 = list(mpl.colormaps["tab10"].colors)
 colors = ["black"] + _tab10[: len(dfs) - 1]
 linewidths = [1.8] + [1.2] * (len(dfs) - 1)
+mode_str = (
+    f"k={args.n_neighbors} events"
+    if args.n_neighbors is not None
+    else f"h={args.bandwidth:.0f} days"
+)
+mode_str = f"{args.kernel} kernel, {mode_str}"
 
 out_dir = AnyPath(DELPHI_CKPT_WRITE) / args.out_dir
 out_dir.mkdir(parents=True, exist_ok=True)
@@ -228,7 +277,9 @@ for icd in icd_list:
                 s["concordant"].to_numpy(),
                 s["total_pairs"].to_numpy(),
                 query_times,
-                args.bandwidth,
+                h_days=args.bandwidth if args.n_neighbors is None else None,
+                n_neighbors=args.n_neighbors,
+                kernel=args.kernel,
             )
             agg[sex][i].append(curve)
             ax.plot(
@@ -245,7 +296,7 @@ for icd in icd_list:
         ax.legend(fontsize=8)
 
     axes[0].set_ylabel("I/D AUC")
-    fig.suptitle(f"{icd} — Dynamic AUC (h={args.bandwidth:.0f} days)")
+    fig.suptitle(f"{icd} — Dynamic AUC ({mode_str})")
     fig.tight_layout()
 
     out_path = out_dir / f"{icd}.png"
@@ -280,7 +331,7 @@ for ax, (sex, _) in zip(axes, panels):
     ax.legend(fontsize=8)
 
 axes[0].set_ylabel("I/D AUC")
-fig.suptitle(f"Mean across {n_diseases} diseases (h={args.bandwidth:.0f} days)")
+fig.suptitle(f"Mean across {n_diseases} diseases ({mode_str})")
 fig.tight_layout()
 
 out_path = out_dir / "summary.png"
