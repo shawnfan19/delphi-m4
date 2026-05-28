@@ -1,10 +1,11 @@
 # +
 import os
+
 import numpy as np
 import pandas as pd
 import yaml
+from utils import DATA_BUCKET, WORKSPACE_CDR, Client
 
-from utils import Client, WORKSPACE_CDR, DATA_BUCKET
 # -
 
 client = Client(dataset=WORKSPACE_CDR)
@@ -28,18 +29,18 @@ client.list_columns("measurement")
 # # disease tokens
 
 query = """
-SELECT 
+SELECT
     co.person_id,
     co.condition_concept_id AS concept_id,
     -- This brings in the cleanly formatted ICD code if the source was ICD
     c.concept_code AS concept_code,
     c.vocabulary_id AS vocab_id,
     DATE_DIFF(DATE(co.condition_start_date), DATE(p.birth_datetime), DAY) AS age_in_days
-FROM 
+FROM
     `condition_occurrence` co
 -- Join the source concept ID back to the concept table
-LEFT JOIN 
-    `concept` c 
+LEFT JOIN
+    `concept` c
     ON co.condition_source_concept_id = c.concept_id
 INNER JOIN
     `person` p
@@ -92,16 +93,16 @@ snomed_df.shape
 
 q = f"""
 WITH icd10 AS (
-    SELECT 
+    SELECT
         concept_id,
         SUBSTR(concept_code, 1, 3) AS icd_code
     FROM concept
     WHERE vocabulary_id = 'ICD10CM'
 ),
 snomed_mapping AS (
-    SELECT 
+    SELECT
         icd10.icd_code,
-        cr.concept_id_2 AS snomed_code, 
+        cr.concept_id_2 AS snomed_code,
         concept.concept_name AS snomed_name
     FROM icd10
     INNER JOIN `concept_relationship` cr
@@ -110,7 +111,7 @@ snomed_mapping AS (
     INNER JOIN `concept`
         ON cr.concept_id_2 = concept.concept_id
         -- Join to get standard concept details
-    WHERE cr.relationship_id = 'Maps to' 
+    WHERE cr.relationship_id = 'Maps to'
       AND cr.invalid_reason IS NULL
 )
 SELECT DISTINCT
@@ -123,7 +124,7 @@ snomed_vocab = client.run(q)
 snomed2icd = snomed_vocab[["snomed_code", "icd_code"]]
 
 q = f"""
-SELECT 
+SELECT
     concept_id AS snomed_code,
     concept_name AS snomed_name
 FROM concept
@@ -134,9 +135,9 @@ snomed2name = snomed2name.set_index("snomed_code")["snomed_name"]
 # ### get ICD2NAME mapping
 
 q = f"""
-SELECT 
+SELECT
     concept_id,
-    LOWER(concept_code) AS icd_code, 
+    LOWER(concept_code) AS icd_code,
     concept_name AS icd_name,
     concept_class_id
 FROM `concept`
@@ -154,7 +155,11 @@ snomed2icd.head()
 
 # ### identify SNOMED codes that map to no ICD code
 
-unmappable = snomed_df.concept_id[~snomed_df.concept_id.isin(snomed2icd.snomed_code)].unique().tolist()
+unmappable = (
+    snomed_df.concept_id[~snomed_df.concept_id.isin(snomed2icd.snomed_code)]
+    .unique()
+    .tolist()
+)
 
 len(unmappable), snomed_df.concept_id.unique().shape
 
@@ -170,7 +175,7 @@ snomed_df.shape
 # ### identify SNOMED codes that map to more than one ICD code
 
 # Count how many ICD codes exist for each SNOMED concept
-mapping_counts = snomed2icd['snomed_code'].value_counts()
+mapping_counts = snomed2icd["snomed_code"].value_counts()
 # See how many SNOMED codes have more than 1 ICD code
 duplicates = mapping_counts[mapping_counts > 1]
 print(f"Total unique SNOMED codes: {len(mapping_counts)}")
@@ -184,7 +189,7 @@ for snomed_code in duplicates.index:
     icd_names = [icd2name.get(icd_code, None) for icd_code in icd_codes]
     duplicates_dict[int(snomed_code)] = {
         "name": snomed2name[snomed_code],
-        "icd_codes": dict(zip(icd_codes, icd_names))
+        "icd_codes": dict(zip(icd_codes, icd_names)),
     }
 
 with open("many_to_one.yaml", "w") as f:
@@ -201,8 +206,8 @@ snomed_df.shape
 snomed_df = pd.merge(
     snomed_df,
     snomed2icd.rename(columns={"snomed_code": "concept_id"}),
-    on="concept_id", 
-    how="left"
+    on="concept_id",
+    how="left",
 )
 snomed_df.shape
 
@@ -226,7 +231,7 @@ condition_df.to_parquet(f"gs://{DATA_BUCKET}/aou_uk/condition.parquet", index=Fa
 # # sex
 
 query = """
-SELECT 
+SELECT
     p.person_id,
     p.sex_at_birth_concept_id AS concept_id,
     0 AS age_in_days
@@ -253,12 +258,12 @@ sex_df.to_parquet(f"gs://{DATA_BUCKET}/aou_uk/sex.parquet", index=False)
 # # death
 
 query = """
-SELECT 
+SELECT
     p.person_id,
     'death' AS icd_code,
     DATE_DIFF(DATE(d.death_date), DATE(p.birth_datetime), DAY) AS age_in_days
 FROM `person` p
-INNER JOIN `aou_death` d 
+INNER JOIN `aou_death` d
     ON p.person_id = d.person_id
 WHERE d.primary_death_record = TRUE  -- Ensure we don't duplicate death events
   AND d.death_date IS NOT NULL
@@ -276,24 +281,24 @@ death_df.to_parquet(f"gs://{DATA_BUCKET}/aou_uk/death.parquet", index=False)
 # # BMI
 
 query = """
-SELECT 
-    m.person_id, 
+SELECT
+    m.person_id,
     DATE_DIFF(DATE(m.measurement_date), DATE(p.birth_datetime), DAY) AS age_in_days,
     CASE
         WHEN m.value_as_number > 28 THEN 'bmi_high'
         WHEN m.value_as_number > 22 THEN 'bmi_mid'
         ELSE 'bmi_low'
     END AS icd_code
-FROM 
+FROM
     `measurement` m
 INNER JOIN `person` p
     ON p.person_id = m.person_id
-JOIN 
-    `measurement_ext` ext 
+JOIN
+    `measurement_ext` ext
     ON m.measurement_id = ext.measurement_id
-WHERE 
+WHERE
     m.measurement_concept_id = 3038553      -- The standard OMOP concept for BMI
-    AND ext.src_id IN ("Staff Portal: HealthPro")  
+    AND ext.src_id IN ("Staff Portal: HealthPro")
 """
 client.dry_run(query)
 
@@ -316,8 +321,10 @@ df = df.sort_values(by=["person_id", "age_in_days"])
 
 # # tokenize
 
+import re
+
 import yaml
-import re 
+
 with open("tokenizer.yaml", "r") as f:
     tokenizer = yaml.safe_load(f)
 event_prefix_re = re.compile(r"^([A-Za-z]\d{2})_")
@@ -329,7 +336,6 @@ tokenizer = {
     ): code
     for event, code in tokenizer.items()
 }
-
 
 
 # ## identify tokens not found in UKB (ICD10CM tokens not in ICD10)
@@ -352,8 +358,18 @@ df.shape
 df = df.drop_duplicates(subset=["person_id", "token"])
 df.shape
 
+# Diseases are the modelling endpoint; drop participants whose surviving tokens
+# are only sex / bmi / death. Strictly supersedes the old single-token filter
+# that previously lived in parquet_to_numpy.py.
+non_disease = {"female", "male", "bmi_low", "bmi_mid", "bmi_high", "death"}
+disease_pids = df.loc[
+    ~df["icd_code"].str.lower().isin(non_disease), "person_id"
+].unique()
+n_before = df["person_id"].nunique()
+df = df[df["person_id"].isin(disease_pids)]
+n_after = df["person_id"].nunique()
+print(f"disease-token filter: kept {n_after}/{n_before} participants")
+
 df.head(50)
 
-df.to_parquet(f"gs://{DATA_BUCKET}/aou_uk/tokens.parquet", index=False)
-
-
+df.to_parquet(f"gs://{DATA_BUCKET}/aou_uk/data.parquet", index=False)
