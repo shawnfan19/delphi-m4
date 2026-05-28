@@ -36,7 +36,8 @@ for pid in tqdm(pids):
     masked = np.where(np.isin(tokens, whitelist), 0, tokens)
     tracker.step(masked[None, :], times[None, :])
 
-n_clusters_per_sub, _ = tracker.finalize()
+n_clusters_per_sub, cluster_sizes = tracker.finalize()
+cluster_sizes = cluster_sizes[cluster_sizes > 1]
 
 
 plt.figure()
@@ -49,6 +50,13 @@ plt.show()
 plt.figure()
 plt.hist(n_clusters_per_sub, bins="auto")
 plt.xlabel("disease clusters per participant")
+plt.ylabel("count")
+plt.title(f"{dataset_name} — {len(pids)} participants")
+plt.show()
+
+plt.figure()
+plt.hist(cluster_sizes, bins="auto")
+plt.xlabel("cluster size (tokens per day, clusters of size >1)")
 plt.ylabel("count")
 plt.title(f"{dataset_name} — {len(pids)} participants")
 plt.show()
