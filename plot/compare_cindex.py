@@ -73,7 +73,7 @@ def load_parquet(path):
         return pd.read_parquet(f, engine="pyarrow")
 
 
-def apply_filter(df, name):
+def apply_filter(df, name, label=""):
     if name is None:
         return df
     method = getattr(reader, f"{name}_times", None)
@@ -83,14 +83,30 @@ def apply_filter(df, name):
             f"expected method `{name}_times`"
         )
     pids = df["participant_id"].unique()
-    cutoff = dict(zip(pids, method(pids)))
+    cutoff_arr = method(pids)
+    n_pids = len(pids)
+    n_nan_pids = int(np.isnan(cutoff_arr).sum())
+    n_before = len(df)
+
+    cutoff = dict(zip(pids, cutoff_arr))
     df = df.assign(cutoff=df["participant_id"].map(cutoff).astype("float32"))
     df = df.dropna(subset=["cutoff"])
-    return df[df["case_time"] >= df["cutoff"]].drop(columns="cutoff")
+    n_after_nan = len(df)
+    df = df[df["case_time"] >= df["cutoff"]].drop(columns="cutoff")
+    n_after = len(df)
+
+    prefix = f"[{label}] " if label else ""
+    print(
+        f"{prefix}filter_after={name!r}:\n"
+        f"  participants: {n_nan_pids}/{n_pids} dropped (NaN cutoff)\n"
+        f"  case rows: {n_before} -> {n_after} "
+        f"({n_before - n_after_nan} NaN, {n_after_nan - n_after} pre-cutoff)"
+    )
+    return df
 
 
-df_a = apply_filter(load_parquet(ckpt_a_path), args.filter_after)
-df_b = apply_filter(load_parquet(ckpt_b_path), args.filter_after)
+df_a = apply_filter(load_parquet(ckpt_a_path), args.filter_after, label=label_a)
+df_b = apply_filter(load_parquet(ckpt_b_path), args.filter_after, label=label_b)
 
 
 # %%
