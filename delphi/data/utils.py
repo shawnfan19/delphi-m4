@@ -369,3 +369,17 @@ def filter_participants(pids, filter_list, any=True):
     for f in filter_list:
         pids = pids[np.isin(pids, f)]
     return pids
+
+
+def list_subdirs(base_dir, marker: str) -> list[str]:
+    """Names of immediate subdirectories of `base_dir` that contain `marker`.
+
+    Returns [] if `base_dir` does not exist (e.g. a dataset with no expansion
+    packs), so callers can treat the result uniformly. Works on both
+    pathlib.Path and cloudpathlib.AnyPath.
+    """
+    if not base_dir.exists():
+        return []
+    return sorted(
+        p.name for p in base_dir.iterdir() if p.is_dir() and (p / marker).exists()
+    )

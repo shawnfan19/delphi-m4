@@ -7,7 +7,7 @@ import yaml
 from cloudpathlib import AnyPath
 
 from delphi.data.reader import MultimodalReader, TokenReader
-from delphi.data.utils import filter_participants
+from delphi.data.utils import filter_participants, list_subdirs
 from delphi.env import DELPHI_DATA_READ as DELPHI_DATA_DIR
 
 
@@ -111,12 +111,8 @@ class AOUBiomarker:
 
     @classmethod
     def catalog(cls) -> list[str]:
-        """All biomarker names with a data.parquet under base_dir."""
-        return sorted(
-            p.name
-            for p in cls.base_dir.iterdir()
-            if p.is_dir() and (p / "data.parquet").exists()
-        )
+        """All biomarker names available under base_dir."""
+        return list_subdirs(cls.base_dir, "data.parquet")
 
     @classmethod
     def input_size(cls, name: str) -> int:
@@ -223,6 +219,11 @@ class AOUExpansionPack(TokenReader):
             if pid in first.index:
                 result[i] = first.loc[pid]
         return result
+
+    @classmethod
+    def catalog(cls) -> list[str]:
+        """All expansion-pack names available under base_dir."""
+        return list_subdirs(cls.base_dir, "tokenizer.yaml")
 
 
 class MultimodalAOUReader(MultimodalReader):

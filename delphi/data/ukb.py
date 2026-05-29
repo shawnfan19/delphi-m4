@@ -7,7 +7,7 @@ import yaml
 from cloudpathlib import AnyPath
 
 from delphi.data.reader import MultimodalReader, TokenReader
-from delphi.data.utils import filter_participants
+from delphi.data.utils import filter_participants, list_subdirs
 from delphi.env import DELPHI_DATA_READ as DELPHI_DATA_DIR
 
 NO_EVENT_TOKEN = 1
@@ -142,6 +142,11 @@ class Biomarker:
                 result[i] = first.loc[pid]
         return result
 
+    @classmethod
+    def catalog(cls) -> list[str]:
+        """All biomarker names available under base_dir."""
+        return list_subdirs(cls.base_dir, "data.bin")
+
     def __repr__(self):
         return f"Biomarker(path={self.path}, n_features={self.n_features})"
 
@@ -225,6 +230,11 @@ class ExpansionPack(TokenReader):
             if pid in pack.start_pos:
                 result[i] = pack.timesteps[pack.start_pos[pid]]
         return result
+
+    @classmethod
+    def catalog(cls) -> list[str]:
+        """All expansion-pack names available under base_dir."""
+        return list_subdirs(cls.base_dir, "tokenizer.yaml")
 
 
 class MultimodalUKBReader(MultimodalReader):
