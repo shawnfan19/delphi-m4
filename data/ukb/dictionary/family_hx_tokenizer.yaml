@@ -1,0 +1,13 @@
+family_hx_hip_fracture: 1
+family_hx_prostate_cancer: 2
+family_hx_severe_depression: 3
+family_hx_parkinsons_disease: 4
+family_hx_alzheimers_disease_dementia: 5
+family_hx_diabetes: 6
+family_hx_high_blood_pressure: 7
+family_hx_chronic_bronchitis_emphysema: 8
+family_hx_breast_cancer: 9
+family_hx_bowel_cancer: 10
+family_hx_lung_cancer: 11
+family_hx_stroke: 12
+family_hx_heart_disease: 13
