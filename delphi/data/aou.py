@@ -110,7 +110,7 @@ class AOUBiomarker:
         self.pid2cnt = dict(zip(uniq, counts))
 
     @classmethod
-    def list(cls) -> list[str]:
+    def catalog(cls) -> list[str]:
         """All biomarker names with a data.parquet under base_dir."""
         return sorted(
             p.name
@@ -258,7 +258,7 @@ class MultimodalAOUReader(MultimodalReader):
 
         NaN where the participant has no biomarker measurements at all.
         """
-        names = AOUBiomarker.list()
+        names = AOUBiomarker.catalog()
         if not names:
             return np.full(len(pids), np.nan, dtype=np.float32)
         stack = np.stack(
