@@ -56,3 +56,13 @@ def pytest_generate_tests(metafunc: Metafunc):
             if p.is_dir() and (p / "data.parquet").exists()
         )
         metafunc.parametrize("panel", panels)
+    if "expansion_pack" in metafunc.fixturenames:
+        packs_dir = get_dataset_dir(metafunc.config) / "expansion_packs"
+        if not packs_dir.is_dir():
+            pytest.fail(f"no expansion_packs/ dir at {packs_dir}")
+        packs = sorted(
+            p.name
+            for p in packs_dir.iterdir()
+            if p.is_dir() and (p / "data.parquet").exists()
+        )
+        metafunc.parametrize("expansion_pack", packs)
