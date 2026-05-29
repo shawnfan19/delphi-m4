@@ -30,6 +30,7 @@ import pandas as pd
 import yaml
 from cloudpathlib import AnyPath
 
+from delphi.data.auto import multimodal_reader_cls
 from delphi.data.ukb import UKBReader
 from delphi.env import DELPHI_CKPT_READ as DELPHI_CKPT_DIR
 from delphi.experiment import CliConfig
@@ -43,10 +44,9 @@ class TaskConfig(CliConfig):
     parquet: str
     baseline_parquet: str
     min: int = 50
-    # Filter out cases whose case_time < participant's recruitment time
-    # (or whose recruitment time is NaN). Default on; mirrors the semantics
-    # of the legacy `after_recruit` flag in apps/c-index-m4.py.
-    after_recruit: bool = True
+    # Drop cases whose case_time < reader's `<filter_after>_times(pid)`.
+    # E.g., "recruitment" on UKB, "first_biomarker" on AoU. None disables.
+    filter_after: None | str = None
     # If set, write the list of diseases whose c-index improved by >= 0.02
     # (using "either" sex grouping) to this YAML path, relative to this script's dir.
     improved_yaml: None | str = None
@@ -64,25 +64,33 @@ label_b = str(ckpt_b_path.parent)
 min_events = args.min  # drop diseases with fewer events in either checkpoint
 
 # %%
-reader = UKBReader()
+ReaderCls = multimodal_reader_cls()
+reader = ReaderCls()
 
 
 def load_parquet(path):
     with path.open("rb") as f:
-        df = pd.read_parquet(f, engine="pyarrow")
-    if args.after_recruit:
-        pids = df["participant_id"].unique()
-        recruit = dict(zip(pids, reader.recruitment_times(pids)))
-        df = df.assign(
-            recruit_time=df["participant_id"].map(recruit).astype("float32"),
+        return pd.read_parquet(f, engine="pyarrow")
+
+
+def apply_filter(df, name):
+    if name is None:
+        return df
+    method = getattr(reader, f"{name}_times", None)
+    if method is None:
+        raise ValueError(
+            f"{type(reader).__name__} doesn't support filter_after={name!r}; "
+            f"expected method `{name}_times`"
         )
-        df = df.dropna(subset=["recruit_time"])
-        df = df[df["case_time"] >= df["recruit_time"]]
-    return df
+    pids = df["participant_id"].unique()
+    cutoff = dict(zip(pids, method(pids)))
+    df = df.assign(cutoff=df["participant_id"].map(cutoff).astype("float32"))
+    df = df.dropna(subset=["cutoff"])
+    return df[df["case_time"] >= df["cutoff"]].drop(columns="cutoff")
 
 
-df_a = load_parquet(ckpt_a_path)
-df_b = load_parquet(ckpt_b_path)
+df_a = apply_filter(load_parquet(ckpt_a_path), args.filter_after)
+df_b = apply_filter(load_parquet(ckpt_b_path), args.filter_after)
 
 
 # %%

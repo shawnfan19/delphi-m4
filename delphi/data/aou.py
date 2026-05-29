@@ -110,6 +110,15 @@ class AOUBiomarker:
         self.pid2cnt = dict(zip(uniq, counts))
 
     @classmethod
+    def list(cls) -> list[str]:
+        """All biomarker names with a data.parquet under base_dir."""
+        return sorted(
+            p.name
+            for p in cls.base_dir.iterdir()
+            if p.is_dir() and (p / "data.parquet").exists()
+        )
+
+    @classmethod
     def input_size(cls, name: str) -> int:
         cols = pq.read_schema(str(cls.base_dir / name / "data.parquet")).names
         return len(_infer_features(cols))
@@ -242,6 +251,20 @@ class MultimodalAOUReader(MultimodalReader):
     @classmethod
     def participants(cls, fold):
         return AOUReader.participants(fold)
+
+    @classmethod
+    def first_biomarker_times(cls, pids: np.ndarray) -> np.ndarray:
+        """Earliest measurement time across all biomarkers per participant.
+
+        NaN where the participant has no biomarker measurements at all.
+        """
+        names = AOUBiomarker.list()
+        if not names:
+            return np.full(len(pids), np.nan, dtype=np.float32)
+        stack = np.stack(
+            [AOUBiomarker.first_occurrence_times(n, pids) for n in names], axis=0
+        )
+        return np.fmin.reduce(stack, axis=0)
 
     def is_female(self, pids: np.ndarray) -> np.ndarray:
         return self.token_reader.is_female(pids)
