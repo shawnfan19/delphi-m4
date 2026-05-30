@@ -10,17 +10,17 @@ import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
 
-from delphi.data.auto import detect_dataset, reader_cls
+from delphi.data.auto import detect_dataset, multimodal_reader_cls
 from delphi.eval.cluster import ClusterStatsTracker
 
 mpl.rcParams["figure.dpi"] = 300
 
 
-reader_cls_ = reader_cls()
-reader = reader_cls_()
+mm_cls = multimodal_reader_cls()
+reader = mm_cls.reader_cls()
 dataset_name = os.environ.get("DELPHI_DATASET") or detect_dataset()
 
-pids = reader_cls_.participants("all")
+pids = mm_cls.reader_cls.participants("all")
 print(f"{dataset_name}: {len(pids)} participants")
 
 tokens_per_sub = np.array([reader.seq_len[int(p)] for p in pids])
@@ -60,3 +60,13 @@ plt.xlabel("cluster size (tokens per day, clusters of size >1)")
 plt.ylabel("count")
 plt.title(f"{dataset_name} — {len(pids)} participants")
 plt.show()
+
+for pack_name in mm_cls.expansion_pack_cls.catalog():
+    pack = mm_cls.expansion_pack_cls(pack_name)
+    pack_tokens_per_sub = np.array([pack.seq_len[int(p)] for p in pack.pids])
+    plt.figure()
+    plt.hist(pack_tokens_per_sub, bins="auto")
+    plt.xlabel(f"{pack_name} tokens per participant")
+    plt.ylabel("count")
+    plt.title(f"{dataset_name}/{pack_name} — {len(pack.pids)} participants")
+    plt.show()

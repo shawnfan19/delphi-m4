@@ -240,6 +240,10 @@ class ExpansionPack(TokenReader):
 class MultimodalUKBReader(MultimodalReader):
     token_reader: UKBReader
 
+    reader_cls = UKBReader
+    biomarker_cls = Biomarker
+    expansion_pack_cls = ExpansionPack
+
     bmi_keys = UKBReader.bmi_keys
     smoking_keys = UKBReader.smoking_keys
     alcohol_keys = UKBReader.alcohol_keys

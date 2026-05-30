@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from delphi.data.auto import biomarker_cls, multimodal_reader_cls, reader_cls
+from delphi.data.auto import multimodal_reader_cls
 from delphi.data.reader import TokenReader
 from delphi.experiment import CliConfig
 
@@ -26,11 +26,11 @@ args = TaskConfig.from_cli()
 args.print()
 
 
-def pick_pids(args: TaskConfig, reader_cls_, mm_cls) -> list[int]:
+def pick_pids(args: TaskConfig, mm_cls) -> list[int]:
     if args.pid is not None:
         return [args.pid]
 
-    pids = reader_cls_.participants("all")
+    pids = mm_cls.reader_cls.participants("all")
     if args.biomarkers:
         pids = mm_cls.filter_participants_with_biomarkers(
             pids, biomarkers=args.biomarkers, any=True
@@ -130,13 +130,11 @@ def render(
     print("═" * width)
 
 
-reader_cls_ = reader_cls()
-bio_cls = biomarker_cls()
 mm_cls = multimodal_reader_cls()
-reader = reader_cls_()
-bios = {name: bio_cls(name) for name in args.biomarkers}
+reader = mm_cls.reader_cls()
+bios = {name: mm_cls.biomarker_cls(name) for name in args.biomarkers}
 
-labels_fn = getattr(reader_cls_, "labels", None)
+labels_fn = getattr(mm_cls.reader_cls, "labels", None)
 if labels_fn is not None:
     labels_df = labels_fn()
     label_by_id = {
@@ -145,7 +143,7 @@ if labels_fn is not None:
 else:
     label_by_id = {}
 
-pids = pick_pids(args, reader_cls_, mm_cls)
+pids = pick_pids(args, mm_cls)
 
 for pid in pids:
     sex, rows = build_rows(pid, reader, bios, label_by_id)

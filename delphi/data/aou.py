@@ -229,6 +229,10 @@ class AOUExpansionPack(TokenReader):
 class MultimodalAOUReader(MultimodalReader):
     token_reader: AOUReader
 
+    reader_cls = AOUReader
+    biomarker_cls = AOUBiomarker
+    expansion_pack_cls = AOUExpansionPack
+
     bmi_keys = AOUReader.bmi_keys
     lifestyle_keys = AOUReader.lifestyle_keys
     sex_keys = AOUReader.sex_keys
