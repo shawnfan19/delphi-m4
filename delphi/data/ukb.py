@@ -199,6 +199,7 @@ class ExpansionPack(TokenReader):
             f"expansion pack {path} not found"
         )
         p2i = pd.read_csv(os.path.join(path, "p2i.csv"), index_col="pid")
+        p2i = p2i[p2i["seq_len"] > 0]
         self.pids = p2i.index.to_numpy()
         start_pos = p2i["start_pos"].to_dict()
         seq_len = p2i["seq_len"].to_dict()
@@ -220,7 +221,7 @@ class ExpansionPack(TokenReader):
     @classmethod
     def participants(cls, name: str) -> np.ndarray:
         p2i = pd.read_csv(cls.base_dir / name / "p2i.csv")
-        return p2i["pid"].unique()
+        return p2i.loc[p2i["seq_len"] > 0, "pid"].unique()
 
     @classmethod
     def first_occurrence_times(cls, name: str, pids: np.ndarray) -> np.ndarray:
