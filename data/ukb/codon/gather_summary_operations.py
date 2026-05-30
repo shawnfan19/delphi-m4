@@ -68,5 +68,5 @@ build_expansion_pack(
     count_np=count_np,
     subjects=valid_participants,
     tokenizer=tokenizer,
-    expansion_pack="summary_ops",
+    expansion_pack="ops_hx",
 )
