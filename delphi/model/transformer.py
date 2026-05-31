@@ -102,7 +102,7 @@ class CausalSelfAttention(nn.Module):
         self.n_embd = config.n_embd
         self.dropout = config.dropout
 
-    def forward(self, x, attn_mask, past_kv=None):
+    def forward(self, x, attn_mask, past_kv=None, return_attn=False):
         B, T, C = x.size()
         # batch size, sequence length, embedding dimensionality (n_embd)
 
@@ -122,13 +122,28 @@ class CausalSelfAttention(nn.Module):
             k = torch.cat([past_kv[0], k], dim=2)  # (B, nh, T_total, hs)
             v = torch.cat([past_kv[1], v], dim=2)  # (B, nh, T_total, hs)
 
-        # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T_total) -> (B, nh, T, T_total)
-        # manual implementation of attention
-        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-        att = att.masked_fill(attn_mask == 0, float("-inf"))
-        att = F.softmax(att, dim=-1)
-        att = self.attn_dropout(att)
-        y = att @ v  # (B, nh, T, T_total) x (B, nh, T_total, hs) -> (B, nh, T, hs)
+        # Self-attend: (B, nh, T, hs) x (B, nh, hs, T_total) -> (B, nh, T, T_total).
+        # Fast path (default) uses fused SDPA, which never materializes the
+        # (B, nh, T, T_total) score matrix — avoiding the dominant eval-time
+        # allocation — but cannot return attention weights. The manual path is kept
+        # for callers that need `att` (e.g. attention visualization): return_attn=True.
+        if return_attn:
+            att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+            att = att.masked_fill(attn_mask == 0, float("-inf"))
+            att = F.softmax(att, dim=-1)
+            att = self.attn_dropout(att)
+            y = att @ v  # (B, nh, T, T_total) x (B, nh, T_total, hs) -> (B, nh, T, hs)
+        else:
+            # attn_mask is a 0/1 keep-mask (nonzero = attend); SDPA boolean masks use
+            # True = keep. Default scale is 1/sqrt(head_dim), matching the manual path.
+            att = None
+            y = F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=attn_mask.to(torch.bool),
+                dropout_p=self.dropout if self.training else 0.0,
+            )
         y = (
             y.transpose(1, 2).contiguous().view(B, T, C)
         )  # re-assemble all head outputs side by side
@@ -164,8 +179,10 @@ class Block(nn.Module):
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
 
-    def forward(self, x, attn_mask, past_kv=None):
-        y, att, new_kv = self.attn(self.ln_1(x), attn_mask, past_kv=past_kv)
+    def forward(self, x, attn_mask, past_kv=None, return_attn=False):
+        y, att, new_kv = self.attn(
+            self.ln_1(x), attn_mask, past_kv=past_kv, return_attn=return_attn
+        )
         x = x + y
         x = x + self.mlp(self.ln_2(x))
         return x, att, new_kv
@@ -350,7 +367,14 @@ class Delphi2M(nn.Module):
         return _mask_invalid(loss, is_valid, reduce=reduce), aux
 
     def forward(
-        self, idx, age, targets=None, targets_age=None, past_kvs=None, past_pad=None
+        self,
+        idx,
+        age,
+        targets=None,
+        targets_age=None,
+        past_kvs=None,
+        past_pad=None,
+        return_attn=False,
     ):
         tok_emb = self.transformer.wte(idx)
         age_emb = self.transformer.wae(age.unsqueeze(-1))
@@ -369,19 +393,19 @@ class Delphi2M(nn.Module):
         else:
             attn_mask = causal_attention_mask(pad=pad, timestep=age)
 
-        att = []
+        att = [] if return_attn else None
         new_kvs = []
         for i, block in enumerate(self.transformer.h):
             past_kv = past_kvs[i] if past_kvs is not None else None
-            x, a, new_kv = block(x, attn_mask, past_kv=past_kv)
-            att.append(a)
+            x, a, new_kv = block(x, attn_mask, past_kv=past_kv, return_attn=return_attn)
+            if return_attn:
+                att.append(a)
             new_kvs.append(new_kv)
         x = self.transformer.ln_f(x)
-        att = torch.stack(att)
 
         misc = dict()
         misc["attn_mask"] = attn_mask
-        misc["attn"] = att
+        misc["attn"] = torch.stack(att) if return_attn else None
         misc["past_kvs"] = new_kvs
         misc["cur_pad"] = pad
 
