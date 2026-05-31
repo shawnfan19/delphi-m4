@@ -122,11 +122,14 @@ ds = MultimodalDataset(
     biomarker_transform=biomarker_transform,
 )
 
-# Token packing: order participants by sequence length so each batch pads to a
-# similar width and the forward pass wastes less compute on padding. The method
-# reorders the dataset in place and returns the new order; rebind val_pids so the
-# downstream per-participant arrays (is_female, pids_np) stay aligned to the rows.
-val_pids = ds.sort_by_length()
+# Token packing: order participants by sequence length, longest first, so each
+# batch pads to a similar width and the forward pass wastes less compute on
+# padding. Longest-first puts the peak-memory batch first, so an OOM from too
+# large a batch_size surfaces immediately instead of mid-run (and the allocator
+# reserves its high-water-mark pool up front). The method reorders the dataset in
+# place and returns the new order; rebind val_pids so the downstream
+# per-participant arrays (is_female, pids_np) stay aligned to the rows.
+val_pids = ds.sort_by_length(descending=True)
 
 # +
 offset_days = args.min_time_gap * 365.25
