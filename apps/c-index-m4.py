@@ -122,6 +122,12 @@ ds = MultimodalDataset(
     biomarker_transform=biomarker_transform,
 )
 
+# Token packing: order participants by sequence length so each batch pads to a
+# similar width and the forward pass wastes less compute on padding. The method
+# reorders the dataset in place and returns the new order; rebind val_pids so the
+# downstream per-participant arrays (is_female, pids_np) stay aligned to the rows.
+val_pids = ds.sort_by_length()
+
 # +
 offset_days = args.min_time_gap * 365.25
 model_targets = model.targets.to(device)
@@ -169,6 +175,13 @@ concordance_collator = ConcordanceCollator(
     chunk_size=args.chunk_size,
     same_sex_only=args.same_sex,
 )
+
+# dis_rates and onset_times are fully consumed above (the collator extracts its
+# case events and keeps its own case_times_mat copy); free both (N, V) matrices
+# and return Phase 1's reserved pool before the Phase 2 forward passes.
+del dis_rates, onset_times
+if device == "cuda":
+    torch.cuda.empty_cache()
 
 it2 = tqdm(
     eval_iter(total_size=len(ds), batch_size=args.batch_size),

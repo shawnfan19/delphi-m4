@@ -457,6 +457,7 @@ class DelphiM4(torch.nn.Module):
         targets_age: None | torch.Tensor = None,
         past_kvs: None | list = None,
         past_pad: None | torch.Tensor = None,
+        return_attn: bool = False,
         # emb: None | torch.Tensor = None,
     ):
 
@@ -497,19 +498,19 @@ class DelphiM4(torch.nn.Module):
             attn_mask = causal_attention_mask(pad=pad, timestep=fused_age)
 
         x = self.transformer.drop(x)
-        att = []
+        att = [] if return_attn else None
         new_kvs = []
         for i, block in enumerate(self.transformer.h):
             past_kv = past_kvs[i] if past_kvs is not None else None
-            x, a, new_kv = block(x, attn_mask, past_kv=past_kv)
-            att.append(a)
+            x, a, new_kv = block(x, attn_mask, past_kv=past_kv, return_attn=return_attn)
+            if return_attn:
+                att.append(a)
             new_kvs.append(new_kv)
         x = self.transformer.ln_f(x)
-        att = torch.stack(att)
 
         misc = dict()
         misc["attn_mask"] = attn_mask
-        misc["attn"] = att
+        misc["attn"] = torch.stack(att) if return_attn else None
         misc["past_kvs"] = new_kvs
         misc["cur_pad"] = pad
 
