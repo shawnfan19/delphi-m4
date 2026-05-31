@@ -3,6 +3,7 @@ from typing import Any, Callable, Iterable
 
 import numpy as np
 import torch
+from tqdm import tqdm
 
 from delphi.data.utils import collate_batch
 
@@ -114,6 +115,35 @@ class MultimodalDataset:
     @property
     def vocab_size(self):
         return len(self.tokenizer)
+
+    def sort_by_length(
+        self, descending: bool = False, progress: bool = True
+    ) -> np.ndarray:
+        """Reorder ``self.participants`` by post-transform sequence length and
+        return the reordered pid array (which is ``self.participants``).
+
+        Grouping similar-length participants into a batch minimizes padding, so
+        the forward pass wastes less compute on padded positions. Length is
+        measured through ``__getitem__`` so it reflects the token/biomarker
+        transforms (which can change length); this is a full pass over the
+        reader (one load per participant, no model forward).
+
+        Returning the new order lets callers keep their own per-participant
+        arrays (e.g. ``is_female``, pid arrays) aligned to the dataset's row
+        order — they must rebind to the return value.
+        """
+        lengths = np.empty(len(self), dtype=np.int64)
+        iterator = range(len(self))
+        if progress:
+            iterator = tqdm(iterator, desc="sort_by_length", leave=False)
+        for idx in iterator:
+            x0, _, _, bio_t, _, _, _ = self[idx]
+            lengths[idx] = len(x0) + len(bio_t)
+        order = np.argsort(lengths, kind="stable")
+        if descending:
+            order = order[::-1]
+        self.participants = self.participants[order]
+        return self.participants
 
     def __getitem__(self, idx: int):
 
