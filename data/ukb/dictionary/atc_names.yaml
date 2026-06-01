@@ -1,0 +1,432 @@
+A01AA: Caries prophylactic agents
+A01AB: Antiinfectives and antiseptics for local oral treatment
+A01AC: Corticosteroids for local oral treatment
+A02AA: Magnesium compounds
+A02AC: Calcium compounds
+A02AH: Antacids with sodium bicarbonate
+A02BA: H2-receptor antagonists
+A02BB: Prostaglandins
+A02BC: Proton pump inhibitors
+A02BX: Other drugs for peptic ulcer and gastro-oesophageal reflux disease (GORD)
+A03AA: Synthetic anticholinergics, esters with tertiary amino group
+A03AB: Synthetic anticholinergics, quaternary ammonium compounds
+A03AX: Other drugs for functional gastrointestinal disorders
+A03BA: Belladonna alkaloids, tertiary amines
+A03BB: Belladonna alkaloids, semisynthetic, quaternary ammonium compounds
+A03FA: Propulsives
+A04AA: Serotonin (5HT3) antagonists
+A04AD: Other antiemetics
+A05AA: Bile acids and derivatives
+A06AA: Softeners, emollients
+A06AB: Contact laxatives
+A06AC: Bulk-forming laxatives
+A06AD: Osmotically acting laxatives
+A06AG: Enemas
+A06AH: Peripheral opioid receptor antagonists
+A06AX: Other drugs for constipation
+A07AA: Antibiotics
+A07BA: Charcoal preparations
+A07BB: Bismuth preparations
+A07BC: Other intestinal adsorbents
+A07DA: Antipropulsives
+A07EA: Corticosteroids acting locally
+A07EB: Antiallergic agents, excl. corticosteroids
+A07EC: Aminosalicylic acid and similar agents
+A07XA: Other antidiarrheals
+A08AA: Centrally acting antiobesity products
+A08AB: Peripherally acting antiobesity products
+A08AX: Other antiobesity drugs
+A09AA: Enzyme preparations
+A09AB: Acid preparations
+A10AB: Insulins and analogues for injection, fast-acting
+A10AC: Insulins and analogues for injection, intermediate-acting
+A10AE: Insulins and analogues for injection, long-acting
+A10BA: Biguanides
+A10BB: Sulfonylureas
+A10BD: Combinations of oral blood glucose lowering drugs
+A10BF: Alpha glucosidase inhibitors
+A10BH: Dipeptidyl peptidase 4 (DPP-4) inhibitors
+A10BJ: Glucagon-like peptide-1 (GLP-1) analogues
+A10BX: Other blood glucose lowering drugs, excl. insulins
+A11A: MULTIVITAMINS, COMBINATIONS
+A11CA: Vitamin A, plain
+A11CB: Vitamin A and D in combination
+A11CC: Vitamin D and analogues
+A11DA: Vitamin B1, plain
+A11EA: Vitamin B-complex, plain
+A11GA: Ascorbic acid (vitamin C), plain
+A11HA: Other plain vitamin preparations
+A12AA: Calcium
+A12BA: Potassium
+A12CA: Sodium
+A12CB: Zinc
+A14AA: Androstan derivatives
+A16AA: Amino acids and derivatives
+A16AX: Various alimentary tract and metabolism products
+B01AA: Vitamin K antagonists
+B01AB: Heparin group
+B01AC: Platelet aggregation inhibitors excl. heparin
+B01AD: Enzymes
+B01AE: Direct thrombin inhibitors
+B01AF: Direct factor Xa inhibitors
+B02BA: Vitamin K
+B02BX: Other systemic hemostatics
+B03AA: Iron bivalent, oral preparations
+B03AB: Iron trivalent, oral preparations
+B03AC: Iron, parenteral preparations
+B03BA: Vitamin B12 (cyanocobalamin and analogues)
+B03BB: Folic acid and derivatives
+B03XA: Other antianemic preparations
+B05BA: Solutions for parenteral nutrition
+B05CA: Antiinfectives
+B05CB: Salt solutions
+B05XA: Electrolyte solutions
+B06AA: Enzymes
+B06AC: Drugs used in hereditary angioedema
+C01AA: Digitalis glycosides
+C01BA: Antiarrhythmics, class Ia
+C01BB: Antiarrhythmics, class Ib
+C01BC: Antiarrhythmics, class Ic
+C01BD: Antiarrhythmics, class III
+C01CA: Adrenergic and dopaminergic agents
+C01DA: Organic nitrates
+C01DX: Other vasodilators used in cardiac diseases
+C01EB: Other cardiac preparations
+C02AB: Methyldopa
+C02AC: Imidazoline receptor agonists
+C02CA: Alpha-adrenoreceptor antagonists
+C02CC: Guanidine derivatives
+C02DB: Hydrazinophthalazine derivatives
+C03AA: Thiazides, plain
+C03AB: Thiazides and potassium in combination
+C03AH: Thiazides, combinations with psycholeptics and/or analgesics
+C03BA: Sulfonamides, plain
+C03CA: Sulfonamides, plain
+C03DA: Aldosterone antagonists
+C03XA: Vasopressin antagonists
+C04AC: Nicotinic acid and derivatives
+C04AD: Purine derivatives
+C04AX: Other peripheral vasodilators
+C05AA: Corticosteroids
+C05AD: Local anesthetics
+C05AE: Muscle relaxants
+C05AX: Other agents for treatment of hemorrhoids and anal fissures for topical use
+C05BA: Heparins or heparinoids for topical use
+C05BB: Sclerosing agents for local injection
+C05CA: Bioflavonoids
+C07AA: Beta blocking agents, non-selective
+C07AB: Beta blocking agents, selective
+C08CA: Dihydropyridine derivatives
+C09AA: ACE inhibitors, plain
+C09BB: ACE inhibitors and calcium channel blockers
+C09CA: Angiotensin II receptor blockers (ARBs), plain
+C09DX: Angiotensin II receptor blockers (ARBs), other combinations
+C09XA: Renin-inhibitors
+C10AA: HMG CoA reductase inhibitors
+C10AB: Fibrates
+C10AC: Bile acid sequestrants
+C10AD: Nicotinic acid and derivatives
+C10AX: Other lipid modifying agents
+D01A: ANTIFUNGALS FOR TOPICAL USE
+D01AA: Antibiotics
+D01AC: Imidazole and triazole derivatives
+D01AE: Other antifungals for topical use
+D01BA: Antifungals for systemic use
+D02AB: Zinc products
+D02AE: Carbamide products
+D02AX: Other emollients and protectives
+D04AA: Antihistamines for topical use
+D04AB: Anesthetics for topical use
+D04AX: Other antipruritics
+D05AC: Antracen derivatives
+D05AX: Other antipsoriatics for topical use
+D06AA: Tetracycline and derivatives
+D06AX: Other antibiotics for topical use
+D06BA: Sulfonamides
+D06BB: Antivirals
+D06BX: Other chemotherapeutics
+D07AB: Corticosteroids, moderately potent (group II)
+D07AC: Corticosteroids, potent (group III)
+D07AD: Corticosteroids, very potent (group IV)
+D07BB: Corticosteroids, moderately potent, combinations with antiseptics
+D07CB: Corticosteroids, moderately potent, combinations with antibiotics
+D07XA: Corticosteroids, weak, other combinations
+D08AE: Phenol and derivatives
+D08AG: Iodine products
+D08AJ: Quaternary ammonium compounds
+D08AL: Silver compounds
+D09AA: Medicated dressings with antiinfectives
+D09AB: Zinc bandages
+D10AD: Retinoids for topical use in acne
+D10AE: Peroxides
+D10AF: Antiinfectives for treatment of acne
+D10AX: Other anti-acne preparations for topical use
+D10BA: Retinoids for treatment of acne
+D11AA: Antihidrotics
+D11AC: Medicated shampoos
+D11AH: Agents for dermatitis, excluding corticosteroids
+D11AX: Other dermatologicals
+G01AA: Antibiotics
+G01AF: Imidazole derivatives
+G01AX: Other antiinfectives and antiseptics
+G02AB: Ergot alkaloids
+G02BA: Intrauterine contraceptives
+G02BB: Intravaginal contraceptives
+G02CA: Sympathomimetics, labour repressants
+G02CB: Prolactine inhibitors
+G02CX: Other gynecologicals
+G03AA: Progestogens and estrogens, fixed combinations
+G03AC: Progestogens
+G03AD: Emergency contraceptives
+G03BA: 3-oxoandrosten (4) derivatives
+G03CA: Natural and semisynthetic estrogens, plain
+G03CX: Other estrogens
+G03DA: Pregnen (4) derivatives
+G03DB: Pregnadien derivatives
+G03DC: Estren derivatives
+G03GA: Gonadotropins
+G03GB: Ovulation stimulants, synthetic
+G03HA: Antiandrogens, plain
+G03XA: Antigonadotropins and similar agents
+G03XC: Selective estrogen receptor modulators
+G04BD: Drugs for urinary frequency and incontinence
+G04BE: Drugs used in erectile dysfunction
+G04BX: Other urologicals
+G04CA: Alpha-adrenoreceptor antagonists
+G04CB: Testosterone-5-alpha reductase inhibitors
+H01AB: Thyrotropin
+H01BA: Vasopressin and analogues
+H01CB: Somatostatin and analogues
+H02AA: Mineralocorticoids
+H02AB: Glucocorticoids
+H02CA: Anticorticosteroids
+H03AA: Thyroid hormones
+H04AA: Glycogenolytic hormones
+H05AA: Parathyroid hormones and analogues
+H05BX: Other anti-parathyroid agents
+J01AA: Tetracyclines
+J01CA: Penicillins with extended spectrum
+J01CE: Beta-lactamase sensitive penicillins
+J01CF: Beta-lactamase resistant penicillins
+J01CR: Combinations of penicillins, incl. beta-lactamase inhibitors
+J01DB: First-generation cephalosporins
+J01DC: Second-generation cephalosporins
+J01EA: Trimethoprim and derivatives
+J01EC: Intermediate-acting sulfonamides
+J01FA: Macrolides
+J01FF: Lincosamides
+J01GA: Streptomycins
+J01GB: Other aminoglycosides
+J01MA: Fluoroquinolones
+J01XB: Polymyxins
+J01XD: Imidazole derivatives
+J01XE: Nitrofuran derivatives
+J01XX: Other antibacterials
+J02AB: Imidazole derivatives
+J02AC: Triazole and tetrazole derivatives
+J02AX: Other antimycotics for systemic use
+J04BA: Drugs for treatment of lepra
+J05AB: Nucleosides and nucleotides excl. reverse transcriptase inhibitors
+J05AE: Protease inhibitors
+J05AF: Nucleoside and nucleotide reverse transcriptase inhibitors
+J05AG: Non-nucleoside reverse transcriptase inhibitors
+J05AH: Neuraminidase inhibitors
+J05AJ: Integrase inhibitors
+J05AP: Antivirals for treatment of HCV infections
+J05AX: Other antivirals
+J06AA: Immune sera
+J06BA: Immunoglobulins, normal human
+J06BB: Specific immunoglobulins
+J07AE: Cholera vaccines
+J07AG: Haemophilus influenzae B vaccines
+J07AH: Meningococcal vaccines
+J07AL: Pneumococcal vaccines
+J07AM: Tetanus vaccines
+J07AP: Typhoid vaccines
+J07BA: Encephalitis vaccines
+J07BB: Influenza vaccines
+J07BC: Hepatitis vaccines
+J07BD: Measles vaccines
+J07BF: Poliomyelitis vaccines
+J07BG: Rabies vaccines
+J07BK: Varicella zoster vaccines
+J07BL: Yellow fever vaccines
+J07BM: Papillomavirus vaccines
+L01AA: Nitrogen mustard analogues
+L01AX: Other alkylating agents
+L01BA: Folic acid analogues
+L01BB: Purine analogues
+L01BC: Pyrimidine analogues
+L01CD: Taxanes
+L01EA: BCR-ABL tyrosine kinase inhibitors
+L01EB: Epidermal growth factor receptor (EGFR) tyrosine kinase inhibitors
+L01EC: B-Raf serine-threonine kinase (BRAF) inhibitors
+L01ED: Anaplastic lymphoma kinase (ALK) inhibitors
+L01EG: Mammalian target of rapamycin (mTOR) kinase inhibitors
+L01EJ: Janus-associated kinase (JAK) inhibitors
+L01EK: Vascular endothelial growth factor receptor (VEGFR) tyrosine kinase inhibitors
+L01EL: Bruton's tyrosine kinase (BTK) inhibitors
+L01EM: Phosphatidylinositol-3-kinase (Pi3K) inhibitors
+L01EX: Other protein kinase inhibitors
+L01FA: CD20 (Clusters of Differentiation 20) inhibitors
+L01FD: HER2 (Human Epidermal Growth Factor Receptor 2) inhibitors
+L01FF: PD-1/PD-L1 (Programmed cell death protein 1/death ligand 1) inhibitors
+L01XG: Proteasome inhibitors
+L01XX: Other antineoplastic agents
+L01XY: Combinations of antineoplastic agents
+L02AA: Estrogens
+L02AB: Progestogens
+L02AE: Gonadotropin releasing hormone analogues
+L02BA: Anti-estrogens
+L02BB: Anti-androgens
+L02BG: Aromatase inhibitors
+L02BX: Other hormone antagonists and related agents
+L03AA: Colony stimulating factors
+L04AA: Selective immunosuppressants
+L04AB: Tumor necrosis factor alpha (TNF-alpha) inhibitors
+L04AC: Interleukin inhibitors
+L04AD: Calcineurin inhibitors
+L04AE: Sphingosine-1-phosphate (S1P) receptor modulators
+L04AG: Monoclonal antibodies
+L04AH: Mammalian target of rapamycin (mTOR) kinase inhibitors
+L04AK: Dihydroorotate dehydrogenase (DHODH) inhibitors
+L04AX: Other immunosuppressants
+M01AA: Butylpyrazolidines
+M01AB: Acetic acid derivatives and related substances
+M01AC: Oxicams
+M01AE: Propionic acid derivatives
+M01AG: Fenamates
+M01AH: Coxibs
+M01AX: Other antiinflammatory and antirheumatic agents, non-steroids
+M01CB: Gold preparations
+M02AA: Antiinflammatory preparations, non-steroids for topical use
+M03AX: Other muscle relaxants, peripherally acting agents
+M03BA: Carbamic acid esters
+M04AA: Preparations inhibiting uric acid production
+M04AB: Preparations increasing uric acid excretion
+M04AC: Preparations with no effect on uric acid metabolism
+M05BA: Bisphosphonates
+M05BX: Other drugs affecting bone structure and mineralization
+N01AB: Halogenated hydrocarbons
+N01AF: Barbiturates, plain
+N01AH: Opioid anesthetics
+N01AX: Other general anesthetics
+N01BB: Amides
+N01BX: Other local anesthetics
+N02AA: Natural opium alkaloids
+N02AB: Phenylpiperidine derivatives
+N02AE: Oripavine derivatives
+N02AJ: Opioids in combination with non-opioid analgesics
+N02AX: Other opioids
+N02BA: Salicylic acid and derivatives
+N02BE: Anilides
+N02BF: Gabapentinoids
+N02CA: Ergot alkaloids
+N02CC: Selective serotonin (5HT1) agonists
+N02CX: Other antimigraine preparations
+N03AA: Barbiturates and derivatives
+N03AB: Hydantoin derivatives
+N03AE: Benzodiazepine derivatives
+N03AF: Carboxamide derivatives
+N03AG: Fatty acid derivatives
+N03AX: Other antiepileptics
+N04AA: Tertiary amines
+N04AC: Ethers of tropine or tropine derivatives
+N04BB: Adamantane derivatives
+N04BC: Dopamine agonists
+N04BD: Monoamine oxidase B inhibitors
+N04BX: Other dopaminergic agents
+N05AA: Phenothiazines with aliphatic side-chain
+N05AB: Phenothiazines with piperazine structure
+N05AD: Butyrophenone derivatives
+N05AF: Thioxanthene derivatives
+N05AH: Diazepines, oxazepines, thiazepines and oxepines
+N05AL: Benzamides
+N05AN: Lithium
+N05AX: Other antipsychotics
+N05BA: Benzodiazepine derivatives
+N05BB: Diphenylmethane derivatives
+N05CA: Barbiturates, plain
+N05CC: Aldehydes and derivatives
+N05CD: Benzodiazepine derivatives
+N05CF: Benzodiazepine related drugs
+N05CH: Melatonin receptor agonists
+N05CM: Other hypnotics and sedatives
+N06AA: Non-selective monoamine reuptake inhibitors
+N06AB: Selective serotonin reuptake inhibitors
+N06AF: Monoamine oxidase inhibitors, non-selective
+N06AX: Other antidepressants
+N06BA: Centrally acting sympathomimetics
+N06BX: Other psychostimulants and nootropics
+N06DA: Anticholinesterases
+N06DX: Other anti-dementia drugs
+N07AA: Anticholinesterases
+N07AX: Other parasympathomimetics
+N07BA: Drugs used in nicotine dependence
+N07BB: Drugs used in alcohol dependence
+N07BC: Drugs used in opioid dependence
+N07CA: Antivertigo preparations
+N07XX: Other nervous system drugs
+P01AC: Dichloroacetamide derivatives
+P01AX: Other agents against amoebiasis and other protozoal diseases
+P01BA: Aminoquinolines
+P01BB: Biguanides
+P01BD: Diaminopyrimidines
+P02BA: Quinoline derivatives and related substances
+P02CA: Benzimidazole derivatives
+P02CE: Imidazothiazole derivatives
+P02CF: Avermectines
+P03AC: Pyrethrines, incl. synthetic compounds
+R01AA: Sympathomimetics, plain
+R01AC: Antiallergic agents, excl. corticosteroids
+R01AD: Corticosteroids
+R01AX: Other nasal preparations
+R01BA: Sympathomimetics
+R02AA: Antiseptics
+R02AD: Anesthetics, local
+R02AX: Other throat preparations
+R03AC: Selective beta-2-adrenoreceptor agonists
+R03AK: Adrenergics in combination with corticosteroids or other drugs, excl. anticholinergics
+R03AL: Adrenergics in combination with anticholinergics incl. triple combinations
+  with corticosteroids
+R03BA: Glucocorticoids
+R03BB: Anticholinergics
+R03BC: Antiallergic agents, excl. corticosteroids
+R03CA: Alpha- and beta-adrenoreceptor agonists
+R03CB: Non-selective beta-adrenoreceptor agonists
+R03CC: Selective beta-2-adrenoreceptor agonists
+R03DA: Xanthines
+R03DC: Leukotriene receptor antagonists
+R03DX: Other systemic drugs for obstructive airway diseases
+R05CA: Expectorants
+R05CB: Mucolytics
+R05DA: Opium alkaloids and derivatives
+R06AA: Aminoalkyl ethers
+R06AB: Substituted alkylamines
+R06AD: Phenothiazine derivatives
+R06AE: Piperazine derivatives
+R06AX: Other antihistamines for systemic use
+S01AA: Antibiotics
+S01AD: Antivirals
+S01AE: Fluoroquinolones
+S01AX: Other antiinfectives
+S01BA: Corticosteroids, plain
+S01BC: Antiinflammatory agents, non-steroids
+S01EA: Sympathomimetics in glaucoma therapy
+S01EB: Parasympathomimetics
+S01EC: Carbonic anhydrase inhibitors
+S01ED: Beta blocking agents
+S01FA: Anticholinergics
+S01GA: Sympathomimetics used as decongestants
+S01GX: Other antiallergics
+S01XA: Other ophthalmologicals
+S02AA: Antiinfectives
+S02CA: Corticosteroids and antiinfectives in combination
+S03CA: Corticosteroids and antiinfectives in combination
+V03AB: Antidotes
+V03AE: Drugs for treatment of hyperkalemia and hyperphosphatemia
+V03AF: Detoxifying agents for antineoplastic treatment
+V03AN: Medical gases
+V04CX: Other diagnostic agents
+V06: GENERAL NUTRIENTS
+V06DC: Carbohydrates
