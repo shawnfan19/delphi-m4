@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from delphi.data.auto import multimodal_reader_cls
-from delphi.data.reader import TokenReader
+from delphi.data.reader import MultimodalReader
 from delphi.experiment import CliConfig
 
 
@@ -19,6 +19,7 @@ class TaskConfig(CliConfig):
     pid: int | None = None
     n: int = 1
     biomarkers: list[str] = field(default_factory=list)
+    expansion_packs: list[str] = field(default_factory=list)
     events_width: int = 26
 
 
@@ -31,9 +32,11 @@ def pick_pids(args: TaskConfig, mm_cls) -> list[int]:
         return [args.pid]
 
     pids = mm_cls.reader_cls.participants("all")
-    if args.biomarkers:
-        pids = mm_cls.filter_participants_with_biomarkers(
-            pids, biomarkers=args.biomarkers, any=True
+    if args.biomarkers or args.expansion_packs:
+        pids = mm_cls.filter_participants_with_modalities(
+            pids,
+            biomarkers=args.biomarkers or None,
+            expansion_packs=args.expansion_packs or None,
         )
     rng = np.random.default_rng(args.seed)
     sampled = rng.choice(pids, size=args.n, replace=False)
@@ -42,11 +45,10 @@ def pick_pids(args: TaskConfig, mm_cls) -> list[int]:
 
 def build_rows(
     pid: int,
-    reader: TokenReader,
-    bios: dict[str, object],
-    label_by_id: dict[int, str],
+    reader: MultimodalReader,
+    pack_tag: dict[int, str],
 ) -> tuple[str | None, list[tuple]]:
-    tokens, times = reader[pid]
+    tokens, times, bio_x_dict, bio_t, bio_m = reader[pid]
 
     female_id = reader.tokenizer["female"]
     male_id = reader.tokenizer["male"]
@@ -62,17 +64,22 @@ def build_rows(
         tok_int = int(tok)
         if tok_int in (female_id, male_id):
             continue
-        label = label_by_id.get(tok_int) or reader.detokenizer[tok_int]
+        label = reader.detokenizer[tok_int]
+        pack = pack_tag.get(tok_int)
+        if pack:
+            label = f"[{pack}] {label}"
         rows.append((float(t), "event", label))
 
-    for name, bio in bios.items():
-        data, t_meas = bio[pid]
-        if data is None:
-            continue
-        mod_name = name.upper()
-        for vec, t in zip(data, t_meas):
-            feats = [(f, float(v)) for f, v in zip(bio.features, vec)]
-            rows.append((float(t), "visit", mod_name, feats))
+    # Biomarker visits straight from the reader's outputs. bio_x_dict[name] holds the
+    # measurement vectors in modality order; bio_t/bio_m are globally time-sorted, so
+    # bio_t[bio_m == idx] gives that modality's ascending times, matching the vectors.
+    # Feature names come from the static schema, not the participant's data.
+    for name, vecs in bio_x_dict.items():
+        t_mod = bio_t[bio_m == reader.biomarker2idx[name]]
+        feat_names = reader.biomarkers[name].features
+        for vec, t in zip(vecs, t_mod):
+            feats = [(f, float(v)) for f, v in zip(feat_names, vec)]
+            rows.append((float(t), "visit", name.upper(), feats))
 
     rows.sort(key=lambda r: r[0])
     return sex, rows
@@ -93,10 +100,10 @@ def render(
         kind = row[1]
         if kind == "event":
             _, _, label = row
-            body.append(f"  {age:>3.0f}y  {label}")
+            body.append(f"  {age:>6.2f}y  {label}")
         elif kind == "visit":
             _, _, mod, feats = row
-            left = f"  {age:>3.0f}y  ─ {mod} ─".ljust(args.events_width)
+            left = f"  {age:>6.2f}y  ─ {mod} ─".ljust(args.events_width)
             first_feat, first_val = feats[0]
             body.append(f"{left} │ {first_feat:<6}  {first_val:>8.3g}")
             for feat, val in feats[1:]:
@@ -131,21 +138,23 @@ def render(
 
 
 mm_cls = multimodal_reader_cls()
-reader = mm_cls.reader_cls()
-bios = {name: mm_cls.biomarker_cls(name) for name in args.biomarkers}
+reader = mm_cls(
+    expansion_packs=args.expansion_packs,
+    biomarkers=args.biomarkers,
+)
 
-labels_fn = getattr(mm_cls.reader_cls, "labels", None)
-if labels_fn is not None:
-    labels_df = labels_fn()
-    label_by_id = {
-        int(idx): str(name) for idx, name in zip(labels_df["index"], labels_df["name"])
-    }
-else:
-    label_by_id = {}
+# Map each merged-vocab token id back to its expansion pack, so pack tokens can be
+# tagged. Pack-local ids are shifted by expansion_offset[name] when merged (see
+# MultimodalReader.__getitem__); base tokens are absent from this map (no tag).
+pack_tag = {
+    local_id + reader.expansion_offset[name]: name
+    for name, pack in reader.expansion_packs.items()
+    for local_id in pack.tokenizer.values()
+}
 
 pids = pick_pids(args, mm_cls)
 
 for pid in pids:
-    sex, rows = build_rows(pid, reader, bios, label_by_id)
+    sex, rows = build_rows(pid, reader, pack_tag)
     render(pid, sex, rows, args)
     print()

@@ -12,6 +12,8 @@ RESERVED_MOD_IDX = 2  # 0 = padding, 1 = event tokens
 class _Biomarker(Protocol):
     """Structural type for biomarker instances composed by MultimodalReader."""
 
+    features: list[str]
+
     def __getitem__(
         self, pid: int
     ) -> tuple[list[np.ndarray] | None, np.ndarray | None]: ...
