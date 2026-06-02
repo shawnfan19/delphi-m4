@@ -60,13 +60,3 @@ plt.xlabel("cluster size (tokens per day, clusters of size >1)")
 plt.ylabel("count")
 plt.title(f"{dataset_name} — {len(pids)} participants")
 plt.show()
-
-for pack_name in mm_cls.expansion_pack_cls.catalog():
-    pack = mm_cls.expansion_pack_cls(pack_name)
-    pack_tokens_per_sub = np.array([pack.seq_len[int(p)] for p in pack.pids])
-    plt.figure()
-    plt.hist(pack_tokens_per_sub, bins="auto")
-    plt.xlabel(f"{pack_name} tokens per participant")
-    plt.ylabel("count")
-    plt.title(f"{dataset_name}/{pack_name} — {len(pack.pids)} participants")
-    plt.show()
