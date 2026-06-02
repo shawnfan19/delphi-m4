@@ -19,9 +19,6 @@ from delphi.experiment import CliConfig
 
 mpl.rcParams["figure.dpi"] = 300
 
-OUT_DIR = Path(__file__).resolve().parents[1] / "results" / "expansion_packs"
-OUT_DIR.mkdir(parents=True, exist_ok=True)
-
 
 @dataclass(kw_only=True)
 class TaskConfig(CliConfig):
@@ -31,8 +28,13 @@ class TaskConfig(CliConfig):
 args = TaskConfig.from_cli()
 args.print()
 
-mm_cls = multimodal_reader_cls()
 dataset_name = os.environ.get("DELPHI_DATASET") or detect_dataset()
+OUT_DIR = (
+    Path(__file__).resolve().parents[1] / "results" / "expansion_packs" / dataset_name
+)
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+mm_cls = multimodal_reader_cls()
 base_pids = mm_cls.reader_cls.participants("all")
 
 pack_names = args.packs or mm_cls.expansion_pack_cls.catalog()
