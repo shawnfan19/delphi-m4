@@ -11,7 +11,9 @@ import numpy as np
 import torch
 from tqdm.autonotebook import tqdm
 
-from delphi.data.ukb import NO_EVENT_TOKEN, UKBDataset
+from delphi.data import Dataset
+from delphi.data.transform import TokenTransform
+from delphi.data.ukb import NO_EVENT_TOKEN, UKBReader
 from delphi.env import DELPHI_CKPT_DIR
 from delphi.experiment import eval_iter, load_ckpt, move_batch_to_device
 
@@ -174,19 +176,20 @@ ckpt_path = Path(DELPHI_CKPT_DIR) / args.ckpt
 model, ckpt_dict = load_ckpt(ckpt_path)
 device = next(model.parameters()).device
 
-data_args = ckpt_dict["data_args"].copy()
-data_args["subject_list"] = "participants/val_fold.bin"
-data_args["perturb"] = False
-data_args["deterministic"] = True
-pprint.pp(data_args)
+token_transform_args = ckpt_dict["token_transform_args"]
+val_pids = UKBReader.participants("val")
 
-ds = UKBDataset(**data_args)
+reader = UKBReader()
+token_transform = TokenTransform(**token_transform_args)
+token_transform.describe()
 
-has_no_event = data_args.get("no_event_interval") is not None
+ds = Dataset(reader=reader, pids=val_pids, token_transform=token_transform)
+
+has_no_event = token_transform_args.get("no_event_interval") is not None
 print(f"has_no_event: {has_no_event}")
 
 # build reverse tokenizer
-idx_to_event = {v: k for k, v in ckpt_dict["tokenizer"].items()}
+idx_to_event = {v: k for k, v in reader.tokenizer.items()}
 
 # determine which tokens are ignored (matching training logic in Delphi2M.forward)
 ignored_tokens = {0}
@@ -221,9 +224,8 @@ with torch.no_grad():
         outputs, _, _ = model(x0, t0)
 
         # compute per-position loss (invalid positions are NaN)
-        loss_dict = model.loss(
-            outputs=outputs, targets=x1, targets_age=t1, reduce=False
-        )
+        loss_out = model.loss(outputs=outputs, targets=x1, targets_age=t1, reduce=False)
+        loss_dict = loss_out[0] if isinstance(loss_out, tuple) else loss_out
         total_nll = sum(loss_dict.values())
 
         # recover valid positions from the NaN pattern set inside loss()
