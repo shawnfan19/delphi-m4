@@ -47,7 +47,14 @@ if dx_token != 1:
         set(model.config.self_terminate_except).union({dx_token})
     )
 
-prompt_age = args.prompt_age * 365.25 if args.prompt_age is not None else None
+prompt_age_arg = args.prompt_age if args.prompt_age is not None else "recruitment"
+if prompt_age_arg == "recruitment":
+    rec = reader.recruitment_times(pids)
+    has_rec = ~np.isnan(rec)
+    pids = pids[has_rec]
+    prompt_age = {int(p): float(a) for p, a in zip(pids, rec[has_rec])}
+else:
+    prompt_age = float(prompt_age_arg) * 365.25
 prompt_transform = Prompt(prompt_age=prompt_age, append_no_event=args.prompt_no_event)
 ds = Dataset(
     reader=reader,

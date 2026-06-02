@@ -446,8 +446,8 @@ class BaseTrainer:
 @dataclass
 class GenerateConfig(CliConfig):
     ckpt: str = "delphi-2m-og/ckpt.pt"
-    prompt_age: None | int | float = None
-    prompt_lifestyle: bool = True
+    # numeric age in years, or "recruitment" for per-participant recruitment age
+    prompt_age: Any = None
     interval: float = 365.25
     batch_size: int = 512
     subsample: None | int = None

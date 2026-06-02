@@ -25,7 +25,6 @@ from delphi.model.utils import self_terminate
 args = GenerateConfig.auto(
     ckpt="cluster/homo_poisson/ckpt.pt",
     prompt_age=60,
-    prompt_lifestyle=False,
     interval=365.25,
     stop_at_block_size=False,
 )

@@ -61,7 +61,14 @@ if dx_token != 1:
     )
 
 # %%
-prompt_age = args.prompt_age * 365.25 if args.prompt_age is not None else None
+prompt_age_arg = args.prompt_age if args.prompt_age is not None else "recruitment"
+if prompt_age_arg == "recruitment":
+    rec = reader.recruitment_times(pids)
+    has_rec = ~np.isnan(rec)
+    pids = pids[has_rec]
+    prompt_age = {int(p): float(a) for p, a in zip(pids, rec[has_rec])}
+else:
+    prompt_age = float(prompt_age_arg) * 365.25
 prompt_transform = Prompt(prompt_age=prompt_age, append_no_event=args.prompt_no_event)
 ds = Dataset(
     reader=reader,
@@ -86,7 +93,11 @@ torch.manual_seed(42)
 
 for batch_idx in pbar:
     pmt_idx, pmt_age, X1, T1 = ds.get_batch(batch_idx)
-    cutoff = prompt_age
+    if isinstance(prompt_age, dict):
+        batch_pids = ds.participants[batch_idx]
+        cutoff = np.array([prompt_age[int(p)] for p in batch_pids])[:, None]
+    else:
+        cutoff = prompt_age
 
     X1_np = X1.detach().cpu().numpy().copy()
     T1_np = T1.detach().cpu().numpy().copy()
