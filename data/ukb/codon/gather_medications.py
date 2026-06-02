@@ -1,18 +1,18 @@
+from pathlib import Path
+
 import numpy as np
 import polars as pl
-from utils import (
-    all_ukb_participants,
-    assessment_age,
-    build_expansion_pack,
-    load_coding,
-    load_fid,
-)
+from utils_codon import UKBDatabase, build_expansion_pack
 
-vocab = load_coding(4)
+from delphi.env import DELPHI_DATA_DIR
+
+db = UKBDatabase(Path(DELPHI_DATA_DIR) / "ukb")
+
+vocab = db.load_coding(4)
 vocab["id"] = np.arange(1, len(vocab) + 1)
 token_map = vocab.set_index("coding")
 
-orig_token_df = pl.from_pandas(load_fid("20003").reset_index())
+orig_token_df = pl.from_pandas(db.load_fid("20003").reset_index())
 medication_participants = orig_token_df["f.eid"].to_numpy().astype(int)
 orig_token_df = orig_token_df.drop("f.eid")
 token_df = orig_token_df.select(
@@ -41,15 +41,9 @@ vocab["meaning"] = (
 tokenizer = vocab.set_index("meaning")
 tokenizer = tokenizer["id"].to_dict()
 
-ukb_participants = all_ukb_participants()
-first_assess_age = assessment_age(visits=["init_assess"])["init_assess"]
+first_assess_age = db.assessment_age(visits=["init_assess"])["init_assess"]
 assessment_participants = list(first_assess_age.index.astype(int))
-missing_meds = len(set(ukb_participants) - set(medication_participants))
-print(f"# participants with missing medication data: {missing_meds}")
-missing_age = len(set(ukb_participants) - set(assessment_participants))
-print(f"# participants with missing age data: {missing_age}")
-is_valid = np.isin(medication_participants, ukb_participants)
-is_valid &= np.isin(medication_participants, assessment_participants)
+is_valid = np.isin(medication_participants, assessment_participants)
 valid_participants = medication_participants[is_valid]
 
 token_df = orig_token_df.select(
@@ -69,4 +63,5 @@ build_expansion_pack(
     subjects=valid_participants,
     tokenizer=tokenizer,
     expansion_pack="prescriptions_hx",
+    odir=Path(DELPHI_DATA_DIR) / "ukb_real_data" / "expansion_packs",
 )

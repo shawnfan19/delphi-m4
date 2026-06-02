@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-from utils import build_expansion_pack, month_of_birth
+from utils_codon import UKBDatabase, build_expansion_pack
 
 from delphi.env import DELPHI_DATA_DIR
 
@@ -60,7 +60,8 @@ df = pd.read_csv(
     },
 )
 
-mob_df = month_of_birth()
+db = UKBDatabase(Path(DELPHI_DATA_DIR) / "ukb")
+mob_df = db.month_of_birth()
 mob_participants = mob_df.index.astype(int).to_numpy()
 
 # +

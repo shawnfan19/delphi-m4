@@ -1,14 +1,14 @@
+from pathlib import Path
+
 import numpy as np
 import polars as pl
-from utils import (
-    all_ukb_participants,
-    build_expansion_pack,
-    load_coding,
-    load_fid,
-    month_of_birth,
-)
+from utils_codon import UKBDatabase, build_expansion_pack
 
-vocab = load_coding(240)
+from delphi.env import DELPHI_DATA_DIR
+
+db = UKBDatabase(Path(DELPHI_DATA_DIR) / "ukb")
+
+vocab = db.load_coding(240)
 vocab = vocab.loc[~vocab["coding"].str.contains("Chapter")]
 is_parent = vocab["selectable"] == "N"
 is_child = vocab["selectable"] == "Y"
@@ -34,31 +34,29 @@ tokenizer_keys = (
 tokenizer_values = vocab.loc[vocab["parent"].unique(), "parent_id"].astype(int).tolist()
 tokenizer = dict(zip(tokenizer_keys, tokenizer_values))
 
-token_df = pl.from_pandas(load_fid("41200").reset_index())
+token_df = pl.from_pandas(db.load_fid("41200").reset_index())
 summary_ops_participants = token_df["f.eid"].to_numpy().astype(int)
 token_df = token_df.drop("f.eid")
 token_df = token_df.select(pl.all().replace_strict(mapping, default=0))
 token_np = token_df.to_numpy().astype(int)
 
-time_df = pl.from_pandas(load_fid("41260").reset_index())
+time_df = pl.from_pandas(db.load_fid("41260").reset_index())
 time_df = time_df.drop("f.eid")
 time_df = time_df.with_columns(
     pl.all().str.strptime(pl.Datetime, strict=False, format="%Y-%m-%d")
 )
 
-mob_df = pl.from_pandas(month_of_birth())
+mob_df = pl.from_pandas(db.month_of_birth())
 
 time_df = time_df.select(
     (pl.all() - mob_df["year_month"]).cast(pl.Duration).dt.total_days()
 )
 time_np = time_df.to_numpy().astype(np.float32)
 
-ukb_participants = all_ukb_participants()
-is_valid = np.isin(summary_ops_participants, ukb_participants)
-valid_participants = summary_ops_participants[is_valid]
+valid_participants = summary_ops_participants
 
 accept_mask = (token_np > 0) * (~np.isnan(time_np))
-count_np = np.sum(accept_mask[is_valid], axis=1)
+count_np = np.sum(accept_mask, axis=1)
 token_np = token_np[accept_mask].ravel()
 time_np = time_np[accept_mask].ravel()
 
@@ -68,5 +66,6 @@ build_expansion_pack(
     count_np=count_np,
     subjects=valid_participants,
     tokenizer=tokenizer,
-    expansion_pack="ops_hx",
+    expansion_pack="ops",
+    odir=Path(DELPHI_DATA_DIR) / "ukb_real_data" / "expansion_packs",
 )

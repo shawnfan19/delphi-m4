@@ -1,40 +1,35 @@
-import os
+from pathlib import Path
 
 import numpy as np
 import yaml
-from utils import (
-    all_ukb_participants,
-    assessment_age,
-    build_expansion_pack,
-    expansion_pack_dir,
-    load_visit,
-)
+from utils_codon import UKBDatabase, build_expansion_pack
 
 from delphi import DAYS_PER_YEAR
+from delphi.env import DELPHI_DATA_DIR
 
-odir = os.path.join(expansion_pack_dir, "fsf")
-with open(os.path.join(odir, "tokenizer.yaml"), "r") as f:
+db = UKBDatabase(Path(DELPHI_DATA_DIR) / "ukb")
+pack_root = Path(DELPHI_DATA_DIR) / "ukb_real_data" / "expansion_packs"
+
+with open(pack_root / "fsf" / "tokenizer.yaml", "r") as f:
     tokenizer = yaml.safe_load(f)
 
-sex = load_visit(fid="31", visit_idx=0)
+sex = db.load_visit(fid="31", visit_idx=0)
 females = list()
 for pid in sex.keys():
     if sex[pid] == 0:
         females.append(pid)
 females = np.array(females)
-ukb_participants = all_ukb_participants()
-females = females[np.isin(females, ukb_participants)].tolist()
 
-first_assess_age = assessment_age(visits=["init_assess"])["init_assess"].to_dict()
+first_assess_age = db.assessment_age(visits=["init_assess"])["init_assess"].to_dict()
 
-age_menarche = load_visit(fid="2714", visit_idx=0)
-had_menopause = load_visit(fid="2724", visit_idx=0)
-age_menopause = load_visit(fid="3581", visit_idx=0)
-number_of_live_births = load_visit(fid="2734", visit_idx=0)
-age_primiparous = load_visit(fid="3872", visit_idx=0)
-age_first_live_birth = load_visit(fid="2754", visit_idx=0)
-had_failed_pregnancy = load_visit(fid="2774", visit_idx=0)
-number_miscarriages = load_visit(fid="3839", visit_idx=0)
+age_menarche = db.load_visit(fid="2714", visit_idx=0)
+had_menopause = db.load_visit(fid="2724", visit_idx=0)
+age_menopause = db.load_visit(fid="3581", visit_idx=0)
+number_of_live_births = db.load_visit(fid="2734", visit_idx=0)
+age_primiparous = db.load_visit(fid="3872", visit_idx=0)
+age_first_live_birth = db.load_visit(fid="2754", visit_idx=0)
+had_failed_pregnancy = db.load_visit(fid="2774", visit_idx=0)
+number_miscarriages = db.load_visit(fid="3839", visit_idx=0)
 
 token_list = list()
 time_list = list()
@@ -123,4 +118,5 @@ build_expansion_pack(
     subjects=np.array(females),
     tokenizer=tokenizer,
     expansion_pack="fsf",
+    odir=pack_root,
 )

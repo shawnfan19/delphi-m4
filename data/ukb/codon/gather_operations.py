@@ -1,9 +1,14 @@
+from pathlib import Path
+
 import numpy as np
-from utils import all_ukb_participants, build_expansion_pack, load_coding, load_fid
+from utils_codon import UKBDatabase, build_expansion_pack
 
 from delphi import DAYS_PER_YEAR
+from delphi.env import DELPHI_DATA_DIR
 
-vocab = load_coding(5)
+db = UKBDatabase(Path(DELPHI_DATA_DIR) / "ukb")
+
+vocab = db.load_coding(5)
 reject_vals = [-1, 99999]
 vocab = vocab.loc[~vocab["coding"].isin(reject_vals)]
 code_vals = vocab["coding"].unique()
@@ -20,12 +25,10 @@ lookup = np.zeros((max_key + 1,), dtype=int)
 for k, v in code_map.items():
     lookup[k] = v
 
-token_df = load_fid("20004")
-time_df = load_fid("20011")
+token_df = db.load_fid("20004")
+time_df = db.load_fid("20011")
 ops_participants = time_df.index.to_numpy().astype(int)
-ukb_participants = all_ukb_participants()
-is_valid = np.isin(ops_participants, ukb_participants)
-valid_participants = ops_participants[is_valid]
+valid_participants = ops_participants[np.isin(ops_participants, token_df.index)]
 
 time_df = time_df.loc[valid_participants]
 token_df = token_df.loc[valid_participants]
@@ -45,5 +48,6 @@ build_expansion_pack(
     count_np=count_np,
     subjects=valid_participants,
     tokenizer=tokenizer,
-    expansion_pack="ops",
+    expansion_pack="self_report_ops",
+    odir=Path(DELPHI_DATA_DIR) / "ukb_real_data" / "expansion_packs",
 )

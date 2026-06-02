@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import numpy as np
@@ -57,7 +58,7 @@ class UKBDatabase:
         mob["year_month"] = pd.to_datetime(mob["year_month"], format="%Y%m")
         return mob
 
-    def assessment_age(self) -> pd.DataFrame:
+    def assessment_age(self, visits: list[str] | None = None) -> pd.DataFrame:
         if self._assess_age is None:
             mob = self.month_of_birth()
             rename_map = {f"f.53.{i}.0": v for v, i in self._ASSESS_INSTANCE.items()}
@@ -73,7 +74,9 @@ class UKBDatabase:
                 )
                 assess_age[col] = (dt - mob["year_month"]).dt.days.astype(float)
             self._assess_age = assess_age
-        return self._assess_age
+        if visits is None:
+            return self._assess_age
+        return self._assess_age[visits]
 
     def long_assessment_age(self) -> pd.Series:
         if self._long_assess_age is None:
@@ -163,3 +166,48 @@ def build_biomarker(
 
     data_np[is_valid].ravel().tofile(odir / "data.bin")
     p2i.to_csv(odir / "p2i.csv", index=False)
+
+
+def build_expansion_pack(
+    token_np: np.ndarray,
+    time_np: np.ndarray,
+    count_np: np.ndarray,
+    subjects: np.ndarray,
+    tokenizer: dict,
+    odir: str | os.PathLike,
+    expansion_pack: str,
+):
+    print(expansion_pack)
+    assert token_np.size == time_np.size
+    assert count_np.sum() == token_np.size
+    assert subjects.size == count_np.size
+    print(f"\t - total tokens: {token_np.size}")
+    print(f"\t - subjects: {subjects.size}")
+    print(f"\t - avg tokens per subject: {count_np.mean()}")
+    print(f"\t - max tokens per subject: {count_np.max()}")
+    print(f"\t - vocab size: {len(tokenizer)}")
+
+    p2i = pd.DataFrame(
+        {
+            "pid": subjects,
+            "start_pos": np.cumsum(count_np) - count_np,
+            "seq_len": count_np,
+        }
+    )
+    p2i = p2i.set_index("pid")
+
+    odir = Path(odir) / expansion_pack
+    os.makedirs(odir, exist_ok=True)
+    p2i.to_csv(odir / "p2i.csv")
+    token_np.astype(np.uint32).tofile(odir / "data.bin")
+    time_np = time_np.astype(np.uint32)
+    print(f"\t - time points from {time_np.min() / 365.25} to {time_np.max() / 365.25}")
+    time_np.tofile(odir / "time.bin")
+
+    with open(odir / "tokenizer.yaml", "w") as f:
+        yaml.dump(
+            tokenizer,
+            f,
+            default_flow_style=False,
+            sort_keys=False,
+        )
