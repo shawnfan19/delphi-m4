@@ -60,14 +60,14 @@ class TaskConfig(GenerateConfig):
 
     def __post_init__(self):
 
-        assert args.method in {"hazards", "sampling_hazards", "nelson_aalen"}
+        assert self.method in {"hazards", "sampling_hazards", "nelson_aalen"}
 
         if self.panel:
             self.biomarkers, self.expansion_packs, self.panel_name = parse_panel(
                 self.panel
             )
         if not self.fname:
-            if args.method == "hazards":
+            if self.method == "hazards":
                 suffix = "hazards"
             else:
                 suffix = f"{self.method}_n{self.n_repeats}"
