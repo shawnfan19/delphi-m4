@@ -4,6 +4,7 @@ Dataset-agnostic — loads the UKB or AoU reader via delphi.data.auto.
 """
 
 import os
+from pathlib import Path
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -19,6 +20,8 @@ mpl.rcParams["figure.dpi"] = 300
 mm_cls = multimodal_reader_cls()
 reader = mm_cls.reader_cls()
 dataset_name = os.environ.get("DELPHI_DATASET") or detect_dataset()
+OUT_DIR = Path(__file__).resolve().parents[1] / "results" / dataset_name
+OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 pids = mm_cls.reader_cls.participants("all")
 print(f"{dataset_name}: {len(pids)} participants")
@@ -50,21 +53,33 @@ plt.hist(tokens_per_sub, bins="auto")
 plt.xlabel("tokens per participant")
 plt.ylabel("count")
 plt.title(f"{dataset_name} — {len(pids)} participants")
-plt.show()
+out_path = OUT_DIR / "tokens_per_sub.png"
+with out_path.open("wb") as f:
+    plt.savefig(f, format="png", bbox_inches="tight")
+print(f"Saved {out_path}")
+plt.close()
 
 plt.figure()
 plt.hist(n_clusters_per_sub, bins="auto")
 plt.xlabel("disease clusters per participant")
 plt.ylabel("count")
 plt.title(f"{dataset_name} — {len(pids)} participants")
-plt.show()
+out_path = OUT_DIR / "n_clusters_per_sub.png"
+with out_path.open("wb") as f:
+    plt.savefig(f, format="png", bbox_inches="tight")
+print(f"Saved {out_path}")
+plt.close()
 
 plt.figure()
 plt.hist(cluster_sizes, bins="auto")
 plt.xlabel("cluster size (tokens per day, clusters of size >1)")
 plt.ylabel("count")
 plt.title(f"{dataset_name} — {len(pids)} participants")
-plt.show()
+out_path = OUT_DIR / "cluster_sizes.png"
+with out_path.open("wb") as f:
+    plt.savefig(f, format="png", bbox_inches="tight")
+print(f"Saved {out_path}")
+plt.close()
 
 vmax = np.percentile(heatmap, 99.5)
 plt.figure()
@@ -79,4 +94,8 @@ plt.colorbar(label="log1p(events / participant)")
 plt.xlabel("disease token index")
 plt.ylabel("disease token index")
 plt.title(f"{dataset_name} disease × disease — {len(pids)} participants")
-plt.show()
+out_path = OUT_DIR / "disease_cooccur.png"
+with out_path.open("wb") as f:
+    plt.savefig(f, format="png", bbox_inches="tight")
+print(f"Saved {out_path}")
+plt.close()
