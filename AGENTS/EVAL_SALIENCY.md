@@ -25,16 +25,6 @@ A near-zero gradient can arise from two distinct situations:
 
 These two cases are indistinguishable from the local gradient alone. If distinguishing them matters, consider Integrated Gradients (with a population-mean baseline), which accumulates the gradient along the path from baseline to the observed value and would show a large total attribution even when the endpoint gradient is near zero.
 
-### Comparison with SHAP (`apps/shap_biomarker.py`)
-
-| Property | SHAP (`shap_biomarker.py`) | Saliency (`saliency_biomarker.py`) |
-|----------|---------------------------|-------------------------------------|
-| Attribution unit | Whole measurement (present vs. absent) | Individual feature within a measurement |
-| Granularity | Modality-level | Feature-level |
-| Computation | Shapley values via masking coalitions | Local gradient via backpropagation |
-| Cost | Very slow (exponential coalitions, approximated) | Fast (F forward passes via forward-mode AD) |
-| Saturation | Not applicable | Near-zero gradient at extremes is informative |
-
 ## Implementation (`apps/saliency_biomarker.py`)
 
 ### Algorithm
@@ -146,5 +136,4 @@ Loads saliency output and raw biomarker values, then plots **saliency vs biomark
 - `delphi/model/multimodal.py`: `BiomarkerEmbedding`, `DelphiEmbedding`, `fuse_embed`, `DelphiM4.forward` — the differentiable path from biomarker features to logits
 - `delphi/data/ukb.py`: `Biomarker` (`.features`, `.first_occurrence_times()`, `.occurrence_times()`), `MultimodalUKBDataset` (`.mod_ds` dict)
 - `delphi/experiment.py`: `eval_iter`, `load_ckpt`, `move_batch_to_device`
-- `apps/shap_biomarker.py`: measurement-level SHAP attribution (coarser; no feature-level breakdown)
 - `apps/vis_shap.py`: visualisation patterns applicable to saliency output

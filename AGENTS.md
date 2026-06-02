@@ -29,7 +29,6 @@ Detailed technical documentation for each subsystem lives in `AGENTS/`. Read the
 | [AGENTS/DATA.md](AGENTS/DATA.md) | Binary storage format (`data.bin`, `time.bin`, `p2i.csv`), index structure, participant splits | `delphi/data/`, data loading, preprocessing |
 | [AGENTS/MODEL.md](AGENTS/MODEL.md) | Model architecture, loss functions, config dataclasses, checkpoint format | `delphi/model/`, training scripts, loss functions |
 | [AGENTS/EVAL.md](AGENTS/EVAL.md) | General eval script patterns: checkpoint loading, dataset setup, argument parsing | Any `apps/` eval script |
-| [AGENTS/EVAL_AUC.md](AGENTS/EVAL_AUC.md) | AUC evaluation task — risk ranking via Mann-Whitney U | `apps/auc*.py` |
 | [AGENTS/EVAL_NLL.md](AGENTS/EVAL_NLL.md) | NLL evaluation task — negative log-likelihood on validation set | `apps/eval_nll.py` |
 | [AGENTS/SHAP.md](AGENTS/SHAP.md) | SHAP analysis pipeline, `ShapArray` adapter, explainer integration | `delphi/shap.py`, `apps/run_shap*.py`, `apps/vis_shap.py` |
 | [AGENTS/UKB.md](AGENTS/UKB.md) | `UKBDataset` constructor arguments, preprocessing toggles, data transforms | `delphi/data/ukb.py` |

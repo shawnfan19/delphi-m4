@@ -2,7 +2,7 @@
 
 ## Overview
 
-The **concordance index** (C-index, C-statistic) is an alternative to the binned AUC pipeline in `apps/auc_fast.py` for evaluating disease risk ranking. It answers the same question — does the model assign higher predicted intensity to participants who develop disease X than to those who don't? — but with lower variance.
+The **concordance index** (C-index, C-statistic) is an alternative to a binned AUC pipeline for evaluating disease risk ranking. It answers the same question — does the model assign higher predicted intensity to participants who develop disease X than to those who don't? — but with lower variance.
 
 ## Why C-Index Instead of Binned AUC
 
@@ -70,7 +70,7 @@ Sex stratification can be preserved by computing separate C-indices per sex (as 
 
 **Phase 1 — collect case scores and onset times**
 
-One forward pass over the validation set, identical to `auc_fast_m4.py`:
+One forward pass over the validation set:
 
 - `DiseaseRatesCollator` (from `delphi/eval.py`): records, for each case participant, the model's log-intensity at the `min_time_gap`-corrected time point. Produces `dis_rates (N, V)` (case scores) and `dis_times (N, V)` (the exact t0 timestamps used to score each case).
 - `EventTimeCollator` (from `delphi/eval.py`): records the raw (un-corrected) onset time from `(x1, t1)` for each disease. `finalize()` returns `(occur_time (N, V), exit_time (N,))`; only `occur_time` is used as `onset_times`, with NaN for participants who never develop the disease.
@@ -176,7 +176,7 @@ After the output is written, verify:
 
 1. All C-index values in `[0, 1]`; values near 0.5 for weak/rare diseases are expected.
 2. `n_pairs` should be large (millions) for common diseases and smaller for rare ones.
-3. C-index and AUC (from `auc_fast_m4.py`) should correlate across diseases — same discrimination signal, different aggregation — typically within ±0.05.
+3. C-index and AUC should correlate across diseases — same discrimination signal, different aggregation — typically within ±0.05.
 4. Re-running with the same checkpoint produces identical results (no randomness).
 
 ## Empirical Variance
@@ -189,4 +189,3 @@ Across 5 models trained with different random seeds on the same data, the C-inde
 - `delphi/experiment.py`: `eval_iter`, `load_ckpt`, `move_batch_to_device`
 - `delphi/data/ukb.py`: `Biomarker.first_occurrence_times()` — used for `--after_modality` cutoff
 - `delphi/multimodal.py`: `Modality` enum
-- `apps/auc_fast_m4.py`: AUC counterpart — same checkpoint/dataset loading pattern

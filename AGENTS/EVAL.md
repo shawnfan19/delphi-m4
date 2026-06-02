@@ -187,6 +187,5 @@ When loading a checkpoint, `data_args` reflects training settings. Some argument
 | Task | Script | Docs |
 |------|--------|------|
 | NLL evaluation | `apps/eval_nll.py` | [EVAL_NLL.md](EVAL_NLL.md) |
-| AUC evaluation | `apps/auc_fast.py` | [EVAL_AUC.md](EVAL_AUC.md) |
 
 ---
