@@ -10,48 +10,51 @@ import pandas as pd
 import torch
 from tqdm import tqdm
 
-from delphi.data.ukb import UKBDataset, cut_prompt
+from delphi.data import Dataset
+from delphi.data.transform import Prompt, TokenTransform
+from delphi.data.ukb import UKBReader
 from delphi.data.utils import collate_batches, pack_clusters
 from delphi.env import DELPHI_CKPT_DIR
 from delphi.eval import KaplanMeierEstimator
 from delphi.experiment import GenerateConfig, eval_iter, load_ckpt
-from delphi.model.transformer import Delphi2M, Delphi2MConfig, generate
+from delphi.model.transformer import generate
 
 # -
 
 
-args = GenerateConfig.auto(ckpt="cluster/freectx/ckpt.pt")
+args = GenerateConfig.from_cli()
 print("args:")
 pprint.pp(args)
 
 model, ckpt_dict = load_ckpt(Path(DELPHI_CKPT_DIR) / args.ckpt)
-data_args = ckpt_dict["data_args"]
-data_args["subject_list"] = "participants/val_fold.bin"
-data_args["perturb"] = False
-data_args["deterministic"] = True
-data_args["crop_mode"] = "left"
-data_args["additional_dx_token"] = ckpt_dict["data_args"].get(
-    "additional_dx_token", False
-)
-pprint.pp(data_args)
+device = "cuda" if torch.cuda.is_available() else "cpu"
 
-ds = UKBDataset(**data_args)
+reader = UKBReader()
+pids = UKBReader.participants("val")
+
+token_transform_args = ckpt_dict["token_transform_args"]
+token_transform = TokenTransform(**token_transform_args)
+token_transform.describe()
+
+lifestyle_tokens = [reader.tokenizer[k] for k in reader.lifestyle_keys]
+sex_tokens = [reader.tokenizer[k] for k in reader.sex_keys]
+dx_token = token_transform_args.get("dx_token") or 1
+break_clusters = token_transform_args.get("break_clusters", False)
+whitelist = np.array([0, 1, dx_token] + sex_tokens + lifestyle_tokens)
+
+if dx_token != 1:
+    model.config.self_terminate_except = list(
+        set(model.config.self_terminate_except).union({dx_token})
+    )
+
 prompt_age = args.prompt_age * 365.25 if args.prompt_age is not None else None
-prompt_tokens = ds.lifestyle_tokens if args.prompt_lifestyle else None
-ds.subset_participants_for_prompt(prompt_age=prompt_age, prompt_tokens=prompt_tokens)
-
-
-if data_args["additional_dx_token"]:
-    model.config.self_terminate_except.append(ds.dx_token)
-model.config.self_terminate_except
-
-break_clusters = data_args.get("break_clusters", False)
-break_clusters
-
-whitelist = np.concatenate(
-    (np.array([0, 1]), np.array([ds.dx_token]), ds.sex_tokens, ds.lifestyle_tokens)
+prompt_transform = Prompt(prompt_age=prompt_age, append_no_event=args.prompt_no_event)
+ds = Dataset(
+    reader=reader,
+    pids=pids,
+    token_transform=token_transform,
+    prompt_transform=prompt_transform,
 )
-whitelist
 
 # +
 syn_idx, syn_age = list(), list()
@@ -62,31 +65,23 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 pbar = tqdm(it, total=math.ceil(len(ds) / args.batch_size))
 for batch_idx in pbar:
 
-    X0, T0, X1, T1 = ds.get_batch(batch_idx)
+    pmt_idx, pmt_age, X1, T1 = ds.get_batch(batch_idx)
 
-    X1_np = torch.cat((X0, X1[:, [-1]]), dim=1).detach().cpu().numpy()
-    T1_np = torch.cat((T0, T1[:, [-1]]), dim=1).detach().cpu().numpy()
-
+    X1_np = X1.detach().cpu().numpy()
+    T1_np = T1.detach().cpu().numpy()
     if break_clusters:
-        X1_np, T1_np = pack_clusters(X1_np, T1_np, whitelist, dx_token=ds.dx_token)
+        X1_np, T1_np = pack_clusters(X1_np, T1_np, whitelist, dx_token=dx_token)
 
     real_idx.append(X1_np)
     real_age.append(T1_np)
 
-    pmt_idx, pmt_age, _ = cut_prompt(
-        X0,
-        T0,
-        prompt_age=prompt_age,
-        prompt_token=torch.Tensor(prompt_tokens) if prompt_tokens is not None else None,
-        append_no_event=args.prompt_no_event,
-    )
     pmt_idx, pmt_age = pmt_idx.to(device), pmt_age.to(device)
 
     idx, age, stats = generate(
         model=model,
         idx=pmt_idx,
         age=pmt_age,
-        max_age=T1.max(dim=1)[0].to(pmt_idx.device),
+        max_age=T1.max(dim=1)[0].to(device),
         termination_tokens=[1269],
         stop_at_block_size=True,
         cached=True,
@@ -94,7 +89,7 @@ for batch_idx in pbar:
     idx = idx.detach().cpu().numpy()
     age = age.detach().cpu().numpy()
     if break_clusters:
-        idx, age = pack_clusters(idx, age, whitelist, dx_token=ds.dx_token)
+        idx, age = pack_clusters(idx, age, whitelist, dx_token=dx_token)
 
     syn_idx.append(idx)
     syn_age.append(age)

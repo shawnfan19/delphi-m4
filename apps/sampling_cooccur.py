@@ -14,10 +14,6 @@
 # ---
 
 # %%
-import os
-
-os.chdir("/hps/nobackup/birney/users/sfan/Delphi")
-
 import math
 import pprint
 from pathlib import Path
@@ -27,7 +23,9 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from delphi.data.ukb import UKBDataset, cut_prompt
+from delphi.data import Dataset
+from delphi.data.transform import Prompt, TokenTransform
+from delphi.data.ukb import UKBReader
 from delphi.data.utils import pack_clusters
 from delphi.env import DELPHI_CKPT_DIR
 from delphi.eval import ClusterStatsTracker, CooccurrenceTracker
@@ -35,51 +33,48 @@ from delphi.experiment import GenerateConfig, eval_iter, load_ckpt
 from delphi.model.transformer import generate
 
 # %%
-args = GenerateConfig.auto(ckpt="cluster/dx_token/ckpt.pt")
+args = GenerateConfig.from_cli()
 print("args:")
 pprint.pp(args)
 
 # %%
 model, ckpt_dict = load_ckpt(Path(DELPHI_CKPT_DIR) / args.ckpt)
+device = "cuda" if torch.cuda.is_available() else "cpu"
 
 # %%
-data_args = ckpt_dict["data_args"].copy()
-data_args["subject_list"] = "participants/val_fold.bin"
-data_args["perturb"] = False
-data_args["deterministic"] = True
-data_args["additional_dx_token"] = ckpt_dict["data_args"].get(
-    "additional_dx_token", False
-)
-pprint.pp(data_args)
+reader = UKBReader()
+pids = UKBReader.participants("val")
+
+token_transform_args = ckpt_dict["token_transform_args"]
+token_transform = TokenTransform(**token_transform_args)
+token_transform.describe()
+
+lifestyle_tokens = [reader.tokenizer[k] for k in reader.lifestyle_keys]
+sex_tokens = [reader.tokenizer[k] for k in reader.sex_keys]
+dx_token = token_transform_args.get("dx_token") or 1
+break_clusters = token_transform_args.get("break_clusters", False)
+whitelist = np.array([0, 1, dx_token] + sex_tokens + lifestyle_tokens)
+
+if dx_token != 1:
+    model.config.self_terminate_except = list(
+        set(model.config.self_terminate_except).union({dx_token})
+    )
 
 # %%
-ds = UKBDataset(**data_args)
 prompt_age = args.prompt_age * 365.25 if args.prompt_age is not None else None
-prompt_tokens = ds.lifestyle_tokens if args.prompt_lifestyle else None
-ds.subset_participants_for_prompt(prompt_age=prompt_age, prompt_tokens=prompt_tokens)
-
-# %%
-ds.dx_token
-
-
-# %%
-whitelist = np.concatenate(
-    (np.array([0, 1]), np.array([ds.dx_token]), ds.sex_tokens, ds.lifestyle_tokens)
+prompt_transform = Prompt(prompt_age=prompt_age, append_no_event=args.prompt_no_event)
+ds = Dataset(
+    reader=reader,
+    pids=pids,
+    token_transform=token_transform,
+    prompt_transform=prompt_transform,
 )
-whitelist
-
-
-# %%
-if data_args["additional_dx_token"]:
-    model.config.self_terminate_except.append(ds.dx_token)
-model.config.self_terminate_except
 
 # %%
 if args.subsample is None:
     total = len(ds)
 else:
     total = args.subsample
-device = "cuda" if torch.cuda.is_available else "cpu"
 it = eval_iter(total_size=total, batch_size=args.batch_size)
 pbar = tqdm(it, total=math.ceil(total / args.batch_size), leave=False)
 gt_tracker = CooccurrenceTracker(vocab_size=model.config.vocab_size)
@@ -87,27 +82,18 @@ gt_stats = ClusterStatsTracker()
 tracker = CooccurrenceTracker(vocab_size=model.config.vocab_size)
 stats = ClusterStatsTracker()
 
-break_clusters = data_args.get("break_clusters", False)
-
 torch.manual_seed(42)
 
 for batch_idx in pbar:
-    X0, T0, X1, T1 = ds.get_batch(batch_idx)
-    pmt_idx, pmt_age, cutoff = cut_prompt(
-        X0,
-        T0,
-        prompt_age=prompt_age,
-        prompt_token=torch.Tensor(prompt_tokens) if prompt_tokens is not None else None,
-        append_no_event=args.prompt_no_event,
-    )
-    cutoff = cutoff.detach().cpu().numpy()
+    pmt_idx, pmt_age, X1, T1 = ds.get_batch(batch_idx)
+    cutoff = prompt_age
 
     X1_np = X1.detach().cpu().numpy().copy()
     T1_np = T1.detach().cpu().numpy().copy()
     X1_np[T1_np <= cutoff] = 0
     T1_np[T1_np <= cutoff] = -1e4
     if break_clusters:
-        X1_np, T1_np = pack_clusters(X1_np, T1_np, whitelist, dx_token=ds.dx_token)
+        X1_np, T1_np = pack_clusters(X1_np, T1_np, whitelist, dx_token=dx_token)
     gt_tracker.step(tokens=X1_np, timesteps=T1_np)
     gt_stats.step(tokens=X1_np, timesteps=T1_np)
 
@@ -129,7 +115,7 @@ for batch_idx in pbar:
     timesteps[timesteps <= cutoff] = -1e4
     if break_clusters:
         tokens, timesteps = pack_clusters(
-            tokens, timesteps, whitelist, dx_token=ds.dx_token
+            tokens, timesteps, whitelist, dx_token=dx_token
         )
     tracker.step(tokens=tokens, timesteps=timesteps)
     stats.step(tokens=tokens, timesteps=timesteps)
@@ -171,7 +157,7 @@ k = 15
 print(f"top {k} diseases that show up in clusters")
 diseases = np.argsort(gt_heatmap.sum(axis=1))[::-1]
 for i in range(k):
-    print(ds.detokenizer[diseases[i]])
+    print(reader.detokenizer[diseases[i]])
 
 # %%
 
