@@ -44,6 +44,10 @@ class TaskConfig(CliConfig):
     parquet: str
     baseline_parquet: str
     min: int = 50
+    # Number of top improved/degraded diseases to print and bar-plot.
+    top_k: int = 20
+    # If set, save figures to results/<write>/ (by_chapter.png, topk.png).
+    write: None | str = None
     # Drop cases whose case_time < reader's `<filter_after>_times(pid)`.
     # E.g., "recruitment" on UKB, "first_biomarker" on AoU. None disables.
     filter_after: None | str = None
@@ -62,6 +66,23 @@ label_a = str(ckpt_a_path.parent)
 label_b = str(ckpt_b_path.parent)
 
 min_events = args.min  # drop diseases with fewer events in either checkpoint
+
+# %%
+# If --write is set, persist figures to results/<write>/ (repo root).
+OUT_DIR = None
+if args.write is not None:
+    OUT_DIR = AnyPath(__file__).resolve().parents[1] / "results" / args.write
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def save_fig(fig, name):
+    if OUT_DIR is None:
+        return
+    out_path = OUT_DIR / name
+    with out_path.open("wb") as f:
+        fig.savefig(f, format="png", bbox_inches="tight")
+    print(f"Saved {out_path}")
+
 
 # %%
 ReaderCls = multimodal_reader_cls()
@@ -182,7 +203,7 @@ plt.show()
 
 # %%
 # Summary statistics (using "either" grouping)
-k = 30
+k = args.top_k
 df_either = dfs["either"]
 delta = df_either["diff"]
 print(f"Mean Δ c-index ({label_b} − {label_a}): {delta.mean():.4f}")
@@ -195,7 +216,7 @@ for _, row in df_either.nlargest(k, "diff")[
         f"  {row['key']}: {row['val_a']:.3f} → {row['val_b']:.3f} (Δ {row['diff']:+.3f})"
     )
 
-print(f"\nTop K most degraded diseases:")
+print(f"\nTop {k} most degraded diseases:")
 for _, row in df_either.nsmallest(k, "diff")[
     ["key", "val_a", "val_b", "diff"]
 ].iterrows():
@@ -205,17 +226,19 @@ for _, row in df_either.nsmallest(k, "diff")[
 
 
 # %%
-plot_by_chapter(
+fig, _ = plot_by_chapter(
     df_either,
     value_col="diff",
     ylabel="Δ concordance",
     hline=0,
+    ylim=(-0.1, None),
     title="C-index difference by disease",
 )
+save_fig(fig, "by_chapter.png")
 plt.show()
 
 # %%
-# Top 10 improved diseases — horizontal bar plot
+# Top-k improved diseases — horizontal bar plot
 
 _labels_df = UKBReader.labels()
 _labels_df["icd"] = _labels_df["name"].str.split().str[0].str.upper()
@@ -225,28 +248,29 @@ _icd_meta = (
     .rename(columns={"name": "disease_name"})
 )
 
-_top10 = df_either.nlargest(20, "diff").copy()
-_top10["icd"] = _top10["key"].map(lambda k: k.split("_")[0].upper())
-_top10 = _top10.join(_icd_meta, on="icd")
-_top10["disease_name"] = _top10["disease_name"].fillna(_top10["key"])
-_top10["color"] = _top10["color"].fillna("#888888")
-_top10 = _top10.sort_values("diff", ascending=True)  # largest at top for barh
+_topk = df_either.nlargest(k, "diff").copy()
+_topk["icd"] = _topk["key"].map(lambda k: k.split("_")[0].upper())
+_topk = _topk.join(_icd_meta, on="icd")
+_topk["disease_name"] = _topk["disease_name"].fillna(_topk["key"])
+_topk["color"] = _topk["color"].fillna("#888888")
+_topk = _topk.sort_values("diff", ascending=True)  # largest at top for barh
 
 fig, ax = plt.subplots(figsize=(8, 5))
 ax.barh(
-    _top10["disease_name"],
-    _top10["diff"],
-    color=_top10["color"],
+    _topk["disease_name"],
+    _topk["diff"],
+    color=_topk["color"],
     edgecolor="white",
     linewidth=0.5,
 )
-for y, val in enumerate(_top10["diff"]):
+for y, val in enumerate(_topk["diff"]):
     ax.text(val + 0.001, y, f"{val:+.3f}", va="center", fontsize=8)
-ax.set_xlabel(f"Δ C-index ({label_b} − {label_a})")
-ax.set_title("Top 10 improved diseases")
+ax.set_xlabel(f"Δ concordance")
+ax.set_title(f"Top {k} improved diseases")
 ax.spines["top"].set_visible(False)
 ax.spines["right"].set_visible(False)
 fig.tight_layout()
+save_fig(fig, "topk.png")
 plt.show()
 
 # %%

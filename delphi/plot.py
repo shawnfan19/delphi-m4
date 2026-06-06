@@ -64,6 +64,7 @@ def plot_by_chapter(
     hline: float | None = 0,
     skip_chapters=("Technical", "Sex", "Smoking, Alcohol and BMI"),
     ylim=(-0.1, 0.1),
+    round_to: float = 0.05,
     figsize=(10, 4),
     title="Metric by disease",
 ):
@@ -82,7 +83,11 @@ def plot_by_chapter(
     skip_chapters : tuple of str
         Chapters to exclude from the plot.
     ylim : tuple or None
-        Y-axis limits.
+        Y-axis limits ``(low, high)``. ``None`` autoscales both axes; either
+        element may be ``None`` to autoscale just that side, rounding the data
+        extreme to a multiple of ``round_to`` (ceil on top, floor on bottom).
+    round_to : float
+        Granularity for autoscaled (``None``) ylim bounds.
     figsize : tuple
         Figure size.
     title : str
@@ -160,8 +165,17 @@ def plot_by_chapter(
     ax.set_xticklabels(chapter_labels, rotation=45, ha="right", fontsize=7)
     ax.set_xlim(-0.5, max(len(df) - 0.5, chapter_mids[-1] + min_half_width + 0.5))
 
-    if ylim:
-        ax.set_ylim(ylim)
+    if ylim is not None:
+        low, high = ylim
+        if low is None:
+            low = np.floor(df[value_col].min() / round_to) * round_to
+        if high is None:
+            vmax = df[value_col].max()
+            high = (
+                np.ceil(vmax / round_to) * round_to if np.isfinite(vmax) else low + 0.2
+            )
+        high = max(high, low + round_to)  # guard against a degenerate/inverted axis
+        ax.set_ylim(low, high)
     ax.set_ylabel(ylabel)
     ax.set_title(title, y=1.15)
 
