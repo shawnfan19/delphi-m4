@@ -126,9 +126,25 @@ class HomoPoissonTPP:
         _cap_lambda = torch.sum(_lambda * delta_t.unsqueeze(-1), dim=1)
         return _cap_lambda, delta_t.sum(dim=1)
 
-    def log_likelihood(self, x1: torch.Tensor, t1: torch.Tensor):
+    def _intermediates(self, t1: torch.Tensor):
+        """Shared marked-TPP building blocks evaluated at query times ``t1``.
+
+        For the piecewise-constant interval each query falls in, returns:
+
+        - ``log_intensity`` (B, *Q, V): per-token log-intensities ``log λ_v``,
+          with already-occurred (self-terminated) tokens set to ``-inf``;
+        - ``log_sum_intensity`` (B, *Q, 1): log total ground intensity
+          ``log Σ_v λ_v``;
+        - ``compensator`` (B, *Q, 1): ``-Σ_v λ_v · Δt / time_unit``, the
+          integrated intensity over the gap since the preceding event;
+        - ``invalid`` (B, *Q): queries with no strict-before non-padding
+          history, which callers NaN-fill so they don't leak into the loss.
+
+        ``log_likelihood``, ``log_p_marks`` and ``log_p_times`` are all derived
+        from these, so the mark/time split sums back to the joint exactly.
+        """
         # mark queries with no valid strict-before non-padding history; these
-        # positions are nan-filled at the end so they don't leak into the loss.
+        # positions are nan-filled by callers so they don't leak into the loss.
         first = self.first_timesteps.view(-1, *([1] * (t1.dim() - 1)))
         invalid = t1 <= first
 
@@ -138,19 +154,58 @@ class HomoPoissonTPP:
         )
         mask = torch.take_along_dim(self.occurred_mask, idx.unsqueeze(-1), dim=1)
         log_intensity = log_intensity.masked_fill(mask, float("-inf"))
-        log_intensity_k = torch.gather(
-            input=log_intensity, dim=-1, index=x1.unsqueeze(-1)
-        )
+        log_sum_intensity = torch.logsumexp(log_intensity, dim=-1, keepdim=True)
 
         t0 = torch.take_along_dim(self.timesteps, indices=idx, dim=1)
         delta_t = t1 - t0
-        log_sum_intensity = torch.logsumexp(log_intensity, dim=-1, keepdim=True)
         compensator = (
             -torch.exp(log_sum_intensity) * delta_t.unsqueeze(-1) / self.time_unit
         )
+        return log_intensity, log_sum_intensity, compensator, invalid
 
+    def log_likelihood(self, x1: torch.Tensor, t1: torch.Tensor):
+        # joint marked-TPP log-likelihood  log λ_{x1} − Σ_v λ_v · Δt;
+        # exactly log_p_marks(x1, t1) + log_p_times(t1).
+        log_intensity, _, compensator, invalid = self._intermediates(t1)
+        log_intensity_k = torch.gather(
+            input=log_intensity, dim=-1, index=x1.unsqueeze(-1)
+        )
         ll = log_intensity_k + compensator
         return ll.masked_fill(invalid.unsqueeze(-1), torch.nan).squeeze(-1)
+
+    def log_p_marks(self, x1: torch.Tensor, t1: torch.Tensor):
+        """Log-probability of the mark ``x1`` *given* an event occurs at ``t1``.
+
+        The categorical "what" term of the marked-TPP factorisation,
+
+            log p(m | t) = log λ_{x1}(t) − log Σ_v λ_v(t),
+
+        i.e. the (history-masked) log-softmax of the per-token log-intensities
+        evaluated at the observed token. A proper distribution over the
+        still-available marks; with ``log_p_times`` it sums to ``log_likelihood``.
+        """
+        log_intensity, log_sum_intensity, _, invalid = self._intermediates(t1)
+        log_intensity_k = torch.gather(
+            input=log_intensity, dim=-1, index=x1.unsqueeze(-1)
+        )
+        log_p = log_intensity_k - log_sum_intensity
+        return log_p.masked_fill(invalid.unsqueeze(-1), torch.nan).squeeze(-1)
+
+    def log_p_times(self, t1: torch.Tensor):
+        """Log-density of the event *time* ``t1`` (the "when" term).
+
+        The conditional inter-event-time density of the homogeneous-between-
+        events ground process,
+
+            log p(t) = log Σ_v λ_v − Σ_v λ_v · Δt / time_unit,
+
+        i.e. the Exponential(λ*) log-density with total rate λ* = Σ_v λ_v and
+        Δt the gap since the preceding event. Independent of which mark occurs;
+        with ``log_p_marks`` it sums to ``log_likelihood``.
+        """
+        _, log_sum_intensity, compensator, invalid = self._intermediates(t1)
+        log_p = log_sum_intensity + compensator
+        return log_p.masked_fill(invalid.unsqueeze(-1), torch.nan).squeeze(-1)
 
 
 class NeuralIntensity(nn.Module):
@@ -579,3 +634,70 @@ def tpp_dispatch(model, outputs):
             step_size=model.config.ode_step_size,
         )
     raise ValueError(f"tpp_dispatch: unsupported model.config.loss={loss!r}")
+
+
+def conditional_log_likelihood(
+    tpp,
+    x1: torch.Tensor,
+    t1: torch.Tensor,
+    keep: None | torch.Tensor = None,
+    reduce: None | str = "sum",
+):
+    """Mark/time-decomposed conditional log-likelihood of events ``(x1, t1)``.
+
+    Scores each event ``x1`` occurring at time ``t1`` against the history
+    encoded in ``tpp`` (built via :func:`tpp_dispatch`), splitting the per-event
+    log-likelihood into its mark ("what") and time ("when") terms. Operates on
+    an already-built TPP only: it does not run the model, and it is agnostic to
+    how ``keep`` was derived — the caller owns that policy (e.g. scoring the
+    continuation of a prompted generation, dropping ignore-tokens).
+
+    Args:
+        tpp: a TPP exposing ``log_p_marks(x1, t1)`` and ``log_p_times(t1)``
+            (currently :class:`HomoPoissonTPP`).
+        x1: (B, L) event marks (tokens) — the shape the TPP log-likelihood
+            methods accept (2-D query; fold any sample axis into the batch).
+        t1: (B, L) event times (ages).
+        keep: optional boolean mask (B, L) selecting which events to score.
+            Excluded positions — and any the TPP marks invalid (NaN: no
+            strict-before history) — do not enter the reduction.
+        reduce: ``"sum"`` or ``"mean"`` over the event axis (``dim=-1``), giving
+            one value per trajectory ``(B,)``; or ``None`` to return the
+            per-event terms. Trajectories with zero scored events reduce to NaN.
+
+    Returns:
+        dict with ``"marks"``, ``"times"`` and ``"joint"`` (== marks + times).
+        For ``"sum"``/``"mean"`` these are reduced over the last axis and an
+        integer ``"n_events"`` is included; for ``reduce=None`` they are the
+        per-event tensors with excluded positions set to NaN (plus the boolean
+        ``"keep"`` actually used).
+    """
+    lp_marks = tpp.log_p_marks(x1, t1)
+    lp_times = tpp.log_p_times(t1)
+
+    if keep is None:
+        keep = torch.ones_like(t1, dtype=torch.bool)
+    valid = keep.bool() & ~torch.isnan(lp_marks) & ~torch.isnan(lp_times)
+
+    if reduce is None:
+        drop = ~valid
+        return {
+            "marks": lp_marks.masked_fill(drop, torch.nan),
+            "times": lp_times.masked_fill(drop, torch.nan),
+            "joint": (lp_marks + lp_times).masked_fill(drop, torch.nan),
+            "keep": valid,
+        }
+    if reduce not in ("sum", "mean"):
+        raise ValueError(f"reduce must be 'sum', 'mean' or None; got {reduce!r}")
+
+    zeros = torch.zeros((), dtype=lp_marks.dtype, device=lp_marks.device)
+    marks = torch.where(valid, lp_marks, zeros).sum(dim=-1)
+    times = torch.where(valid, lp_times, zeros).sum(dim=-1)
+    counts = valid.sum(dim=-1)
+    if reduce == "mean":
+        denom = counts.clamp(min=1)
+        marks, times = marks / denom, times / denom
+    empty = counts == 0
+    marks = marks.masked_fill(empty, torch.nan)
+    times = times.masked_fill(empty, torch.nan)
+    return {"marks": marks, "times": times, "joint": marks + times, "n_events": counts}

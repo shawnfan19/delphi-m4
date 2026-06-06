@@ -495,9 +495,14 @@ def generate(
 
     batch_size = idx.shape[0]
     active_indices = torch.arange(batch_size, device=idx.device)
-    completed_idx, completed_age = dict(), dict()
+    completed_idx, completed_age, completed_mask = dict(), dict(), dict()
     cur_idx = idx.clone()
     cur_age = age.clone()
+    # mask rides alongside cur_idx through every cat/filter/sort/trim below,
+    # so it stays aligned with the returned idx/age. Encoding: 0=pad,
+    # 1=prompt (set here), 2=continuation (appended per step), 3=censored
+    # (set after the age cap). The pad-is-0 invariant is re-asserted before return.
+    cur_mask = (cur_idx > 0).long()
 
     ignore_tokens = [0]
     if (
@@ -534,6 +539,7 @@ def generate(
         gen_cnt[active_indices] += (idx_next > 0).sum(dim=1)
         cur_idx = torch.cat((cur_idx, idx_next), dim=1)
         cur_age = torch.cat((cur_age, age_next), dim=1)
+        cur_mask = torch.cat((cur_mask, (idx_next > 0).long() * 2), dim=1)
 
         terminated = torch.isin(idx_next, termination_tokens).any(-1)
         if max_age is None:
@@ -561,9 +567,11 @@ def generate(
                 global_i = active_indices[local_i].item()
                 completed_idx[global_i] = cur_idx[local_i]
                 completed_age[global_i] = cur_age[local_i]
+                completed_mask[global_i] = cur_mask[local_i]
             # filter the running batch to keep only unfinished sequences
             cur_idx = cur_idx[~should_stop]
             cur_age = cur_age[~should_stop]
+            cur_mask = cur_mask[~should_stop]
             active_indices = active_indices[~should_stop]
             if cached and cache_kvs is not None:
                 cache_kvs = [(k[~should_stop], v[~should_stop]) for k, v in cache_kvs]
@@ -579,21 +587,29 @@ def generate(
     final_age = torch.full(
         (batch_size, max_len), -1e4, dtype=age.dtype, device=age.device
     )
+    # left-pad fill stays 0 == pad
+    final_mask = torch.zeros((batch_size, max_len), dtype=torch.long, device=idx.device)
     for i in range(batch_size):
-        idx_i, age_i = completed_idx[i], completed_age[i]
+        idx_i, age_i, mask_i = completed_idx[i], completed_age[i], completed_mask[i]
         final_idx[i, -idx_i.numel() :] = idx_i
         final_age[i, -age_i.numel() :] = age_i
+        final_mask[i, -mask_i.numel() :] = mask_i
 
     if max_age is not None:
-        final_idx[final_age > max_age] = 1
+        censored = final_age > max_age
+        final_idx[censored] = 1
+        final_mask[censored] = 3
         final_age = torch.clamp(final_age, max=max_age)
 
     sort_by_age = torch.argsort(final_age, dim=1)
     age = torch.take_along_dim(input=final_age, indices=sort_by_age, dim=1)
     idx = torch.take_along_dim(input=final_idx, indices=sort_by_age, dim=1)
+    mask = torch.take_along_dim(input=final_mask, indices=sort_by_age, dim=1)
 
     margin = torch.min(torch.sum(idx == 0, dim=1)).item()
-    idx, age = idx[:, margin:], age[:, margin:]
+    idx, age, mask = idx[:, margin:], age[:, margin:], mask[:, margin:]
+    # re-assert the pad-is-0 invariant exactly after all transforms
+    mask = mask.masked_fill((idx == 0) | (age == -1e4), 0)
 
     return (
         idx,
@@ -601,5 +617,7 @@ def generate(
         {
             "n_prompt": pmt_cnt.detach().cpu().numpy(),
             "n_gen": gen_cnt.detach().cpu().numpy(),
+            # (B, L) long, aligned to idx/age: 0=pad 1=prompt 2=continuation 3=censored
+            "mask": mask,
         },
     )
