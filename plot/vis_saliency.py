@@ -28,12 +28,9 @@ from delphi.experiment import load_ckpt
 
 
 # %%
-def load_saliency(dirpath: str | os.PathLike):
-    dirpath = AnyPath(dirpath)
-    jacobians = np.load(dirpath / "jacobians.npy", mmap_mode="r")
-    logits = np.load(dirpath / "logits.npy", mmap_mode="r")
-    pids = np.load(dirpath / "pids.npy")
-    return jacobians, logits, pids
+def load_saliency(path: str | os.PathLike):
+    with np.load(AnyPath(path)) as sal:
+        return sal["jacobians"], sal["logits"], sal["pids"]
 
 
 def load_ckpt_meta(ckpt_path):
@@ -61,10 +58,10 @@ def load_biomarker(modality: str, data_args: dict) -> Biomarker:
 
 # %%
 ckpt_path = AnyPath(DELPHI_CKPT_DIR) / "interpret/blood/ckpt.pt"
-saliency_dir = ckpt_path.parent / "saliency-RENAL"
+saliency_path = ckpt_path.parent / "saliency-RENAL.npz"
 modality_name = "RENAL"
 
-sal_matrix, logits, pids = load_saliency(saliency_dir)
+sal_matrix, logits, pids = load_saliency(saliency_path)
 tokenizer, targets, data_args = load_ckpt_meta(ckpt_path)
 detokenizer = {v: k for k, v in tokenizer.items()}
 
@@ -213,7 +210,7 @@ modalities = [
     "VITD",
     "WBC",
 ]
-saliency_dirs = [f"saliency-{modality}-ckpt-ckpt" for modality in modalities]
+saliency_files = [f"saliency-{modality}-ckpt-ckpt.npz" for modality in modalities]
 
 # %%
 with open(disease_yaml) as f:
@@ -229,8 +226,8 @@ all_features = []
 all_mean_saliency = []  # each entry: (n_features, n_diseases)
 all_var_saliency = []
 
-for modality_name, sal_dir in zip(modalities, saliency_dirs):
-    jacobians, _, _ = load_saliency(ckpt_path.parent / sal_dir)
+for modality_name, sal_file in zip(modalities, saliency_files):
+    jacobians, _, _ = load_saliency(ckpt_path.parent / sal_file)
     bio = load_biomarker(modality_name, data_args)
 
     # jacobians: (N, n_features, n_targets) — scale from z-score to raw units

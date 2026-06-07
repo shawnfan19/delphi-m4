@@ -1,7 +1,7 @@
 # +
-import argparse
 import pprint
 import sys
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
@@ -13,27 +13,24 @@ from delphi.data import MultimodalDataset
 from delphi.data.transform import BiomarkerTransform, MultimodalPrompt, TokenTransform
 from delphi.data.ukb import Biomarker, MultimodalUKBReader
 from delphi.env import DELPHI_CKPT_DIR
-from delphi.experiment import eval_iter, load_ckpt, move_batch_to_device
+from delphi.experiment import CliConfig, eval_iter, load_ckpt, move_batch_to_device
+
 
 # +
-parser = argparse.ArgumentParser()
-parser.add_argument("--ckpt", type=str, default="delphi-m4/delphi-m4/ckpt.pt")
-parser.add_argument("--modality", type=str, help="Biomarker name, e.g. lipid")
-parser.add_argument(
-    "--abs", action="store_true", help="Store absolute value of gradients"
-)
-parser.add_argument("--subsample", type=int)
-parser.add_argument("--fname", type=str)
+@dataclass(kw_only=True)
+class TaskConfig(CliConfig):
+    ckpt: str = "delphi-m4/delphi-m4/ckpt.pt"
+    modality: str = "lipid"  # biomarker name, e.g. "lipid"
+    subsample: None | int = None
+    fname: None | str = None
+
 
 if "ipykernel" in sys.modules:
-    args = parser.parse_args([])
-    args.ckpt = "delphi-m4/blood/ckpt.pt"
-    args.modality = "lipid"
-    args.subsample = 1000
+    args = TaskConfig(ckpt="delphi-m4/blood/ckpt.pt", modality="lipid", subsample=1000)
 else:
-    args = parser.parse_args()
+    args = TaskConfig.from_cli()
 
-pprint.pp(vars(args))
+args.print()
 
 # +
 ckpt = Path(DELPHI_CKPT_DIR) / args.ckpt
@@ -168,12 +165,8 @@ pids = np.array(pids_list, dtype=np.int64)
 jacobians = np.stack(jacobians_list)  # (N, n_features, n_targets)
 logits = np.stack(logits_list)  # (N, n_targets)
 
-dirname = args.fname or f"saliency-{mod_name}"
-out_dir = ckpt.parent / dirname
-out_dir.mkdir(exist_ok=True)
+fname = args.fname or f"saliency-{mod_name}"
+out_path = ckpt.parent / f"{fname}.npz"
+np.savez_compressed(out_path, pids=pids, jacobians=jacobians, logits=logits)
 
-np.save(out_dir / "pids.npy", pids)
-np.save(out_dir / "jacobians.npy", jacobians)
-np.save(out_dir / "logits.npy", logits)
-
-print(f"saved to {out_dir}  (N={len(pids)}, jacobians={jacobians.shape})")
+print(f"saved to {out_path}  (N={len(pids)}, jacobians={jacobians.shape})")

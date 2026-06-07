@@ -17,7 +17,7 @@ from delphi.experiment import CliConfig, load_ckpt
 @dataclass(kw_only=True)
 class TaskConfig(CliConfig):
     ckpt: str = "interpret/blood/ckpt.pt"
-    saliency_dir: str = "saliency-RENAL"
+    saliency: str = "saliency-RENAL.npz"
     modality: str = "renal"
     feature: str = "creatinine"
     target: str = "n18_(chronic_renal_failure)"
@@ -30,22 +30,22 @@ class TaskConfig(CliConfig):
 args = TaskConfig.from_cli()
 
 args.modality = "renal"
-args.saliency_dir = "saliency-RENAL"
+args.saliency = "saliency-RENAL.npz"
 args.feature = "creatinine"
 args.target = "n18_(chronic_renal_failure)"
 
 args.modality = "lft"
-args.saliency_dir = "saliency-LFT"
+args.saliency = "saliency-LFT.npz"
 args.feature = "gamma_glutamyltransferase"
 args.target = "k70_(alcoholic_liver_disease)"
 
 # args.modality = "wbc"
-# args.saliency_dir = "saliency-WBC"
+# args.saliency = "saliency-WBC.npz"
 # args.feature = "haemoglobin_concentration"
 # args.target = "c19_malignant_neoplasm_of_rectosigmoid_junction"
 #
 args.modality = "lipid"
-args.saliency_dir = "saliency-LIPID"
+args.saliency = "saliency-LIPID.npz"
 args.feature = "ldl_direct"
 args.target = "i21_(acute_myocardial_infarction)"
 
@@ -62,9 +62,10 @@ model_targets = model_targets[model_targets != 1].cpu().numpy()
 target_idx = model_targets.tolist().index(tokenizer[args.target])
 
 # load saliency outputs
-saliency_dir = ckpt_path.parent / args.saliency_dir
-jacobians = np.load(saliency_dir / "jacobians.npy", mmap_mode="r")
-sal_pids = np.load(saliency_dir / "pids.npy")
+saliency_path = ckpt_path.parent / args.saliency
+with np.load(saliency_path) as sal:
+    jacobians = sal["jacobians"]
+    sal_pids = sal["pids"]
 
 # sal_pids already aligns row-for-row with the saved jacobians, so no further
 # participant filtering is needed.
