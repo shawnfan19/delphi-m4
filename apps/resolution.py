@@ -13,6 +13,7 @@ Reference driver: apps/forecast-m4.py. Requires a homo_poisson checkpoint.
 """
 
 import pprint
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -30,16 +31,13 @@ from delphi.experiment import GenerateConfig, eval_iter, load_ckpt, move_batch_t
 from delphi.model.tpp import conditional_log_likelihood, tpp_dispatch
 from delphi.model.transformer import generate
 
-WHITELIST = [0, 1]  # pad, no-event — excluded from both metrics and the LL
+NO_EVENT_TOKEN = 1  # kept in the LL (real model output) but excluded from the metrics
 DEATH_TOKEN = 1269
 
 
 @dataclass(kw_only=True)
 class TaskConfig(GenerateConfig):
     fold: str = "train"  # which split to draw prompts from (memorization: train)
-    # horizon in years (number), or "gt" to match each participant's
-    # ground-truth last continuation-event age.
-    horizon: Any = "gt"
     n_repeats: int = 16  # K trajectories per prompt (divides default batch_size 512)
     fname: None | str = None
 
@@ -47,8 +45,7 @@ class TaskConfig(GenerateConfig):
         if self.prompt_age is None:
             self.prompt_age = "recruitment"
         if not self.fname:
-            h = self.horizon if isinstance(self.horizon, str) else f"{self.horizon}y"
-            self.fname = f"resolution_{self.fold}_{h}_K{self.n_repeats}"
+            self.fname = f"resolution_{self.fold}_K{self.n_repeats}"
 
 
 args = TaskConfig.from_cli()
@@ -63,7 +60,6 @@ assert model.config.loss == "homo_poisson", (
     f"got loss={model.config.loss!r}"
 )
 vocab_size = model.config.vocab_size
-whitelist = torch.tensor(WHITELIST, device=device)
 
 # ---- reader / transforms (mirror forecast-m4) ----
 reader_args = ckpt_dict["reader_args"]
@@ -80,17 +76,27 @@ if biomarker_transform is not None:
 pids = MultimodalUKBReader.participants(args.fold)
 prompt_age_arg = args.prompt_age
 if prompt_age_arg == "recruitment":
-    rec = reader.recruitment_times(pids)
-    valid = ~np.isnan(rec)
-    pids, cutoff_age = pids[valid], rec[valid]
-    prompt_age_map: Any = {int(p): float(a) for p, a in zip(pids, cutoff_age.tolist())}
+    cutoff_age = reader.recruitment_times(pids)
+    valid = ~np.isnan(cutoff_age)
+    pids, cutoff_age = pids[valid], cutoff_age[valid]
     print(f"{pids.size} participants with recruitment times")
 else:
     cutoff_age = np.full(pids.size, float(prompt_age_arg) * 365.25, dtype=np.float32)
-    prompt_age_map = float(prompt_age_arg) * 365.25
+
+# keep only participants with a ground-truth continuation: exit_times is the last
+# token's age, so exit > cutoff <=> at least one token after the prompt cutoff.
+followup = reader.exit_times(pids) > cutoff_age
+pids, cutoff_age = pids[followup], cutoff_age[followup]
+print(f"{pids.size} participants with ground truth after the prompt cutoff")
 
 if args.subsample:
     pids, cutoff_age = pids[: args.subsample], cutoff_age[: args.subsample]
+
+prompt_age_map: Any = (
+    {int(p): float(a) for p, a in zip(pids, cutoff_age.tolist())}
+    if prompt_age_arg == "recruitment"
+    else float(prompt_age_arg) * 365.25
+)
 
 prompt_transform = MultimodalPrompt(
     prompt_age=prompt_age_map,
@@ -109,95 +115,77 @@ ds = MultimodalDataset(
 K = args.n_repeats
 assert args.batch_size % K == 0, "batch_size must be a multiple of n_repeats"
 eff = args.batch_size // K
-is_gt_horizon = isinstance(args.horizon, str)
 
-out = {
-    k: []
-    for k in (
-        "pids",
-        "gen_ll_m",
-        "gen_ll_t",
-        "gen_ll",
-        "gt_ll_m",
-        "gt_ll_t",
-        "gt_ll",
-        "pmt_n_events",
-        "gt_n_events",
-        "gen_n_events",
-        "seq_dist",
-        "overlap",
-    )
-}
-
-
-def horizon_age(X1, T1, cut):
-    """Per-row support bound T (days), shape (B,)."""
-    if not is_gt_horizon:
-        return cut + float(args.horizon) * 365.25
-    cont = (T1 > cut[:, None]) & ~torch.isin(X1, whitelist)
-    last = torch.where(cont, T1, torch.full_like(T1, -1e4)).max(dim=1).values
-    return torch.where(last > cut, last, cut)  # fallback: no continuation -> cut
-
+out = defaultdict(list)
 
 it = eval_iter(total_size=len(ds), batch_size=eff)
 pbar = tqdm(it, total=int(np.ceil(len(ds) / eff)))
 for batch_idx in pbar:
     b = batch_idx.shape[0]  # prompts this batch (< eff on the last batch)
-    rep_idx = np.repeat(batch_idx, K)
-    X0, T0, bioX, bioT, bioM, X1, T1 = move_batch_to_device(
-        ds.get_batch(rep_idx), device=device
+    # generation prompts: K identical copies of each prompt (its X1/T1 unused).
+    X0, T0, bioX, bioT, bioM, _, _ = move_batch_to_device(
+        ds.get_batch(np.repeat(batch_idx, K)), device=device
     )
-    cut = torch.as_tensor(
-        cutoff_age[rep_idx], dtype=T0.dtype, device=device
-    )  # (eff*K,)
-    T_age = horizon_age(X1, T1, cut)  # (eff*K,) support bound per row
+    # ground truth: a fresh un-repeated batch. get_batch is deterministic, and the
+    # per-row biomarker structure (bio_X_dict is flattened across rows) only stays
+    # correct when fetched at the right batch size — never recover it by slicing the
+    # K-repeated batch.
+    _, _, gtbioX, gtbioT, gtbioM, X1, T1 = move_batch_to_device(
+        ds.get_batch(batch_idx), device=device
+    )
+    cut = torch.as_tensor(cutoff_age[batch_idx], dtype=T0.dtype, device=device)  # (b,)
+    cut_gen = cut.repeat_interleave(K)  # (b*K,) aligned to the generation rows
+    T_gt = T1.max(dim=1).values  # (b,) GT's last timestamp: gen cap + distance bound
+    T_gen = T_gt.repeat_interleave(K)  # (b*K,) aligned to the generation rows
 
     # ---- sample K trajectories per prompt ----
     gen_idx, gen_age, stats = generate(
         model=model,
         idx=X0,
         age=T0,
-        max_age=T_age,
+        max_age=T_gen,
         termination_tokens=[DEATH_TOKEN],
         stop_at_block_size=False,
         cached=True,
+        censor=False,  # keep the overflow event raw (no fabricated no-event marker)
         biomarker=bioX,
         mod_age=bioT,
         mod_idx=bioM,
     )
-    mask = stats["mask"]
     pbar.set_postfix(
         {"n_gen": stats["n_gen"].mean(), "n_pmt": stats["n_prompt"].mean()}
     )
+
+    # LL keep = continuation (age > cutoff); includes no-event tokens (real model
+    # output). Padding (age = -1e4) and prompt (age <= cutoff) fall out naturally.
+    keep_gen = gen_age > cut_gen[:, None]
+    keep_gt = T1 > cut[:, None]
 
     # ---- conditional LL of the generations (continuation only) ----
     with torch.no_grad():
         gout, _, _ = model(gen_idx, gen_age, biomarker=bioX, mod_age=bioT, mod_idx=bioM)
     gen_tpp = tpp_dispatch(model, gout)
-    keep_gen = (mask == 2) & ~torch.isin(gen_idx, whitelist)
     gll = conditional_log_likelihood(
         gen_tpp, gen_idx, gen_age, keep=keep_gen, reduce="sum"
     )
 
-    # ---- conditional LL of the ground truth (full trajectory, unique prompts) ----
-    u = slice(None, None, K)
-    X1u, T1u, cutu, Tu = X1[u], T1[u], cut[u], T_age[u]
-    bioXu = {k: v[u] for k, v in bioX.items()}
+    # ---- conditional LL of the ground truth (full un-repeated trajectory) ----
     with torch.no_grad():
-        tout, _, _ = model(X1u, T1u, biomarker=bioXu, mod_age=bioT[u], mod_idx=bioM[u])
+        tout, _, _ = model(X1, T1, biomarker=gtbioX, mod_age=gtbioT, mod_idx=gtbioM)
     gt_tpp = tpp_dispatch(model, tout)
-    # GT continuation = events in (cutoff, T], non-whitelist (window matches generation)
-    keep_gt = (T1u > cutu[:, None]) & (T1u <= Tu[:, None]) & ~torch.isin(X1u, whitelist)
-    tll = conditional_log_likelihood(gt_tpp, X1u, T1u, keep=keep_gt, reduce="sum")
+    tll = conditional_log_likelihood(gt_tpp, X1, T1, keep=keep_gt, reduce="sum")
 
     # ---- comparison metrics: GT vs each of its K generations ----
-    gm, ga, gv = nonprompt(gen_idx, gen_age, keep_gen)  # (eff*K, .)
-    tm, ta, tv = nonprompt(X1u, T1u, keep_gt)  # (eff, .)
+    # metrics compare real events only — drop no-event tokens (kept in the LL above)
+    mgen = keep_gen & (gen_idx != NO_EVENT_TOKEN)
+    mgt = keep_gt & (X1 != NO_EVENT_TOKEN)
+    gm, ga, gv = nonprompt(gen_idx, gen_age, mgen)  # (b*K, .)
+    tm, ta, tv = nonprompt(X1, T1, mgt)  # (b, .)
     tm, ta, tv = (z.repeat_interleave(K, 0) for z in (tm, ta, tv))  # align to gens
-    overlap = mark_overlap(gm, gv, tm, tv, vocab_size)  # (eff*K,)
-    seq_dist = sequence_distance(ga, gv, ta, tv, T_age[:, None])  # (eff*K,)
+    overlap = mark_overlap(gm, gv, tm, tv, vocab_size)  # (b*K,)
+    seq_dist = sequence_distance(ga, gv, ta, tv, T_gen[:, None])  # (b*K,)
 
-    # ---- collect (reshape per-gen quantities to (eff, K)) ----
+    # ---- collect (reshape per-gen quantities to (b, K)) ----
     r = lambda x: x.detach().reshape(b, K).cpu().numpy()
     out["pids"].append(pids[batch_idx])
     out["gen_ll_m"].append(r(gll["marks"]))
@@ -210,7 +198,7 @@ for batch_idx in pbar:
     out["gt_ll_t"].append(tll["times"].detach().cpu().numpy())
     out["gt_ll"].append(tll["joint"].detach().cpu().numpy())
     out["gt_n_events"].append(tll["n_events"].detach().cpu().numpy())
-    out["pmt_n_events"].append(stats["n_prompt"][u])
+    out["pmt_n_events"].append(stats["n_prompt"].reshape(b, K)[:, 0])
 
 out = {k: np.concatenate(v, axis=0) for k, v in out.items()}
 

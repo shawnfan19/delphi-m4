@@ -474,6 +474,7 @@ def generate(
     stop_at_block_size: bool = True,
     exclude_pad: bool = True,
     cached: bool = True,
+    censor: bool = True,
     **kwargs,
 ):
 
@@ -595,7 +596,10 @@ def generate(
         final_age[i, -age_i.numel() :] = age_i
         final_mask[i, -mask_i.numel() :] = mask_i
 
-    if max_age is not None:
+    if max_age is not None and censor:
+        # replace the overflow event (age > max_age) with a no-event token clamped
+        # to max_age and mark it censored. Skipped when censor=False, in which case
+        # the overflow event keeps its real token, real (unclamped) age, and mask 2.
         censored = final_age > max_age
         final_idx[censored] = 1
         final_mask[censored] = 3
@@ -617,7 +621,8 @@ def generate(
         {
             "n_prompt": pmt_cnt.detach().cpu().numpy(),
             "n_gen": gen_cnt.detach().cpu().numpy(),
-            # (B, L) long, aligned to idx/age: 0=pad 1=prompt 2=continuation 3=censored
+            # (B, L) long, aligned to idx/age: 0=pad 1=prompt 2=continuation
+            # 3=censored (only when censor=True; else the over-max_age event stays 2)
             "mask": mask,
         },
     )
