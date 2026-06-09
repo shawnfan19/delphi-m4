@@ -26,7 +26,7 @@ from delphi.data import MultimodalDataset
 from delphi.data.transform import BiomarkerTransform, MultimodalPrompt, TokenTransform
 from delphi.data.ukb import MultimodalUKBReader
 from delphi.env import DELPHI_CKPT_READ, DELPHI_CKPT_WRITE
-from delphi.eval.trajectory import mark_overlap, nonprompt, sequence_distance
+from delphi.eval.trajectory import mark_overlap, pack_non_prompt, sequence_distance
 from delphi.experiment import GenerateConfig, eval_iter, load_ckpt, move_batch_to_device
 from delphi.model.tpp import conditional_log_likelihood, tpp_dispatch
 from delphi.model.transformer import generate
@@ -39,6 +39,9 @@ DEATH_TOKEN = 1269
 class TaskConfig(GenerateConfig):
     fold: str = "train"  # which split to draw prompts from (memorization: train)
     n_repeats: int = 16  # K trajectories per prompt (divides default batch_size 512)
+    subsample: None | int = (
+        None  # keep the first N participants (post-filter); None = all
+    )
     fname: None | str = None
 
     def __post_init__(self):
@@ -179,11 +182,17 @@ for batch_idx in pbar:
     # metrics compare real events only — drop no-event tokens (kept in the LL above)
     mgen = keep_gen & (gen_idx != NO_EVENT_TOKEN)
     mgt = keep_gt & (X1 != NO_EVENT_TOKEN)
-    gm, ga, gv = nonprompt(gen_idx, gen_age, mgen)  # (b*K, .)
-    tm, ta, tv = nonprompt(X1, T1, mgt)  # (b, .)
+    gm, ga, gv = pack_non_prompt(gen_idx, gen_age, mgen)  # (b*K, .)
+    tm, ta, tv = pack_non_prompt(X1, T1, mgt)  # (b, .)
+    # per-prompt GT continuation event count (before the K repeat), kept so plots
+    # can stratify the metrics by trajectory length. With first-occurrence data
+    # (marks never repeat; no-event already dropped by mgt) this equals the number
+    # of distinct marks — i.e. both the seq-distance event count and the
+    # mark-overlap recall denominator.
+    gt_n_real = tv.sum(1)  # (b,)
     tm, ta, tv = (z.repeat_interleave(K, 0) for z in (tm, ta, tv))  # align to gens
     overlap = mark_overlap(gm, gv, tm, tv, vocab_size)  # (b*K,)
-    seq_dist = sequence_distance(ga, gv, ta, tv, T_gen[:, None])  # (b*K,)
+    seq_dist = sequence_distance(ga, gv, ta, tv)  # (b*K,); self-anchored, no horizon
 
     # ---- collect (reshape per-gen quantities to (b, K)) ----
     r = lambda x: x.detach().reshape(b, K).cpu().numpy()
@@ -194,10 +203,14 @@ for batch_idx in pbar:
     out["gen_n_events"].append(r(gll["n_events"]))
     out["seq_dist"].append(r(seq_dist))
     out["overlap"].append(r(overlap))
-    out["gt_ll_m"].append(tll["marks"].detach().cpu().numpy())
-    out["gt_ll_t"].append(tll["times"].detach().cpu().numpy())
-    out["gt_ll"].append(tll["joint"].detach().cpu().numpy())
-    out["gt_n_events"].append(tll["n_events"].detach().cpu().numpy())
+    out["ll_m"].append(tll["marks"].detach().cpu().numpy())
+    out["ll_t"].append(tll["times"].detach().cpu().numpy())
+    out["ll"].append(tll["joint"].detach().cpu().numpy())
+    out["n_events"].append(tll["n_events"].detach().cpu().numpy())
+    out["gt_n_real"].append(gt_n_real.detach().cpu().numpy())
+    # horizon = length of the comparison window (prompt cutoff -> GT's last event,
+    # in days); short windows mechanically compress the sequence distance.
+    out["gt_horizon"].append((T_gt - cut).detach().cpu().numpy())
     out["pmt_n_events"].append(stats["n_prompt"].reshape(b, K)[:, 0])
 
 out = {k: np.concatenate(v, axis=0) for k, v in out.items()}
