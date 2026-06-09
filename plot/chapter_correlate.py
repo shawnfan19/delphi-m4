@@ -8,6 +8,11 @@ default ``neoplasm`` = cancer). Panel 0 is the reference vs. the summed total of
 all other disease chapters + Death; the rest are the reference vs. each
 individual chapter (+ Death), ordered by descending Spearman rho.
 
+With ``--by_token`` the reference chapter is instead decomposed into its top-N
+tokens (one panel each, on the y-axis) correlated against the non-reference
+"other" burden (x) — e.g. to see how individual cancers within Neoplasms differ
+in how they track overall morbidity.
+
 Output is always split by sex into two figures (female, then male). For the
 default cancer reference this matters because cancer profiles are sex-specific
 (prostate in the male sum; breast and gynaecological cancers in the female sum),
@@ -56,6 +61,8 @@ class TaskConfig(CliConfig):
     winsor: float = 5.0  # clip log tails to [winsor, 100-winsor] pct for robust rw
     hexbin: bool = False  # render density hexbins instead of overplotted points
     gridsize: int = 40  # hexbins across each panel (only used when hexbin=True)
+    by_token: bool = False  # decompose the reference chapter into per-token panels
+    top_n: int = 20  # max token panels in by_token mode (top by mean intensity)
 
 
 args = TaskConfig.from_cli()
@@ -112,6 +119,9 @@ if len(ref_matches) != 1:
     )
 (ref_chapter,) = ref_matches
 ref_short = chapter_meta.loc[ref_chapter, "ICD-10 Chapter (short)"]
+ref_color = chapter_meta.loc[ref_chapter, "color"]
+ref_cols = np.flatnonzero(col_chapter == ref_chapter)  # vocab cols of the ref chapter
+token_name = labels.set_index("index")["name"].reindex(token_ids).to_numpy()
 print(f"reference chapter (y-axis): {ref_chapter!r}")
 
 reference = chapter_sums[ref_chapter]
@@ -153,38 +163,76 @@ def corr_stats(xs, ys):
 
 
 def plot_grid(mask, label):
-    """One 18-panel reference-vs-chapter grid for the participant subset ``mask``."""
+    """One grid for the participant subset ``mask``.
+
+    Default: reference chapter (y) vs each other chapter (x-panels). With
+    ``--by_token``: the reference chapter's top-N tokens (one per panel, on y) vs
+    the non-reference "other" burden (x), ordered by Spearman rho.
+    """
     ref_m = reference[mask]
-    x_agg, y_agg = masked_positive(other[mask], ref_m)
+    other_m = other[mask]
+    x_agg, y_agg = masked_positive(other_m, ref_m)
     rho_a, r_a, rw_a = corr_stats(x_agg, y_agg)
     print(
         f"[{label}] n={ref_m.size}  aggregate Spearman={rho_a:+.3f}  "
         f"Pearson(log)={r_a:+.3f}  Pearson(winsor p{args.winsor:g})={rw_a:+.3f}"
     )
 
-    # rank chapters by this subset's correlation with the reference (NaN rho last)
-    chapter_rho = {}
-    for ch in other_chapters:
-        xs, ys = masked_positive(chapter_sums[ch][mask], ref_m)
-        chapter_rho[ch] = spearmanr(xs, ys)[0] if xs.size > 1 else np.nan
-    ordered = sorted(
-        other_chapters,
-        key=lambda c: (
-            np.isnan(chapter_rho[c]),
-            -np.nan_to_num(chapter_rho[c], nan=-np.inf),
-        ),
-    )
-
-    # panel 0 = aggregate (neutral gray); panels 1.. = per-chapter, chapter-colored
-    panels = [("all other (disease + Death)", other[mask], "0.4")]
-    panels += [
-        (
-            chapter_meta.loc[ch, "ICD-10 Chapter (short)"],
-            chapter_sums[ch][mask],
-            chapter_meta.loc[ch, "color"],
+    if args.by_token:
+        # decompose the reference chapter into its top-N tokens (by this subset's
+        # mean intensity), each vs the non-reference "other" burden; order by rho.
+        block = intensities[mask][:, ref_cols]  # (n_sub, n_ref_tokens)
+        keep = np.argsort(block.mean(axis=0))[::-1][: args.top_n]
+        items = [(str(token_name[ref_cols[k]]), block[:, k]) for k in keep]
+        token_rho = {}
+        for nm, ti in items:
+            xs, ys = masked_positive(other_m, ti)
+            token_rho[nm] = spearmanr(xs, ys)[0] if xs.size > 1 else np.nan
+        items.sort(
+            key=lambda it: (
+                np.isnan(token_rho[it[0]]),
+                -np.nan_to_num(token_rho[it[0]], nan=-np.inf),
+            )
         )
-        for ch in ordered
-    ]
+        # panel 0 = whole reference-chapter total (context); 1.. = per-token
+        panels = [(f"{ref_short} (chapter total)", other_m, ref_m, "0.4")]
+        panels += [(nm[:34], other_m, ti, ref_color) for nm, ti in items]
+        xlabel = "log(other [non-reference] summed intensity)"
+        ylabel = "log(token summed intensity)"
+        suptitle = (
+            f"{npz_path.name} [{label}] — {ref_short} tokens vs. other burden, "
+            "ordered by Spearman ρ"
+        )
+    else:
+        # rank chapters by this subset's correlation with the reference (NaN last)
+        chapter_rho = {}
+        for ch in other_chapters:
+            xs, ys = masked_positive(chapter_sums[ch][mask], ref_m)
+            chapter_rho[ch] = spearmanr(xs, ys)[0] if xs.size > 1 else np.nan
+        ordered = sorted(
+            other_chapters,
+            key=lambda c: (
+                np.isnan(chapter_rho[c]),
+                -np.nan_to_num(chapter_rho[c], nan=-np.inf),
+            ),
+        )
+        # panel 0 = aggregate (gray); panels 1.. = per-chapter, chapter-colored
+        panels = [("all other (disease + Death)", other_m, ref_m, "0.4")]
+        panels += [
+            (
+                chapter_meta.loc[ch, "ICD-10 Chapter (short)"],
+                chapter_sums[ch][mask],
+                ref_m,
+                chapter_meta.loc[ch, "color"],
+            )
+            for ch in ordered
+        ]
+        xlabel = "log(chapter summed intensity)"
+        ylabel = f"log({ref_short} summed intensity)"
+        suptitle = (
+            f"{npz_path.name} [{label}] — {ref_short} vs. chapter, "
+            "ordered by Spearman ρ"
+        )
 
     n_rows = int(np.ceil(len(panels) / args.n_cols))
     fig, axes = plt.subplots(
@@ -192,12 +240,13 @@ def plot_grid(mask, label):
         args.n_cols,
         figsize=(3.2 * args.n_cols, 3.2 * n_rows),
         squeeze=False,
-        sharey=True,
+        sharex=args.by_token,  # token mode: x is the fixed "other" burden
+        sharey=not args.by_token,  # chapter mode: y is the fixed reference
         constrained_layout=True,
     )
-    for idx, (title, xvals, color) in enumerate(panels):
+    for idx, (title, xvals, yvals, color) in enumerate(panels):
         ax = axes[divmod(idx, args.n_cols)]
-        xs, ys = masked_positive(xvals, ref_m)
+        xs, ys = masked_positive(xvals, yvals)
         if args.hexbin and xs.size:
             # bin in log space (xscale/yscale) so hexagons aren't distorted on
             # log axes; bins="log" colors by log10(count) for the heavy density.
@@ -226,11 +275,9 @@ def plot_grid(mask, label):
     for idx in range(len(panels), n_rows * args.n_cols):
         axes[divmod(idx, args.n_cols)].set_visible(False)
 
-    fig.supxlabel("log(chapter summed intensity)")
-    fig.supylabel(f"log({ref_short} summed intensity)")
-    fig.suptitle(
-        f"{npz_path.name} [{label}] — {ref_short} vs. chapter, ordered by Spearman ρ"
-    )
+    fig.supxlabel(xlabel)
+    fig.supylabel(ylabel)
+    fig.suptitle(suptitle)
 
 
 # -
