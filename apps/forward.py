@@ -106,7 +106,7 @@ if biomarker_transform is not None:
 prompt_transform = MultimodalPrompt(
     prompt_age=prompt_age,
     biomarker2idx=reader.biomarker2idx,
-    append_no_event=False,
+    append_no_event=args.prompt_no_event,
 )
 
 ds = MultimodalDataset(

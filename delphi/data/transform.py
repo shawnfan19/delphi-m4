@@ -315,7 +315,7 @@ class Prompt:
 
         if self.append_no_event:
             pmt_x = np.append(pmt_x, 1)
-            pmt_t = np.append(pmt_t, pmt_t.max())
+            pmt_t = np.append(pmt_t, cutoff)
 
         return pmt_x, pmt_t, x, t
 
@@ -354,7 +354,7 @@ class MultimodalPrompt:
 
         if self.append_no_event:
             pmt_x = np.append(pmt_x, 1)
-            pmt_t = np.append(pmt_t, pmt_t.max())
+            pmt_t = np.append(pmt_t, cutoff)
 
         # filter biomarkers to prompt window
         bio_keep = bio_t <= cutoff
