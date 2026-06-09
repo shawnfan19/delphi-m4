@@ -443,7 +443,9 @@ class DelphiM4(torch.nn.Module):
                 idx.device
             ),
         )
-        idx_next, time_til_next = sample_competing_exponentials(logits=logits)
+        idx_next, time_til_next = sample_competing_exponentials(
+            logits=logits, time_unit=self.config.time_unit
+        )
         return idx_next, time_til_next
 
     def forward(

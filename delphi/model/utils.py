@@ -283,26 +283,30 @@ def nll_homogeneous_cluster_poisson(
 
 
 def sample_competing_exponentials(
-    logits: torch.Tensor, clamp_min: float = 0.0, clamp_max: float = 365.25 * 80.0
+    logits: torch.Tensor,
+    time_unit: float,
+    clamp_min: float = 0.0,
+    clamp_max: float = 365.25 * 80.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    inverse CDF method
-    """
+    """Sample (next token, time-to-next in days) by competing exponentials.
 
-    t_next = torch.clamp(
-        -torch.exp(-logits) * torch.rand(logits.shape, device=logits.device).log(),
-        min=clamp_min,
-        max=clamp_max,
-    ).min(1)
-    next_token = t_next[1][:, None]
-    time_til_next = t_next[0][:, None]
-
-    return next_token, time_til_next
+    ``exp(logits)`` are per-``time_unit`` intensities λ_v; each token's waiting
+    time (1/λ_v)·Exp(1) is drawn in ``time_unit`` units, scaled to days by
+    ``time_unit``, clamped to ``[clamp_min, clamp_max]`` (days), and the
+    earliest-firing token wins. ``time_unit`` is the single source of truth for
+    the intensity time scale and must match what the model was trained with
+    (the same value the TPP uses in its compensator).
+    """
+    dt = -torch.exp(-logits) * torch.rand(logits.shape, device=logits.device).log()
+    dt = (dt * time_unit).clamp(min=clamp_min, max=clamp_max)  # time_unit units -> days
+    time_til_next, next_token = dt.min(dim=1)
+    return next_token[:, None], time_til_next[:, None]
 
 
 def sample_homo_cluster_poisson(
     logits: torch.Tensor,
     thresh_logits: torch.Tensor,
+    time_unit: float,
     clamp_min: float = 0.0,
     clamp_max: float = 365.25 * 80.0,
 ):
@@ -311,14 +315,17 @@ def sample_homo_cluster_poisson(
     thresh_logits = thresh_logits.unsqueeze(-1)
     device = logits.device
 
+    # waiting times are drawn in time_unit units, then scaled to days (see
+    # sample_competing_exponentials); time_unit is the single source of truth.
     t_next = torch.clamp(
-        -torch.exp(-logits) * torch.rand(logits.shape, device=device).log(),
+        -torch.exp(-logits) * torch.rand(logits.shape, device=device).log() * time_unit,
         min=clamp_min,
         max=clamp_max,
     )
     t_nod_next = torch.clamp(
         -torch.exp(-thresh_logits)
-        * torch.rand(thresh_logits.shape, device=device).log(),
+        * torch.rand(thresh_logits.shape, device=device).log()
+        * time_unit,
         min=clamp_min,
         max=clamp_max,
     )

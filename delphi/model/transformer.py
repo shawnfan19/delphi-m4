@@ -444,8 +444,9 @@ class Delphi2M(nn.Module):
                     idx.device
                 ),
             )
-            idx_next, time_til_next = sample_competing_exponentials(logits=logits)
-            time_til_next *= 365.25
+            idx_next, time_til_next = sample_competing_exponentials(
+                logits=logits, time_unit=self.config.time_unit
+            )
         elif self.config.loss == "homo_cluster_poisson":
             logits = outputs["logits"][:, -1, :]
             logits = self_terminate_single(
@@ -456,7 +457,9 @@ class Delphi2M(nn.Module):
                 ),
             )
             idx_next, time_til_next = sample_homo_cluster_poisson(
-                logits=logits, thresh_logits=outputs["aux_rates"][:, -1]
+                logits=logits,
+                thresh_logits=outputs["aux_rates"][:, -1],
+                time_unit=self.config.time_unit,
             )
         else:
             raise NotImplementedError
