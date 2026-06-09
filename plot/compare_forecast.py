@@ -1,6 +1,7 @@
 # +
 import json
 from dataclasses import dataclass
+from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -10,7 +11,7 @@ from matplotlib.patches import Patch
 
 from delphi.data.ukb import UKBReader
 from delphi.env import DELPHI_CKPT_READ as DELPHI_CKPT_DIR
-from delphi.experiment import CliConfig
+from delphi.experiment import CliConfig, flexi_list
 from delphi.plot import plot_by_chapter
 
 plt.rcParams["figure.dpi"] = 150
@@ -25,8 +26,14 @@ class TaskConfig(CliConfig):
     # Subset of time horizons (years) to visualize, e.g. horizons=[1,5].
     # None = all horizons present in both checkpoints.
     horizons: None | list = None
-    # Number of most-improved diseases to show in the per-horizon bar plot.
-    top_k: int = 20
+    # Events (diseases) to show in the per-horizon bar plot: a single name, an
+    # inline list, or a path to a .yaml file (normalized via flexi_list).
+    # None = skip the bar plot.
+    events: Any = None
+
+    def __post_init__(self):
+        if self.events is not None:
+            self.events = flexi_list(self.events)
 
 
 args = TaskConfig.from_cli()
@@ -172,43 +179,45 @@ for h in horizons:
         )
 
 # +
-# Top-k improved diseases per horizon ("either" sex) — horizontal bar plot,
-# colored by ICD-10 chapter (mirrors plot/compare_cindex.py).
-_labels_df = UKBReader.labels()
-_labels_df["icd"] = _labels_df["name"].str.split().str[0].str.upper()
-_icd_meta = (
-    _labels_df.drop_duplicates("icd")
-    .set_index("icd")[["name", "color"]]
-    .rename(columns={"name": "disease_name"})
-)
-
-for h in horizons:
-    top = (
-        diff_frame(results_df, bl_results_df, h, "either")
-        .nlargest(args.top_k, "diff")
-        .copy()
+# Per-horizon ΔAUC bar plot for the requested --events ("either" sex), colored
+# by ICD-10 chapter (mirrors plot/compare_cindex.py). Skipped when no events.
+if args.events is not None:
+    _labels_df = UKBReader.labels()
+    _labels_df["icd"] = _labels_df["name"].str.split().str[0].str.upper()
+    _icd_meta = (
+        _labels_df.drop_duplicates("icd")
+        .set_index("icd")[["name", "color"]]
+        .rename(columns={"name": "disease_name"})
     )
-    top["icd"] = top["key"].map(lambda k: k.split("_")[0].upper())
-    top = top.join(_icd_meta, on="icd")
-    top["disease_name"] = top["disease_name"].fillna(top["key"])
-    top["color"] = top["color"].fillna("#888888")
-    top = top.sort_values("diff", ascending=True)  # largest at top for barh
 
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.barh(
-        top["disease_name"],
-        top["diff"],
-        color=top["color"],
-        edgecolor="white",
-        linewidth=0.5,
-    )
-    for y, val in enumerate(top["diff"]):
-        ax.text(val + 0.001, y, f"{val:+.3f}", va="center", fontsize=8)
-    ax.set_xlabel("Δ AUC (candidate − baseline)")
-    ax.set_title(f"Top {args.top_k} improved diseases — horizon={h}y")
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    fig.tight_layout()
+    for h in horizons:
+        bars = diff_frame(results_df, bl_results_df, h, "either")
+        bars = bars[bars["key"].isin(args.events)].dropna(subset=["diff"]).copy()
+        bars["icd"] = bars["key"].map(lambda k: k.split("_")[0].upper())
+        bars = bars.join(_icd_meta, on="icd")
+        bars["disease_name"] = bars["disease_name"].fillna(bars["key"])
+        bars["color"] = bars["color"].fillna("#888888")
+        # plot in --events order; barh draws row 0 at the bottom, so invert the
+        # y-axis to put the first listed event at the top.
+        order = {e: i for i, e in enumerate(args.events)}
+        bars = bars.sort_values("key", key=lambda s: s.map(order))
+
+        fig, ax = plt.subplots(figsize=(8, 5))
+        ax.barh(
+            bars["disease_name"],
+            bars["diff"],
+            color=bars["color"],
+            edgecolor="white",
+            linewidth=0.5,
+        )
+        ax.invert_yaxis()
+        for y, val in enumerate(bars["diff"]):
+            ax.text(val + 0.001, y, f"{val:+.3f}", va="center", fontsize=8)
+        ax.set_xlabel("Δ AUC (candidate − baseline)")
+        ax.set_title(f"Δ AUC for selected events — horizon={h}y")
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        fig.tight_layout()
 
 plt.show()
 # -

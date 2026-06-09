@@ -276,7 +276,10 @@ plt.show()
 # %%
 # Optionally dump the list of improved diseases (Δ c-index >= 0.02, "either" sex)
 if args.improved_yaml is not None:
-    improved = df_either[df_either["diff"] >= 0.02]["key"].tolist()
+    # Dump most-improved first. _topk was re-sorted ascending above for the barh
+    # display, so re-sort here independently — otherwise the YAML (used as the
+    # ordered `events` list for compare_forecast) comes out least-improved first.
+    improved = _topk.sort_values("diff", ascending=False)["key"].tolist()
     out_path = AnyPath(__file__).parent / args.improved_yaml
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w") as f:
