@@ -41,6 +41,23 @@ class HomoPoissonTPP:
     def shape(self):
         return self.timesteps.shape
 
+    def __getitem__(self, index):
+        """Index the batch (dim-0), returning a TPP over the selected sequences.
+
+        Slices every batch-aligned tensor attribute (leading dim == batch size)
+        and shares the rest (e.g. ``time_unit``); does not re-run ``__init__``,
+        so ``occurred_mask`` is not recomputed. Use a slice or 1-D index — a
+        bare int would collapse the batch dim.
+        """
+        batch = self.timesteps.shape[0]
+        obj = self.__class__.__new__(self.__class__)
+        for name, value in self.__dict__.items():
+            batched = (
+                torch.is_tensor(value) and value.dim() > 0 and value.shape[0] == batch
+            )
+            setattr(obj, name, value[index] if batched else value)
+        return obj
+
     def latent_states(self, t: torch.Tensor):
         assert t.shape[0] == self.timesteps.shape[0]
 
@@ -105,7 +122,9 @@ class HomoPoissonTPP:
         intensity = log_intensity.exp().masked_fill(invalid, torch.nan)
         return intensity, nearest_t
 
-    def integral(self, t0: torch.Tensor, t1: torch.Tensor, n_grid: int):
+    def integral(self, t0: torch.Tensor, t1: torch.Tensor, n_grid: None | int = None):
+        # n_grid is accepted for API parity with NeuralTPP but unused here: the
+        # homogeneous-between-events integral is exact piecewise-constant.
         # require t0 to lie within the timeline (>= first non-padding event per sequence)
         assert t0.shape[0] == t1.shape[0] == self.timesteps.shape[0]
         assert (
