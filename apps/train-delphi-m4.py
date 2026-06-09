@@ -1,5 +1,6 @@
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Any
 
 from omegaconf import OmegaConf
 
@@ -10,7 +11,7 @@ from delphi.data.ukb import Biomarker, MultimodalUKBReader
 from delphi.experiment import BaseTrainer, Logger, TrainBaseConfig, seed_everything
 from delphi.log import Checkpointer
 from delphi.model.multimodal import DelphiM4, DelphiM4Config
-from delphi.multimodal import parse_panel
+from delphi.multimodal import compose_panel
 
 
 @dataclass
@@ -24,7 +25,7 @@ class TrainConfig(TrainBaseConfig):
     model: DelphiM4Config = field(
         default_factory=lambda: DelphiM4Config(block_size=None)
     )
-    panel: None | str = None
+    panel: Any = None
     biomarkers: None | list[str] = None
     first_time_only: bool = True
     must_have: bool = False
@@ -37,8 +38,8 @@ class TrainConfig(TrainBaseConfig):
 
     def __post_init__(self):
         if self.panel:
-            self.biomarkers, self.expansion_packs, self.panel_name = parse_panel(
-                self.panel
+            self.biomarkers, self.expansion_packs, _ = compose_panel(
+                self.panel, self.biomarkers, self.expansion_packs
             )
 
 

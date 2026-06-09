@@ -69,3 +69,38 @@ def parse_panel(path):
         if overlap:
             raise ValueError(f"name(s) appear in both lists: {overlap}")
     return biomarkers, expansion_packs, Path(path).stem
+
+
+def compose_panel(panels, biomarkers=None, expansion_packs=None):
+    """Union one or more panel files with explicit biomarker/expansion-pack lists.
+
+    args:
+        panels: path or list of paths to panel YAML(s); a bare string is treated
+            as a single-element list.
+        biomarkers: explicit biomarker names to add on top of the panels.
+        expansion_packs: explicit expansion-pack names to add on top of the panels.
+
+    Returns (biomarkers, expansion_packs, panel_name): each list is the
+    order-preserving, deduped union of the panels (in order) followed by the
+    explicit flags, or None if empty; panel_name joins the panel stems with '-'
+    (None if no panels). Raises if any name ends up as both a biomarker and an
+    expansion pack.
+    """
+    if isinstance(panels, str):
+        panels = [panels]
+    bio, exp, names = [], [], []
+    for path in panels or []:
+        panel_bio, panel_exp, panel_name = parse_panel(path)
+        bio += panel_bio or []
+        exp += panel_exp or []
+        names.append(panel_name)
+    bio += biomarkers or []
+    exp += expansion_packs or []
+    bio = list(dict.fromkeys(bio))  # order-preserving dedup
+    exp = list(dict.fromkeys(exp))
+    overlap = sorted(set(bio) & set(exp))
+    if overlap:
+        raise ValueError(
+            f"name(s) appear as both biomarker and expansion pack: {overlap}"
+        )
+    return (bio or None), (exp or None), ("-".join(names) or None)
