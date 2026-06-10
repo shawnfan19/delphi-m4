@@ -17,7 +17,7 @@ biomarkers:
   - creat
   - albu
 expansion_packs:
-  - meds
-  - ops
+  - prescriptions_hx
+  - self_report_ops
   - prescriptions
-  - summary_ops
+  - ops
