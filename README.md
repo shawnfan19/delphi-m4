@@ -29,14 +29,14 @@ This repository contains the code for **Delphi**, a modified GPT-2 model designe
    ```bash
    conda create -n delphi python=3.11
    conda activate delphi
-   pip install -r requirements.txt
+   pip install -r installation/containers/requirements.txt
    ```
 
    > **Note:** Installing requirements typically takes a few minutes.
 
 ### Option 2: Docker
 
-We provide a Dockerfile for containerized training and downstream analyses. See `containers/Dockerfile` for implementation details.
+We provide a Dockerfile for containerized training and downstream analyses. See `installation/containers/Dockerfile` for implementation details.
 
 ## Data
 
