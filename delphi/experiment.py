@@ -212,7 +212,7 @@ class BaseTrainer:
             "bfloat16": torch.bfloat16,
             "float16": torch.float16,
         }[cfg.dtype]
-        if self.device_type == "cuda" and self.ptdtype == "float16":
+        if self.device_type == "cuda" and cfg.dtype in ("float16", "bfloat16"):
             self.ctx = torch.autocast(device_type=self.device_type, dtype=self.ptdtype)
         else:
             self.ctx = nullcontext()
@@ -398,8 +398,14 @@ class BaseTrainer:
                     batch_data = self.train_ds.get_batch(batch_idx)
                     output, loss = self.mini_step(batch_data=batch_data)
 
-                # backward pass, with gradient scaling if training in fp16
-                loss_agg = sum([loss[key] for key in loss.keys()])
+                # backward pass, with gradient scaling if training in fp16.
+                # divide by the accumulation steps so the accumulated gradient is
+                # the mean (not the sum) of the micro-batches -> the effective
+                # learning rate is independent of gradient_accumulation_steps.
+                loss_agg = (
+                    sum([loss[key] for key in loss.keys()])
+                    / self.cfg.gradient_accumulation_steps
+                )
                 self.scaler.scale(loss_agg).backward()  # type: ignore
 
             # clip the gradient
