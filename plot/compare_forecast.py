@@ -28,10 +28,10 @@ ckpt_a_json = AnyPath(DELPHI_CKPT_DIR) / args.baseline_json
 ckpt_b_json = AnyPath(DELPHI_CKPT_DIR) / args.json
 
 with ckpt_a_json.open("r") as f:
-    results = json.load(f)
+    bl_results = json.load(f)  # ckpt_a = args.baseline_json (reference)
 
 with ckpt_b_json.open("r") as f:
-    bl_results = json.load(f)
+    results = json.load(f)  # ckpt_b = args.json (model under study)
 
 
 def to_dataframe(results: dict) -> pd.DataFrame:
