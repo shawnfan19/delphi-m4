@@ -1,7 +1,7 @@
 """Extract a slim SNOMED -> OPCS-4 crosswalk from an OHDSI Athena vocabulary bundle.
 
 OPCS-4 is not loaded in the AoU CDR, so `data/aou/operations.py` needs an external
-map to push AoU's SNOMED procedures into the UKB `summary_ops` (OPCS-4) token space.
+map to push AoU's SNOMED procedures into the UKB `ops` (OPCS-4) token space.
 Download an Athena bundle with **OPCS4 + SNOMED** selected, unzip it into the bucket
 (e.g. gs://{DATA_BUCKET}/vocab/athena/), then run on the workbench:
 

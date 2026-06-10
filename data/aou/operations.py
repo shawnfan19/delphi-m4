@@ -15,7 +15,7 @@ client.list_columns("procedure_occurrence")
 
 client.list_rows("procedure_occurrence")
 
-# # procedure tokens (OPCS-4 3-char, shared token space with UKB `summary_ops`)
+# # procedure tokens (OPCS-4 3-char, shared token space with UKB `ops`)
 
 # AoU procedures are standardized to SNOMED; first occurrence per (person, SNOMED).
 query = """
@@ -50,16 +50,16 @@ df.shape
 # truncate to the OPCS-4 3-char category, matching gather_summary_operations.py (str[0:3])
 df["opcs3"] = df["opcs4_code"].str[:3].str.lower()
 
-out = f"gs://{DATA_BUCKET}/aou_uk/expansion_packs/summary_ops"
+out = f"gs://{DATA_BUCKET}/aou_uk/expansion_packs/ops"
 df.to_parquet(f"{out}/raw.parquet", index=False)
 
-# # tokenize against the UKB `summary_ops` vocabulary (shared token space)
+# # tokenize against the UKB `ops` vocabulary (shared token space)
 
 try:
     _CORE_DIR = Path(__file__).resolve().parent
 except NameError:  # Jupyter cell execution
     _CORE_DIR = Path(os.getcwd())
-TOKENIZER_PATH = _CORE_DIR.parent / "ukb" / "dictionary" / "summary_ops_tokenizer.yaml"
+TOKENIZER_PATH = _CORE_DIR.parent / "ukb" / "dictionary" / "ops_tokenizer.yaml"
 
 with open(TOKENIZER_PATH) as f:
     tokenizer = yaml.safe_load(f)
@@ -75,7 +75,7 @@ code2token = {
 
 # log OPCS-4 categories present in AoU but absent from the UKB vocab
 missing = sorted(set(df["opcs3"]) - set(code2token))
-upload_yaml(missing, "aou_uk/expansion_packs/summary_ops/missing_opcs4_codes.yaml")
+upload_yaml(missing, "aou_uk/expansion_packs/ops/missing_opcs4_codes.yaml")
 
 n_mapped = len(df)
 df["token"] = df["opcs3"].map(code2token)
@@ -96,5 +96,5 @@ df.shape
 
 df[["person_id", "age_in_days", "token"]].to_parquet(f"{out}/data.parquet", index=False)
 upload_yaml(
-    tokenizer, "aou_uk/expansion_packs/summary_ops/tokenizer.yaml"
+    tokenizer, "aou_uk/expansion_packs/ops/tokenizer.yaml"
 )  # AOUExpansionPack reads this

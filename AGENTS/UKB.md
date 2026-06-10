@@ -171,7 +171,7 @@ Each script follows the same pattern: extract UKB fields → map to local token 
 - **Timestamps**: menarche/menopause → actual age in days (`age * DAYS_PER_YEAR`); parity/miscarriage → assessment age
 - **Special handling**: coded missing values (-3, -1, -4) skipped; unknown/ambiguous menopause status skipped
 
-### `gather_medications.py` → `expansion_packs/meds/`
+### `gather_medications.py` → `expansion_packs/prescriptions_hx/`
 
 - **UKB field**: 20003 (self-reported medications, coding scheme 4)
 - **Vocabulary filtering**: only medications with >100 total occurrences; coding 99999 excluded
@@ -179,13 +179,13 @@ Each script follows the same pattern: extract UKB fields → map to local token 
 - **Timestamps**: assessment age (all medications from same visit share the same timestamp)
 - **Uses polars** for the token mapping step
 
-### `gather_operations.py` → `expansion_packs/ops/`
+### `gather_operations.py` → `expansion_packs/self_report_ops/`
 
 - **UKB fields**: 20004 (self-reported operations, coding scheme 5), 20011 (age at operation)
 - **Timestamps**: reported age × `DAYS_PER_YEAR` (converted from years to days)
 - **Filtering**: coding values ≤0 or 99999 or time ≤0 excluded
 
-### `gather_summary_operations.py` → `expansion_packs/summary_ops/`
+### `gather_summary_operations.py` → `expansion_packs/ops/`
 
 - **UKB fields**: 41200 (hospital OPCS-4 operation codes, coding scheme 240), 41260 (operation dates)
 - **Grouping**: child OPCS-4 codes grouped to parent-level (3-character codes); "Chapter" entries excluded
@@ -272,16 +272,16 @@ $DELPHI_DATA_DIR/ukb_real_data/
 │   ├── lft/
 │   └── ...
 └── expansion_packs/
-    ├── ops/
+    ├── self_report_ops/
     │   ├── data.bin                  # uint32, local token IDs
     │   ├── time.bin                  # uint32, timestamps in days
     │   ├── p2i.csv                   # pid → start_pos, seq_len
     │   └── tokenizer.yaml           # local vocabulary
-    ├── meds/
+    ├── prescriptions_hx/
     ├── family_hx/
     ├── fsf/
     ├── prescriptions/
-    └── summary_ops/
+    └── ops/
 ```
 
 ---
