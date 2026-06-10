@@ -3,7 +3,7 @@
 The `prescriptions` expansion pack tokenizes drugs as bare ATC codes (``R05CA``).
 This rewrites the tokenizer keys to ``CODE_name`` (e.g.
 ``R05CA_expectorants``), matching the ``code_meaning`` convention used by the
-``meds``/``summary_ops`` packs, while keeping every token *index* unchanged -- so
+``prescriptions_hx``/``ops`` packs, while keeping every token *index* unchanged -- so
 the on-disk ``data.bin`` (which stores indices) stays valid and the index<->concept
 pairing is preserved by construction.
 
