@@ -465,7 +465,6 @@ class DelphiM4(torch.nn.Module):
         age_emb = self.transformer.wae(age.unsqueeze(-1))
         x = self.transformer.token_drop(tok_emb) * (1 - self.config.token_dropout)
         x = x + age_emb
-        x = self.transformer.drop(x)
 
         if biomarker:
             mod_emb = self.bio_embed(biomarker)
