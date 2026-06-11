@@ -138,7 +138,10 @@ def fuse_embed(
                 f"Shape mismatch for {biomarker}: mask expects {mask.sum()} tokens, "
                 f"got {m_tensor.shape[0]}"
             )
-        mod_emb_dense[mask] = m_tensor
+        # out-of-place (vs mod_emb_dense[mask] = m_tensor) so this composes with an
+        # outer vmap over a batched m_tensor — e.g. integrated_jacobian batching its
+        # interpolation steps. Numerically identical to the in-place scatter.
+        mod_emb_dense = torch.index_put(mod_emb_dense, (mask,), m_tensor)
     mod_emb_dense += mod_age_emb
     if mod_idx_emb is not None:
         mod_emb_dense += mod_idx_emb

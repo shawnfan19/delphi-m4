@@ -17,6 +17,7 @@ from delphi.eval.survival import (
     kaplan_meier_incidence,
 )
 from delphi.eval.utils import (
+    BiomarkerCollator,
     EventTimeCollator,
     SexCollator,
     correct_time_offset,

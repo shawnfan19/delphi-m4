@@ -1,8 +1,9 @@
+from collections import defaultdict
+
 import numpy as np
 import torch
 
 from delphi.model.utils import nearest_input_pos
-from delphi.multimodal import Modality
 
 
 def corrective_indices(T0: torch.Tensor, T1: torch.Tensor, offset: float):
@@ -121,21 +122,34 @@ class LogitCollector:
         return torch.cat(self.logits, dim=0).numpy()
 
 
-class ModalityCollator:
+class BiomarkerCollator:
+    """Accumulate one participant's biomarker values per ``step``.
 
-    def __init__(self, modalities: list[str]):
-        self.modalities = [Modality[modality.upper()] for modality in modalities]
-        self.max_mod = max([modality.value for modality in self.modalities])
-        self.mod_timesteps = list()
+    ``bio_x_dict[name]`` is just that modality's measurements ``(n_meas,
+    n_features)`` — it carries no participant axis, so the number of participants
+    in it cannot be recovered. ``step`` therefore takes a single ``pid`` and
+    records the first (earliest) measurement of each biomarker present for it. No
+    fixed modality list: ``values`` is a defaultdict mapping ``biomarker name ->
+    {pid -> value vector}``, grown lazily as biomarkers are seen.
+    """
 
-    def step(self, mod_tokens, timesteps):
-        assert mod_tokens.shape == timesteps.shape
-        mod_timesteps = torch.full(
-            (timesteps.shape[0], self.max_mod + 1), fill_value=torch.nan
-        ).to(timesteps.device)
-        mod_timesteps = mod_timesteps.scatter_(dim=1, src=timesteps, index=mod_tokens)
-        self.mod_timesteps.append(mod_timesteps.detach().cpu())
-        return mod_timesteps
+    def __init__(self):
+        self.values: dict = defaultdict(dict)
 
-    def finalize(self):
-        return torch.cat(self.mod_timesteps, dim=0)
+    def step(self, pid, bio_x_dict):
+        for biomarker, x in bio_x_dict.items():
+            self.values[biomarker][int(pid)] = x[0].detach().cpu().numpy()
+
+    def finalize(self, pids):
+        """Per biomarker, an ``(len(pids), n_features)`` array in the row order of
+        ``pids``, NaN where a participant lacks that biomarker."""
+        out = {}
+        for biomarker, pid2value in self.values.items():
+            n_features = len(next(iter(pid2value.values())))
+            matrix = np.full((len(pids), n_features), np.nan, dtype=np.float32)
+            for row, pid in enumerate(pids):
+                value = pid2value.get(int(pid))
+                if value is not None:
+                    matrix[row] = value
+            out[biomarker] = matrix
+        return out

@@ -1,5 +1,4 @@
 # +
-import pprint
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -7,138 +6,145 @@ import matplotlib.pyplot as plt
 import numpy as np
 import patsy
 import torch
+from statsmodels.nonparametric.smoothers_lowess import lowess
 
-from delphi.data.ukb import Biomarker, MultimodalUKBReader
 from delphi.env import DELPHI_CKPT_DIR
-from delphi.experiment import CliConfig, load_ckpt
+from delphi.experiment import CliConfig
+
+
+def load_saliency(path):
+    """Load the saliency artifact as a dict, supporting both output layouts.
+
+    A ``path`` ending in ``.npz`` is the single compressed file written by
+    apps/saliency_biomarker.py (jacobians/logits/pids plus the covariate context:
+    token_matrix, bio_values, age, and the axis-label arrays). Anything else is
+    the legacy directory of ``.npy`` files, which only ever held jacobians + pids
+    (no covariates); its jacobian is a read-only ``mmap_mode="r"`` array, so
+    ``.copy()`` a slice before mutating it.
+    """
+    path = Path(path)
+    if str(path).endswith(".npz"):
+        with np.load(path) as sal:
+            out = {k: sal[k] for k in sal.files}
+        # apps/ig_biomarker.py stores the per-participant feature->target attribution
+        # under `attributions`; the gradient-saliency artifact uses `jacobians`. They
+        # play the same role as the regression response here, so normalize to one key.
+        if "jacobians" not in out and "attributions" in out:
+            out["jacobians"] = out["attributions"]
+        return out
+    return {
+        "jacobians": np.load(path / "jacobians.npy", mmap_mode="r"),
+        "pids": np.load(path / "pids.npy"),
+    }
 
 
 # +
 @dataclass(kw_only=True)
 class TaskConfig(CliConfig):
-    ckpt: str = "interpret/blood/ckpt.pt"
-    saliency: str = "saliency-RENAL.npz"
-    modality: str = "renal"
+    saliency: str = "interpret/blood/saliency-RENAL.npz"  # relative to DELPHI_CKPT_DIR
     feature: str = "creatinine"
     target: str = "n18_(chronic_renal_failure)"
     # per-sample ridge penalty on the unit-scale standardized design;
     # lam ~ (1 - rho) sets the feature correlation it meaningfully shrinks.
     lam: float = 0.1
     top_k: int = 20
+    value_trim: float = 0.01
 
 
 args = TaskConfig.from_cli()
-
-args.modality = "renal"
-args.saliency = "saliency-RENAL.npz"
-args.feature = "creatinine"
-args.target = "n18_(chronic_renal_failure)"
-
-args.modality = "lft"
-args.saliency = "saliency-LFT.npz"
-args.feature = "gamma_glutamyltransferase"
-args.target = "k70_(alcoholic_liver_disease)"
-
-# args.modality = "wbc"
-# args.saliency = "saliency-WBC.npz"
-# args.feature = "haemoglobin_concentration"
-# args.target = "c19_malignant_neoplasm_of_rectosigmoid_junction"
-#
-args.modality = "lipid"
-args.saliency = "saliency-LIPID.npz"
-args.feature = "ldl_direct"
-args.target = "i21_(acute_myocardial_infarction)"
-
-pprint.pp(vars(args))
+args.print()
 
 # +
-ckpt_path = Path(DELPHI_CKPT_DIR) / args.ckpt
-model, ckpt_dict = load_ckpt(ckpt_path)
-tokenizer = ckpt_dict["tokenizer"]
-detokenizer = {v: k for k, v in tokenizer.items()}
-
-model_targets = model.targets
-model_targets = model_targets[model_targets != 1].cpu().numpy()
-target_idx = model_targets.tolist().index(tokenizer[args.target])
-
-# load saliency outputs
-saliency_path = ckpt_path.parent / args.saliency
-with np.load(saliency_path) as sal:
-    jacobians = sal["jacobians"]
-    sal_pids = sal["pids"]
-
-# sal_pids already aligns row-for-row with the saved jacobians, so no further
-# participant filtering is needed.
-mod_name = args.modality.lower()
-reader_args = ckpt_dict["reader_args"]
-reader = MultimodalUKBReader(
-    biomarkers=reader_args["biomarkers"],
-    expansion_packs=reader_args["expansion_packs"],
+# load the saliency artifact: jacobians + the covariate context that
+# apps/saliency_biomarker.py saved alongside them, so this script needs no model
+# or reader — only the path to the .npz (relative to DELPHI_CKPT_DIR).
+saliency_path = Path(DELPHI_CKPT_DIR) / args.saliency
+sal = load_saliency(saliency_path)
+required = [
+    "jacobians",
+    "pids",
+    "age",
+    "token_matrix",
+    "token_names",
+    "bio_values",
+    "bio_names",
+    "feature_names",
+    "target_names",
+]
+missing = [k for k in required if k not in sal]
+assert not missing, (
+    f"{saliency_path} is missing {missing}; re-run apps/saliency_biomarker.py to "
+    "emit the covariate context (this script needs a post-refactor .npz)"
 )
-assert mod_name in reader.biomarkers, f"{mod_name!r} not in {sorted(reader.biomarkers)}"
-bio = reader.biomarkers[mod_name]
-feature_idx = bio.feat2idx[args.feature]
+
+# resolve the jacobian axes + value column by name (no model/reader needed).
+# feature_names/bio_names are qualified "modality:feature"; args.feature is the bare
+# name, matched within the single-modality feature axis, then used to find the col.
+feat_axis = sal["feature_names"].tolist()  # jacobian feature axis ("modality:feature")
+target_names = sal["target_names"].tolist()  # jacobian target axis
+bio_names = sal["bio_names"].tolist()  # bio_values columns ("modality:feature")
+feat_suffixes = [f.split(":", 1)[1] for f in feat_axis]
+assert args.feature in feat_suffixes, f"{args.feature!r} not in {feat_suffixes}"
+assert args.target in target_names, f"{args.target!r} not among the saved targets"
+feature_idx = feat_suffixes.index(args.feature)
+target_idx = target_names.index(args.target)
+target_feature_col = bio_names.index(feat_axis[feature_idx])
 print(f"explaining saliency of {args.feature} → {args.target}")
 
-# cutoff = target modality's (first/only) measurement time, per participant
-cutoff = Biomarker.first_occurrence_times(mod_name, sal_pids)
-
-# y: saliency value per participant
-y = jacobians[:, feature_idx, target_idx].copy()
+# y: saliency of the chosen feature → target, per participant
+y = sal["jacobians"][:, feature_idx, target_idx].copy()
 
 # +
-# build covariate matrix: past-disease history + biomarker values + age,
-# all evaluated at the cutoff (the target modality's measurement time).
-
-# past-disease history: tokens whose first occurrence is at/before the cutoff.
-# use the base tokenizer so columns line up with reader.event_times (base-indexed).
-base_tok = reader.base_tokenizer
-exclude_ids = {base_tok.get("padding", 0), base_tok.get("no_event", 1)}
-token_names = sorted(
-    [(name, tok) for name, tok in base_tok.items() if tok not in exclude_ids],
-    key=lambda x: x[1],
-)
-token_name_list = [name for name, _ in token_names]
-token_ids = np.array([tok for _, tok in token_names])
-
-present = reader.event_times(sal_pids) <= cutoff[:, None]  # (N, base_vocab)
-token_matrix = present[:, token_ids].astype(np.float32)
-
-# biomarker values: each modality's first-occurrence vector, zeroed where the
-# measurement is absent or falls after the cutoff (temporal consistency).
-all_bio_features = []
-for name, bm in reader.biomarkers.items():
-    all_bio_features.extend([f"{name}:{f}" for f in bm.features])
-target_feature_col = all_bio_features.index(f"{mod_name}:{args.feature}")
-
+# rebuild the design matrix from the saved covariate context (disease-history
+# presence + biomarker values + age, all at the cutoff). token_matrix is saved
+# un-pruned; the prevalence filter below is an analysis choice kept in this script.
+sal_pids = sal["pids"]
 n = len(sal_pids)
-bio_values = np.zeros((n, len(all_bio_features)), dtype=np.float32)
-col = 0
-for name, bm in reader.biomarkers.items():
-    n_feat = bm.n_features
-    foc = Biomarker.first_occurrence_times(name, sal_pids)  # NaN if absent
-    vals = bm.to_array(sal_pids)  # (N, n_feat), NaN if absent
-    vals[~(foc <= cutoff)] = 0.0  # absent (NaN) or measured after cutoff -> 0
-    bio_values[:, col : col + n_feat] = vals
-    col += n_feat
-
-age = (cutoff / 365.25).astype(np.float32)
+token_matrix = sal["token_matrix"].astype(np.float32)
+token_names = sal["token_names"].tolist()
+bio_values = sal["bio_values"]
+age = sal["age"]
 
 # drop tokens with zero or near-zero prevalence
 prevalence = token_matrix.sum(axis=0)
 min_count = max(10, n * 0.01)
 keep = prevalence >= min_count
 token_matrix = token_matrix[:, keep]
-token_name_list = [n for n, k in zip(token_name_list, keep) if k]
-print(f"tokens kept: {token_matrix.shape[1]} / {len(token_ids)}")
+token_names = [t for t, k in zip(token_names, keep) if k]
+print(f"tokens kept: {token_matrix.shape[1]} / {len(keep)}")
+
+# Group ordinal lifestyle tokens (bmi/alcohol/smoking) by prefix for the stratified
+# panels. mid is the reference level (dropped upstream by the producer). feature_to_group
+# maps each surviving level -> its prefix; group_ref records the reference.
+levels = ("low", "mid", "high")
+onehot = {}
+for i, t in enumerate(token_names):
+    pre, _, lvl = t.rpartition("_")
+    if pre and lvl in levels:
+        onehot.setdefault(pre, {})[lvl] = i
+onehot = {p: lv for p, lv in onehot.items() if len(lv) >= 2}
+
+feature_to_group, group_ref, ref_cols = {}, {}, []
+for pre, lv in onehot.items():
+    ref = "mid"  # reference level, dropped upstream by the producer
+    group_ref[pre] = ref
+    if ref in lv:  # older artifacts may still carry the mid column; drop it here
+        ref_cols.append(lv[ref])
+    feature_to_group.update({token_names[c]: pre for x, c in lv.items() if x != ref})
+if ref_cols:
+    drop = np.ones(token_matrix.shape[1], dtype=bool)
+    drop[ref_cols] = False
+    token_matrix = token_matrix[:, drop]
+    token_names = [t for t, k in zip(token_names, drop) if k]
+    print(
+        f"one-hot groups {sorted(onehot)} -> dropped refs {group_ref}, "
+        f"{token_matrix.shape[1]} token cols kept"
+    )
 # -
 
 # assemble feature matrix
-X = np.concatenate(
-    [token_matrix, bio_values, age[:, None]],
-    axis=1,
-)
-feature_names = token_name_list + all_bio_features + ["age"]
+X = np.concatenate([token_matrix, bio_values, age[:, None]], axis=1)
+feature_names = token_names + bio_names + ["age"]
 
 # drop participants with NaN saliency (target disease already occurred)
 valid = ~np.isnan(y)
@@ -148,33 +154,34 @@ bio_values = bio_values[valid]
 age = age[valid]
 print(f"valid (non-NaN) saliency: {valid.sum()} / {len(valid)}")
 
-# scatter: saliency vs biomarker value, with the fitted value-only spline overlaid
-raw_vals = bio_values[:, target_feature_col]
-fig, ax = plt.subplots()
-sc = ax.scatter(raw_vals, y, s=1, alpha=0.3, c=age, cmap="viridis", rasterized=True)
-fig.colorbar(sc, ax=ax, label="age (years)")
+if args.value_trim > 0:
+    feat_val = bio_values[:, target_feature_col]
+    lo, hi = np.quantile(feat_val, [args.value_trim, 1 - args.value_trim])
+    keep = (feat_val >= lo) & (feat_val <= hi)
+    X, y, bio_values, age = X[keep], y[keep], bio_values[keep], age[keep]
+    print(f"value-trim to [{lo:.3g}, {hi:.3g}]: kept {keep.sum()} / {keep.size}")
 
-# fitted value-only model: saliency ~ spline(value); overlay the smooth curve
+# overview plot: saliency vs the explained feature's value, coloured by age, with
+# the fitted value-only spline (saliency ~ cr(value)) overlaid.
+raw_vals = bio_values[:, target_feature_col]
 value_dm = patsy.dmatrix("cr(v, df=5)", {"v": raw_vals})
 value_beta, *_ = np.linalg.lstsq(np.asarray(value_dm), y, rcond=None)
 grid = np.linspace(raw_vals.min(), raw_vals.max(), 200)
-grid_dm = patsy.build_design_matrices([value_dm.design_info], {"v": grid})[0]
-ax.plot(
-    grid,
-    np.asarray(grid_dm) @ value_beta,
-    color="crimson",
-    lw=2,
-    label="fitted value spline",
+grid_curve = (
+    np.asarray(patsy.build_design_matrices([value_dm.design_info], {"v": grid})[0])
+    @ value_beta
 )
-ax.legend()
 
+fig, ax = plt.subplots()
+sc = ax.scatter(raw_vals, y, s=1, alpha=0.3, cmap="viridis", rasterized=True)
+fig.colorbar(sc, ax=ax, label="age (years)")
+ax.plot(grid, grid_curve, color="crimson", lw=2, label="fitted value spline")
+ax.legend()
 ax.set_xlabel(args.feature)
 ax.set_ylabel("saliency")
-ax.set_title(args.target)
+ax.set_title(f"{args.feature} → {args.target}")
 fig.tight_layout()
 plt.show()
-
-y.std()
 
 # +
 # regress out the biomarker value with an unpenalized natural cubic spline:
@@ -194,6 +201,8 @@ feature_names += [f"value_spline{i}" for i in range(S.shape[1])]
 print(f"X shape: {X.shape}, y shape: {y.shape}")
 
 # +
+# keep the pre-standardized design so the panels can colour by raw feature values
+X_raw = X
 # standardize
 X_mean = X.mean(axis=0)
 X_std = X.std(axis=0)
@@ -252,6 +261,96 @@ for idx in sorted_idx[::-1][:k]:
 print(f"\ntop {k} negative coefficients (decreases saliency of {args.feature}):")
 for idx in sorted_idx[:k]:
     print(f"  {w[idx]:+.4f}  {feature_names[idx]}")
+# -
+
+# +
+# Per top context feature (by |coef|, excluding the value-spline basis + intercept):
+# split participants into strata by that feature and overlay a per-stratum LOWESS
+# curve of saliency vs the explained feature's value. Separation between the curves
+# at the same x shows the model's saliency depends on context, not just the value.
+# rank context features by |coef|; collapse each one-hot group to a single entry so a
+# grouped variable (bmi/alcohol/smoking) appears as one panel, not several.
+top, seen = [], set()
+for i in np.argsort(-np.abs(w)):
+    name = feature_names[i]
+    if name == "intercept" or name.startswith("value_spline"):
+        continue
+    grp = feature_to_group.get(name)
+    if grp is not None:
+        if grp in seen:
+            continue
+        seen.add(grp)
+        top.append(("group", grp, w[i]))
+    else:
+        top.append(("feature", i, w[i]))
+    if len(top) == 5:
+        break
+
+# Feature type is implied by the design block: disease-history + lifestyle/sex
+# tokens are 0/1 (two strata), biomarker values and age are continuous (tertiles).
+token_set = set(token_names)
+# `delta` lets LOWESS interpolate between near-x points, keeping it fast on ~100k rows
+delta = 0.01 * (raw_vals.max() - raw_vals.min())
+
+
+def strata(name, vals):
+    """Strata for a single feature: levels of a binary token, else value tertiles."""
+    if name in token_set:
+        return [(f"{v:g}", vals == v) for v in np.unique(vals)]
+    lo, hi = np.quantile(vals, [1 / 3, 2 / 3])
+    return [
+        ("low", vals <= lo),
+        ("mid", (vals > lo) & (vals <= hi)),
+        ("high", vals > hi),
+    ]
+
+
+def group_strata(prefix):
+    """3-level strata for a one-hot group: each surviving level plus the dropped
+    reference (= neither level set, i.e. the reference band + the few unrecorded)."""
+    ref = group_ref[prefix]
+    cols = {
+        lv: X_raw[:, feature_names.index(f"{prefix}_{lv}")]
+        for lv in levels
+        if lv != ref and f"{prefix}_{lv}" in feature_names
+    }
+    ref_mask = np.logical_and.reduce([c == 0 for c in cols.values()])
+    out = []
+    for lv in levels:
+        if lv in cols:
+            out.append((lv, cols[lv] == 1))
+        elif lv == ref:
+            out.append((f"{lv} (ref)", ref_mask))
+    return out
+
+
+fig, axes = plt.subplots(1, len(top), figsize=(4.6 * len(top), 4.2), sharey=True)
+axes = np.atleast_1d(axes)
+for ax, (kind, key, coef) in zip(axes, top):
+    if kind == "group":
+        groups = group_strata(key)
+        label_for = key
+    else:
+        groups = strata(feature_names[key], X_raw[:, key])
+        label_for = feature_names[key]
+    colors = plt.cm.viridis(np.linspace(0.15, 0.85, len(groups)))
+    for (label, mask), color in zip(groups, colors):
+        if mask.sum() < 50:
+            continue
+        ax.scatter(
+            raw_vals[mask], y[mask], s=1, alpha=0.1, color=color, rasterized=True
+        )
+        sm = lowess(y[mask], raw_vals[mask], frac=0.3, it=0, delta=delta)
+        ax.plot(
+            sm[:, 0], sm[:, 1], color=color, lw=2.5, label=f"{label} (n={mask.sum()})"
+        )
+    ax.set_xlabel(args.feature)
+    ax.set_title(f"{label_for}  (w={coef:+.3f})")
+    ax.legend(title=label_for, fontsize=7)
+axes[0].set_ylabel("saliency")
+fig.suptitle(f"saliency of {args.feature} → {args.target}, stratified by context")
+fig.tight_layout()
+plt.show()
 # -
 
 

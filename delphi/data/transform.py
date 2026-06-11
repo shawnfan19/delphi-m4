@@ -283,6 +283,22 @@ class BiomarkerTransform:
 
         return bio_x_dict, bio_t, bio_m
 
+    def untransform(self, bio_x_dict):
+        """Map z-scored biomarker values back to raw units (inverse of __call__'s
+        z-score, ``x * std + mean``).
+
+        Accepts ``{biomarker -> array}`` with features on the last axis — e.g. a
+        single measurement vector, or the per-biomarker matrices returned by
+        BiomarkerCollator.finalize. Identity when ``z_score`` is off. Only the
+        z-score is inverted; dropout / first_time_only are not undone. NaNs (e.g.
+        absent participants) pass through unchanged.
+        """
+        if not self.z_score:
+            return bio_x_dict
+        return {
+            mod: x * self.std[mod] + self.mean[mod] for mod, x in bio_x_dict.items()
+        }
+
 
 class Prompt:
     """Instance-level prompt cutting for token sequences.

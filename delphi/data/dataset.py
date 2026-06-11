@@ -169,11 +169,18 @@ class MultimodalDataset:
         return x0, t0, bio_x_dict, bio_t, bio_m, x1, t1
 
     def get_batch(self, batch_idx: Iterable):
+        return self.collate([self[idx] for idx in batch_idx])
 
+    def collate(self, samples: Iterable):
+        """Collate ``__getitem__`` outputs into a padded batch.
+
+        Split out of ``get_batch`` so it can double as a torch ``DataLoader``
+        ``collate_fn``: workers run ``__getitem__`` (the CPU-bound prompt build)
+        and this pads/stacks their outputs into the batch tensors.
+        """
         X0, T0, X1, T1 = list(), list(), list(), list()
         bio_X_dict, bio_T, bio_M = defaultdict(list), list(), list()
-        for idx in batch_idx:
-            x0, t0, bio_x_dict, bio_t, bio_m, x1, t1 = self[idx]
+        for x0, t0, bio_x_dict, bio_t, bio_m, x1, t1 in samples:
             X0.append(x0)
             T0.append(t0)
             X1.append(x1)
