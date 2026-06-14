@@ -51,9 +51,6 @@ class TaskConfig(CliConfig):
     # Drop cases whose case_time < reader's `<filter_after>_times(pid)`.
     # E.g., "recruitment" on UKB, "first_biomarker" on AoU. None disables.
     filter_after: None | str = None
-    # If set, write the list of diseases whose c-index improved by >= 0.02
-    # (using "either" sex grouping) to this YAML path, relative to this script's dir.
-    improved_yaml: None | str = None
 
 
 args = TaskConfig.from_cli()
@@ -274,14 +271,14 @@ save_fig(fig, "topk.png")
 plt.show()
 
 # %%
-# Optionally dump the list of improved diseases (Δ c-index >= 0.02, "either" sex)
-if args.improved_yaml is not None:
+# Always dump the list of improved diseases (top-k by Δ c-index, "either" sex) as
+# improved.yaml in the write directory, alongside the figures. Requires --write.
+if OUT_DIR is not None:
     # Dump most-improved first. _topk was re-sorted ascending above for the barh
     # display, so re-sort here independently — otherwise the YAML (used as the
     # ordered `events` list for compare_forecast) comes out least-improved first.
     improved = _topk.sort_values("diff", ascending=False)["key"].tolist()
-    out_path = AnyPath(__file__).parent / args.improved_yaml
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path = OUT_DIR / "improved.yaml"
     with out_path.open("w") as f:
         yaml.dump(improved, f)
     print(f"Wrote {len(improved)} improved diseases to {out_path}")

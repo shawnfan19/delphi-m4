@@ -13,293 +13,146 @@
 #     name: python3
 # ---
 
-# %%
-import os
-import sys
+# %% [markdown]
+# # Biomarker -> disease association heatmap
+#
+# One cell per (biomarker feature, disease) = the **signed specificity** of the
+# model's saliency:
+#
+#     cell[f, d] = mean_p saliency[f, d]  /  mean_t |mean_p saliency[f, t]|
+#
+# The numerator is the mean (over participants) saliency d(log-intensity)/d(value),
+# already per-SD because the stored jacobian is taken w.r.t. the z-scored input —
+# so it is comparable across biomarkers. The denominator normalises by that
+# biomarker's average |saliency| across a baseline set of diseases (all model
+# targets, or just the listed ones), so a marker that fires for *everything*
+# (e.g. a broad morbidity signal) is divided down and a *specific* association
+# stands out. The sign carries direction; a noisy marker whose saliency averages
+# to ~0 (large magnitude, no consistent direction) is muted automatically.
 
+# %%
+from dataclasses import dataclass
+from typing import Any
+
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 from cloudpathlib import AnyPath
-from statsmodels.nonparametric.smoothers_lowess import lowess as sm_lowess
 
-from delphi.data.ukb import Biomarker
-from delphi.env import DELPHI_CKPT_DIR, DELPHI_DATA_DIR
-from delphi.experiment import load_ckpt
+from delphi.env import DELPHI_CKPT_DIR
+from delphi.experiment import CliConfig, flexi_list
 
 
 # %%
-def load_saliency(path: str | os.PathLike):
-    with np.load(AnyPath(path)) as sal:
-        return sal["jacobians"], sal["logits"], sal["pids"]
+@dataclass(kw_only=True)
+class TaskConfig(CliConfig):
+    # directory (relative to DELPHI_CKPT_DIR) holding the saliency-<panel>.npz files
+    ckpt: str = "cross-cohort/blood+urine"
+    # diseases (heatmap columns): a single token, an inline list, or a .yaml path
+    # (normalized via flexi_list). Order is preserved.
+    diseases: Any = "results/blood/improved.yaml"
+    # biomarker panels (npz stems, e.g. ["renal_panel", "cbc"]): a single name, an
+    # inline list, or a .yaml path. None = every saliency-*.npz in the ckpt dir.
+    # Rows are all features within the selected panels, in panel order.
+    biomarkers: Any = None
+    # specificity denominator: "all" = average |saliency| over every model target;
+    # "listed" = average over only the diseases above.
+    specificity_baseline: str = "all"
+    # if set, also save the figure to results/<write>/saliency_heatmap.png
+    write: None | str = None
+
+    def __post_init__(self):
+        self.diseases = flexi_list(self.diseases)
+        if self.biomarkers is not None:
+            self.biomarkers = flexi_list(self.biomarkers)
 
 
-def load_ckpt_meta(ckpt_path):
-    model, ckpt_dict = load_ckpt(ckpt_path)
-    tokenizer = ckpt_dict["tokenizer"]
-    targets = model.targets
-    targets = targets[targets != 1].cpu().numpy()
-    data_args = ckpt_dict["data_args"]
-    return tokenizer, targets, data_args
+args = TaskConfig.from_cli()
+args.print()
+assert args.specificity_baseline in ("all", "listed")
 
+# %%
+ckpt_dir = AnyPath(DELPHI_CKPT_DIR) / args.ckpt
 
-def load_biomarker(modality: str, data_args: dict) -> Biomarker:
-    return Biomarker(
-        path=AnyPath(DELPHI_DATA_DIR)
-        / "ukb_real_data"
-        / "biomarkers"
-        / modality.lower(),
-        stats_subjects=np.fromfile(
-            AnyPath(DELPHI_DATA_DIR) / "ukb_real_data" / data_args["subject_list"],
-            dtype=np.uint32,
-        ),
-        z_score=data_args.get("z_score_biomarkers", False),
+# resolve which panels (npz files) to load
+if args.biomarkers is None:
+    panels = sorted(
+        p.name[len("saliency-") : -len(".npz")] for p in ckpt_dir.glob("saliency-*.npz")
     )
+else:
+    panels = list(args.biomarkers)
+assert panels, f"no saliency-*.npz panels found under {ckpt_dir}"
+print(f"panels: {panels}")
+print(f"diseases: {len(args.diseases)}")
 
 
 # %%
-ckpt_path = AnyPath(DELPHI_CKPT_DIR) / "interpret/blood/ckpt.pt"
-saliency_path = ckpt_path.parent / "saliency-RENAL.npz"
-modality_name = "RENAL"
-
-sal_matrix, logits, pids = load_saliency(saliency_path)
-tokenizer, targets, data_args = load_ckpt_meta(ckpt_path)
-detokenizer = {v: k for k, v in tokenizer.items()}
-
-bio = load_biomarker(modality_name, data_args)
-features = bio.features
-biomarker_val, _ = bio.to_array(pids, first_time_only=True)
-bio_timesteps = bio.first_occurrence_times(pids)
-
-# %%
-sal_matrix.shape, logits.shape, biomarker_val.shape
+def load_saliency(path):
+    with np.load(AnyPath(path), allow_pickle=True) as z:
+        return z["jacobians"], z["feature_names"], z["target_names"]
 
 
 # %%
-def plot_saliency_vs_value(
-    sal_matrix: np.ndarray,
-    biomarker_values: np.ndarray,
-    feature_names: list,
-    target_idx: int,
-    target_name=None,
-    age=None,
-    n_cols=3,
-    figsize_per_subplot=(4, 3.5),
-    lowess_frac=None,
-):
-    import textwrap
+# Accumulate the signed-specificity matrix one panel at a time (panel jacobians are
+# multi-GB, so we never hold more than one in memory).
+row_labels = []  # "panel:feature"
+rows = []  # each: signed-specificity vector over the listed diseases
 
-    age_years = age / 365.25 if age is not None else None
+for panel in panels:
+    path = ckpt_dir / f"saliency-{panel}.npz"
+    jac, feat_names, target_names = load_saliency(path)  # (N, n_feat, n_targets)
+    target_names = target_names.tolist()
+    missing = [d for d in args.diseases if d not in target_names]
+    assert not missing, f"diseases not in {path.name} target_names: {missing}"
+    disease_idx = [target_names.index(d) for d in args.diseases]
 
-    k = len(feature_names)
-    n_rows = int(np.ceil(k / n_cols))
-    fig, axes = plt.subplots(
-        n_rows,
-        n_cols,
-        figsize=(figsize_per_subplot[0] * n_cols, figsize_per_subplot[1] * n_rows),
-        squeeze=False,
-        constrained_layout=True,
-    )
+    m_signed = np.nanmean(jac, axis=0)  # (n_feat, n_targets)
+    m_abs = np.nanmean(np.abs(jac), axis=0)  # (n_feat, n_targets)
+    if args.specificity_baseline == "all":
+        baseline = np.nanmean(m_abs, axis=1)  # (n_feat,) over all targets
+    else:
+        baseline = np.nanmean(m_abs[:, disease_idx], axis=1)
+    baseline = np.where(baseline > 0, baseline, np.nan)
 
-    display_name = target_name if target_name else f"target {target_idx}"
+    signed_spec = m_signed[:, disease_idx] / baseline[:, None]  # (n_feat, n_diseases)
+    for fi, fname in enumerate(feat_names.tolist()):
+        row_labels.append(fname)
+        rows.append(signed_spec[fi])
+    del jac
+    print(f"  {path.name}: {len(feat_names)} features")
 
-    for idx, feat in enumerate(feature_names):
-        row, col = divmod(idx, n_cols)
-        ax = axes[row, col]
-
-        x = biomarker_values[:, idx]
-        y = sal_matrix[:, idx, target_idx].astype(np.float32)
-
-        scatter_kw = dict(alpha=0.2, s=10, rasterized=True)
-        if age_years is not None:
-            scatter_kw.update(c=age_years, cmap="viridis")
-        else:
-            scatter_kw.update(c="steelblue")
-
-        sc = ax.scatter(x, y, **scatter_kw)
-
-        if lowess_frac is not None:
-            sort_idx = np.argsort(x)
-            smoothed = sm_lowess(y[sort_idx], x[sort_idx], frac=lowess_frac)
-            ax.plot(smoothed[:, 0], smoothed[:, 1], "r-", linewidth=2)
-
-        ax.set_xlabel(feat)
-        ax.set_ylabel("hazard ratio")
-        ax.set_title(textwrap.fill(display_name, width=25), wrap=True, pad=15)
-
-    if age_years is not None:
-        fig.colorbar(sc, ax=axes, label="age (years)")
-
-    plt.show()
-
+H = np.vstack(rows)  # (n_total_features, n_diseases)
+print(f"heatmap: {H.shape[0]} features x {H.shape[1]} diseases")
 
 # %%
+# diverging, 0-centered; robust symmetric limit so a single extreme cell doesn't
+# wash out the contrast.
+vmax = float(np.nanpercentile(np.abs(H), 98)) or float(np.nanmax(np.abs(H)))
+norm = mcolors.TwoSlopeNorm(vcenter=0.0, vmin=-vmax, vmax=vmax)
 
-# %%
-# Example usage: pick a target disease by name or index
-# target_name = "i21_(acute_myocardial_infarction)"
-# target_name = "k74_(fibrosis_and_cirrhosis_of_liver)"
-# target_name = "m10_(gout)"
-# target_name = "i20_(angina_pectoris)"
-# target_name =  'o47_(false_labour)'
-# target_name = "e11_(non-insulin-dependent_diabetes_mellitus)"
-# target_name = "n18_(chronic_renal_failure)"
-# target_name = "k70_(alcoholic_liver_disease)"
-# target_name = "d50_(iron_deficiency_anaemia)"
-# target_name = "e78_(disorders_of_lipoprotein_metabolism_and_other_lipidaemias)"
-target_name = "n18_(chronic_renal_failure)"
-target_idx = targets.tolist().index(tokenizer[target_name])
-# print(f"target: {target_name} (idx={target_idx})")
-
-plot_saliency_vs_value(
-    sal_matrix=np.exp(sal_matrix),
-    biomarker_values=biomarker_val,
-    feature_names=features,
-    target_name=target_name,
-    target_idx=target_idx,
-    age=bio_timesteps,
-    lowess_frac=0.3,
-)
-
-# %%
-# sal_matrix * np.expand_dims(np.exp(logits), axis=1)
-# sal_matrix * hazards * np.exp(-hazards * horizon) * horizon
-
-# %%
-hazards = np.expand_dims(np.exp(logits), axis=1)
-horizon = 365.25 * 5
-
-# %%
-# X = np.exp(sal_matrix)
-mean_saliency = np.exp(np.nanmean(sal_matrix, axis=0))
-
-# %%
-import pprint
-
-k = 10
-for i in range(sal_matrix.shape[1]):
-
-    saliency_per_feature = mean_saliency[i, :]
-    max_target_idx = np.argsort(saliency_per_feature)[::-1][:k]
-    max_targets = targets[max_target_idx]
-    print(features[i])
-    top_diseases = [detokenizer[j] for j in max_targets]
-    top_score = [round(float(saliency_per_feature[j]), 2) for j in max_target_idx]
-    # print(top_diseases)
-    pprint.pp(list(zip(top_diseases, top_score)))
-
-
-# %% [markdown]
-# ## Heatmap: feature saliency across diseases
-
-# %%
-import yaml
-
-disease_yaml = "diseases.yaml"  # list of disease names
-modalities = [
-    "APO",
-    "CRP",
-    "CYSC",
-    "DHT",
-    "HBA1C",
-    "IGF1",
-    "LFT",
-    "LIPID",
-    "RENAL",
-    "SHBG",
-    "URATE",
-    "VITD",
-    "WBC",
-]
-saliency_files = [f"saliency-{modality}-ckpt-ckpt.npz" for modality in modalities]
-
-# %%
-with open(disease_yaml) as f:
-    disease_list = yaml.safe_load(f)
-
-ckpt_path = AnyPath(DELPHI_CKPT_DIR) / "delphi-m4/blood/ckpt.pt"
-tokenizer, targets, data_args = load_ckpt_meta(ckpt_path)
-
-# resolve disease token indices once
-disease_indices = [targets.tolist().index(tokenizer[d]) for d in disease_list]
-
-all_features = []
-all_mean_saliency = []  # each entry: (n_features, n_diseases)
-all_var_saliency = []
-
-for modality_name, sal_file in zip(modalities, saliency_files):
-    jacobians, _, _ = load_saliency(ckpt_path.parent / sal_file)
-    bio = load_biomarker(modality_name, data_args)
-
-    # jacobians: (N, n_features, n_targets) — scale from z-score to raw units
-    mean_sal = np.nanmean(jacobians, axis=0)  # (n_features, n_targets)
-    mean_sal = mean_sal * bio.std[:, np.newaxis]
-    var_sal = np.nanvar(jacobians, axis=0)
-    var_sal = var_sal * (bio.std[:, np.newaxis] ** 2)
-
-    mean_sal = mean_sal[:, disease_indices]  # (n_features, n_diseases)
-    var_sal = var_sal[:, disease_indices]
-
-    all_features.extend(bio.features)
-    all_mean_saliency.append(mean_sal)
-    all_var_saliency.append(var_sal)
-
-heatmap_data = np.concatenate(all_mean_saliency, axis=0)  # (total_features, n_diseases)
-var_heatmap_data = np.concatenate(
-    all_var_saliency, axis=0
-)  # (total_features, n_diseases)
-
-# %%
-
-# %%
-heatmap = heatmap_data
-
-# %%
-heatmap = np.clip(heatmap_data, max=2)
-
-# %%
 fig, ax = plt.subplots(
-    figsize=(max(6, len(all_features) * 0.8), max(4, len(disease_list) * 0.4))
+    figsize=(max(6, 0.55 * H.shape[1] + 4), max(4, 0.30 * H.shape[0] + 1))
 )
-norm = plt.matplotlib.colors.TwoSlopeNorm(vcenter=1.0)
-im = ax.imshow(np.exp(heatmap).T, aspect="auto", cmap="RdBu_r", norm=norm)
-ax.set_xticks(range(len(all_features)))
-ax.set_xticklabels(all_features, rotation=45, ha="right", fontsize=8)
-ax.set_yticks(range(len(disease_list)))
-ax.set_yticklabels(disease_list, fontsize=8)
-ax.set_xlabel("Feature")
-ax.set_ylabel("Disease")
-fig.colorbar(im, ax=ax, label="Mean saliency (hazard ratio)")
-fig.suptitle("Biomarker feature saliency across diseases")
-plt.tight_layout()
-plt.show()
-
-# %%
-fig, ax = plt.subplots(
-    figsize=(max(6, len(all_features) * 0.8), max(4, len(disease_list) * 0.4))
+im = ax.imshow(H, aspect="auto", cmap="RdBu_r", norm=norm)
+ax.set_xticks(range(H.shape[1]))
+ax.set_xticklabels(args.diseases, rotation=45, ha="right", fontsize=7)
+ax.set_yticks(range(H.shape[0]))
+ax.set_yticklabels(row_labels, fontsize=7)
+ax.set_xlabel("disease")
+ax.set_ylabel("biomarker feature")
+fig.colorbar(
+    im, ax=ax, label="signed specificity (mean saliency / cross-disease avg |saliency|)"
 )
-im = ax.imshow(var_heatmap_data.T, aspect="auto", cmap="YlOrRd")
-ax.set_xticks(range(len(all_features)))
-ax.set_xticklabels(all_features, rotation=45, ha="right", fontsize=8)
-ax.set_yticks(range(len(disease_list)))
-ax.set_yticklabels(disease_list, fontsize=8)
-ax.set_xlabel("Feature")
-ax.set_ylabel("Disease")
-fig.colorbar(im, ax=ax, label="Jacobian variance")
-fig.suptitle("Saliency variance across participants (nonlinearity indicator)")
-plt.tight_layout()
+ax.set_title(
+    f"Biomarker->disease association ({args.ckpt}, baseline={args.specificity_baseline})"
+)
+fig.tight_layout()
+
+if args.write is not None:
+    out_dir = AnyPath(__file__).resolve().parents[1] / "results" / args.write
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "saliency_heatmap.png"
+    with out_path.open("wb") as f:
+        fig.savefig(f, format="png", bbox_inches="tight", dpi=200)
+    print(f"saved {out_path}")
 plt.show()
-
-# %%
-import matplotlib.pyplot as plt
-
-x_lst = list()
-y_lst = list()
-for i in range(mean_saliency.shape[0]):
-    y_lst.append(mean_saliency[i, :])
-    x_lst.append(2 * i + np.random.rand(y.size))
-
-plt.scatter(x_lst, y_lst)
-
-# %%
-
-# %%

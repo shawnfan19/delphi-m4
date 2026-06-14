@@ -1,4 +1,5 @@
 # +
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -49,10 +50,34 @@ class TaskConfig(CliConfig):
     lam: float = 0.1
     top_k: int = 20
     value_trim: float = 0.01
+    # response scale: "log" = d(log-intensity)/d value (saliency); "intensity" =
+    # d(intensity)/d value = lambda * saliency. Selects y for ALL plots + regression.
+    scale: str = "log"
+    # if set, write the figures as PNGs here (relative to DELPHI_CKPT_DIR unless
+    # absolute) instead of plt.show(); filenames are built from feature/target/scale.
+    figdir: None | str = None
 
 
 args = TaskConfig.from_cli()
 args.print()
+
+
+def emit(fig, kind):
+    """Save ``fig`` under args.figdir (named by feature/target/scale) or plt.show()."""
+    if not args.figdir:
+        plt.show()
+        return
+    figdir = Path(args.figdir)
+    if not figdir.is_absolute():
+        figdir = Path(DELPHI_CKPT_DIR) / figdir
+    figdir.mkdir(parents=True, exist_ok=True)
+    safe = lambda s: re.sub(r"[^0-9a-zA-Z]+", "_", s).strip("_")
+    path = (
+        figdir / f"{safe(args.feature)}__{safe(args.target)}__{args.scale}__{kind}.png"
+    )
+    fig.savefig(path, dpi=120, bbox_inches="tight")
+    print(f"saved figure: {path}")
+
 
 # +
 # load the saliency artifact: jacobians + the covariate context that
@@ -89,10 +114,20 @@ assert args.target in target_names, f"{args.target!r} not among the saved target
 feature_idx = feat_suffixes.index(args.feature)
 target_idx = target_names.index(args.target)
 target_feature_col = bio_names.index(feat_axis[feature_idx])
-print(f"explaining saliency of {args.feature} → {args.target}")
+assert args.scale in ("log", "intensity"), f"unknown scale {args.scale!r}"
+print(f"explaining {args.feature} → {args.target} ({args.scale} scale)")
 
-# y: saliency of the chosen feature → target, per participant
-y = sal["jacobians"][:, feature_idx, target_idx].copy()
+# y: response on the chosen scale — "log" = saved saliency d(log-intensity)/d value;
+# "intensity" = lambda * saliency (lambda = exp(target logit)). All plots + the
+# regression below use this y.
+saliency = sal["jacobians"][:, feature_idx, target_idx].copy()
+logit = sal["logits"][:, target_idx].copy()  # target log-intensity (= log lambda)
+if args.scale == "intensity":
+    y = np.exp(logit) * saliency
+else:
+    y = saliency
+response_label = "saliency" if args.scale == "log" else "absolute change in intensity"
+yscale = "linear" if args.scale == "log" else "log"
 
 # +
 # rebuild the design matrix from the saved covariate context (disease-history
@@ -150,6 +185,7 @@ feature_names = token_names + bio_names + ["age"]
 valid = ~np.isnan(y)
 X = X[valid]
 y = y[valid]
+logit = logit[valid]
 bio_values = bio_values[valid]
 age = age[valid]
 print(f"valid (non-NaN) saliency: {valid.sum()} / {len(valid)}")
@@ -158,30 +194,41 @@ if args.value_trim > 0:
     feat_val = bio_values[:, target_feature_col]
     lo, hi = np.quantile(feat_val, [args.value_trim, 1 - args.value_trim])
     keep = (feat_val >= lo) & (feat_val <= hi)
-    X, y, bio_values, age = X[keep], y[keep], bio_values[keep], age[keep]
+    X, y, logit, bio_values, age = (
+        X[keep],
+        y[keep],
+        logit[keep],
+        bio_values[keep],
+        age[keep],
+    )
     print(f"value-trim to [{lo:.3g}, {hi:.3g}]: kept {keep.sum()} / {keep.size}")
 
-# overview plot: saliency vs the explained feature's value, coloured by age, with
-# the fitted value-only spline (saliency ~ cr(value)) overlaid.
+
+def fit_value_spline(values, response, df=5, n_grid=200):
+    """Fit ``response ~ cr(value, df)``; return ``(grid, fitted curve)``."""
+    dm = patsy.dmatrix(f"cr(v, df={df})", {"v": values})
+    beta, *_ = np.linalg.lstsq(np.asarray(dm), response, rcond=None)
+    grid = np.linspace(values.min(), values.max(), n_grid)
+    design = patsy.build_design_matrices([dm.design_info], {"v": grid})[0]
+    return grid, np.asarray(design) @ beta
+
+
+# overview plot: the response vs the explained feature's value, with the fitted
+# value-only spline overlaid.
 raw_vals = bio_values[:, target_feature_col]
-value_dm = patsy.dmatrix("cr(v, df=5)", {"v": raw_vals})
-value_beta, *_ = np.linalg.lstsq(np.asarray(value_dm), y, rcond=None)
-grid = np.linspace(raw_vals.min(), raw_vals.max(), 200)
-grid_curve = (
-    np.asarray(patsy.build_design_matrices([value_dm.design_info], {"v": grid})[0])
-    @ value_beta
-)
+grid, grid_curve = fit_value_spline(raw_vals, y)
 
 fig, ax = plt.subplots()
-sc = ax.scatter(raw_vals, y, s=1, alpha=0.3, cmap="viridis", rasterized=True)
-fig.colorbar(sc, ax=ax, label="age (years)")
+sc = ax.scatter(raw_vals, y, c=logit, s=1, alpha=0.1, cmap="viridis", rasterized=True)
+fig.colorbar(sc, ax=ax, label="target logit (log-intensity)")
 ax.plot(grid, grid_curve, color="crimson", lw=2, label="fitted value spline")
 ax.legend()
 ax.set_xlabel(args.feature)
-ax.set_ylabel("saliency")
+ax.set_ylabel(response_label)
+ax.set_yscale(yscale)
 ax.set_title(f"{args.feature} → {args.target}")
 fig.tight_layout()
-plt.show()
+emit(fig, "overview")
 
 # +
 # regress out the biomarker value with an unpenalized natural cubic spline:
@@ -254,11 +301,15 @@ print(f"context beyond value        = {r2 - r2_0:.4f}")
 k = args.top_k
 sorted_idx = np.argsort(w)
 
-print(f"\ntop {k} positive coefficients (increases saliency of {args.feature}):")
+print(
+    f"\ntop {k} positive coefficients (increases {response_label} of {args.feature}):"
+)
 for idx in sorted_idx[::-1][:k]:
     print(f"  {w[idx]:+.4f}  {feature_names[idx]}")
 
-print(f"\ntop {k} negative coefficients (decreases saliency of {args.feature}):")
+print(
+    f"\ntop {k} negative coefficients (decreases {response_label} of {args.feature}):"
+)
 for idx in sorted_idx[:k]:
     print(f"  {w[idx]:+.4f}  {feature_names[idx]}")
 # -
@@ -289,8 +340,6 @@ for i in np.argsort(-np.abs(w)):
 # Feature type is implied by the design block: disease-history + lifestyle/sex
 # tokens are 0/1 (two strata), biomarker values and age are continuous (tertiles).
 token_set = set(token_names)
-# `delta` lets LOWESS interpolate between near-x points, keeping it fast on ~100k rows
-delta = 0.01 * (raw_vals.max() - raw_vals.min())
 
 
 def strata(name, vals):
@@ -337,20 +386,24 @@ for ax, (kind, key, coef) in zip(axes, top):
     for (label, mask), color in zip(groups, colors):
         if mask.sum() < 50:
             continue
-        ax.scatter(
-            raw_vals[mask], y[mask], s=1, alpha=0.1, color=color, rasterized=True
-        )
-        sm = lowess(y[mask], raw_vals[mask], frac=0.3, it=0, delta=delta)
-        ax.plot(
-            sm[:, 0], sm[:, 1], color=color, lw=2.5, label=f"{label} (n={mask.sum()})"
-        )
+        xm, ym = raw_vals[mask], y[mask]
+        ax.scatter(xm, ym, s=1, alpha=0.01, color=color, rasterized=True)
+        # smooth LOWESS evaluated on a grid over the stratum's supported range
+        # (2-98th pct), not at the discrete/sparse data values, so the curve stays
+        # smooth and isn't drawn into the noisy tail; it=1 adds outlier robustness.
+        g = np.linspace(*np.quantile(xm, [0.02, 0.98]), 80)
+        sm = lowess(ym, xm, xvals=g, frac=0.4, it=1)
+        ax.plot(g, sm, color=color, lw=2.5, label=f"{label} (n={mask.sum()})")
     ax.set_xlabel(args.feature)
+    ax.set_yscale(yscale)
     ax.set_title(f"{label_for}  (w={coef:+.3f})")
     ax.legend(title=label_for, fontsize=7)
-axes[0].set_ylabel("saliency")
-fig.suptitle(f"saliency of {args.feature} → {args.target}, stratified by context")
+axes[0].set_ylabel(response_label)
+fig.suptitle(
+    f"{response_label} of {args.feature} → {args.target}, stratified by context"
+)
 fig.tight_layout()
-plt.show()
+emit(fig, "strata")
 # -
 
 
