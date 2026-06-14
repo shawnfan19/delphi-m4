@@ -41,7 +41,7 @@ from scipy.stats import pearsonr, spearmanr
 
 from delphi.data.ukb import UKBReader
 from delphi.env import DELPHI_CKPT_WRITE
-from delphi.experiment import CliConfig
+from delphi.experiment import CliConfig, match_unique
 
 mpl.rcParams["figure.dpi"] = 300
 
@@ -102,22 +102,15 @@ for chapter in pd.unique(col_chapter[valid]):
     cols = np.flatnonzero(col_chapter == chapter)
     chapter_sums[chapter] = intensities[:, cols].sum(axis=1)
 
-# Resolve the reference chapter (y-axis) by case-insensitive substring of the
-# full or short chapter name. Must match exactly one chapter, else error with the
-# candidate list so an ambiguous query (e.g. "i") can't silently pick wrong.
-ref_q = args.reference_chapter.lower()
-ref_matches = [
-    c
-    for c in chapter_sums
-    if ref_q in str(c).lower()
-    or ref_q in str(chapter_meta.loc[c, "ICD-10 Chapter (short)"]).lower()
-]
-if len(ref_matches) != 1:
-    raise SystemExit(
-        f"reference_chapter={args.reference_chapter!r} matched {len(ref_matches)}: "
-        f"{sorted(ref_matches)} — be more specific"
-    )
-(ref_chapter,) = ref_matches
+# Resolve the reference chapter (y-axis) by case-insensitive substring of the full
+# or short chapter name; must match exactly one chapter (else error with the
+# candidates). full+short joined by newline so a query can't span the boundary.
+ref_chapter = match_unique(
+    args.reference_chapter,
+    chapter_sums,
+    key=lambda c: f"{c}\n{chapter_meta.loc[c, 'ICD-10 Chapter (short)']}",
+    label="reference_chapter",
+)
 ref_short = chapter_meta.loc[ref_chapter, "ICD-10 Chapter (short)"]
 ref_color = chapter_meta.loc[ref_chapter, "color"]
 ref_cols = np.flatnonzero(col_chapter == ref_chapter)  # vocab cols of the ref chapter

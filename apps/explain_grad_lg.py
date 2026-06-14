@@ -10,7 +10,7 @@ import torch
 from statsmodels.nonparametric.smoothers_lowess import lowess
 
 from delphi.env import DELPHI_CKPT_DIR
-from delphi.experiment import CliConfig
+from delphi.experiment import CliConfig, match_unique
 
 
 def load_saliency(path):
@@ -44,6 +44,7 @@ def load_saliency(path):
 class TaskConfig(CliConfig):
     saliency: str = "interpret/blood/saliency-RENAL.npz"  # relative to DELPHI_CKPT_DIR
     feature: str = "creatinine"
+    # disease: a case-insensitive substring of a target name; must match exactly one
     target: str = "n18_(chronic_renal_failure)"
     # per-sample ridge penalty on the unit-scale standardized design;
     # lam ~ (1 - rho) sets the feature correlation it meaningfully shrinks.
@@ -110,7 +111,8 @@ target_names = sal["target_names"].tolist()  # jacobian target axis
 bio_names = sal["bio_names"].tolist()  # bio_values columns ("modality:feature")
 feat_suffixes = [f.split(":", 1)[1] for f in feat_axis]
 assert args.feature in feat_suffixes, f"{args.feature!r} not in {feat_suffixes}"
-assert args.target in target_names, f"{args.target!r} not among the saved targets"
+# resolve the disease target by case-insensitive substring (exactly one match)
+args.target = match_unique(args.target, target_names, label="disease")
 feature_idx = feat_suffixes.index(args.feature)
 target_idx = target_names.index(args.target)
 target_feature_col = bio_names.index(feat_axis[feature_idx])

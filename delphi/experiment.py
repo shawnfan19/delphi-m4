@@ -594,6 +594,28 @@ def flexi_list(panel):
         raise ValueError
 
 
+def match_unique(query, choices, *, key=None, label="value"):
+    """Resolve a CLI argument to the one element of ``choices`` whose text
+    contains ``query`` as a case-insensitive substring.
+
+    ``key`` maps a choice to the string searched (default: the choice itself), so
+    callers can match against a derived/concatenated field. Raises ``SystemExit``
+    (a clean CLI message, no traceback) when the query is ambiguous (>1) or
+    unmatched (0), listing the matches so it can't silently mis-pick. An exact
+    full name still matches only itself.
+    """
+    choices = list(choices)
+    to_text = key or (lambda c: c)
+    q = query.lower()
+    matches = [c for c in choices if q in str(to_text(c)).lower()]
+    if len(matches) != 1:
+        raise SystemExit(
+            f"{label}={query!r} matched {len(matches)} of {len(choices)} candidates "
+            f"{sorted(map(str, matches))}; need exactly one — be more specific"
+        )
+    return matches[0]
+
+
 def load_json(json_path):
     with AnyPath(json_path).open() as f:
         data = json.load(f)
