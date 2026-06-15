@@ -50,12 +50,11 @@ ckpt_path = AnyPath(DELPHI_CKPT_READ) / args.parquet
 out_dir = AnyPath(str(ckpt_path.parent).replace(DELPHI_CKPT_READ, DELPHI_CKPT_WRITE))
 min_events = args.min
 
-reader = UKBReader()
-
 with ckpt_path.open("rb") as f:
     df = pd.read_parquet(f, engine="pyarrow")
 
 if args.after_recruit:
+    reader = UKBReader()
     pids = df["participant_id"].unique()
     recruit = dict(zip(pids, reader.recruitment_times(pids)))
     df = df.assign(
