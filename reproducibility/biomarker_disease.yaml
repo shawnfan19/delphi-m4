@@ -1,32 +1,93 @@
 # Disease → biomarker feature pairs for plot/data/biomarker_distribution.py.
-# Diseases are token names from the shared UKB/AoU tokenizer.
-# Features are shared names from data/biomarker.yaml (present in both datasets).
+#
+# Source disease list: results/blood/improved.yaml (20 diseases).
+# Selection criterion: include only pairs where the biomarker is expected
+# to change MEASURABLY under standard-of-care therapy for the disease.
+# This is the prerequisite for the "treatment-bias inversion" the script
+# is designed to visualise — without a real treatment effect, the
+# pre-disease subset shouldn't differ systematically from the full case
+# set.
+#
+# Feature names must exist in the shared UKB/AoU panel (data/biomarker.yaml).
+#
+# Diseases from improved.yaml that are NOT included here, with reason:
+#   e80 — porphyrin/bilirubin: most variants don't normalise bilirubin with tx
+#   k74 — cirrhosis: biomarkers reflect ongoing damage; rarely reverse
+#   d73 — diseases of spleen: too heterogeneous
+#   d75 — other blood diseases: catch-all
+#   n62 — breast hypertrophy: surgical, no blood-panel marker
+#   c67 — bladder neoplasm: chemo/surgery don't reliably shift blood panel
+#   k26 — duodenal ulcer: Hb relevant only if bleeding; too situational
+#   d64 — other anaemias: catch-all
 
+# Lipid disorders — statins lower LDL/cholesterol; fibrates lower
+# triglycerides; apoB tracks LDL-cholesterol.
 e78_(disorders_of_lipoprotein_metabolism_and_other_lipidaemias):
   - cholesterol
-  - hdl
   - ldl_direct
+  - hdl
   - triglycerides
+  - apolipoprotein_b
 
+# Type 2 diabetes — metformin / insulin / GLP-1 etc. lower HbA1c and glucose.
 e11_(non-insulin-dependent_diabetes_mellitus):
   - glycated_haemoglobin
+  - glucose
 
+# Unspecified diabetes — same treatment-responsive biomarkers as e11.
 e14_(unspecified_diabetes_mellitus):
   - glycated_haemoglobin
+  - glucose
 
+# Gout — allopurinol / febuxostat / probenecid lower serum urate.
 m10_(gout):
   - urate
 
+# CKD — RRT (dialysis) lowers urea/creatinine/cystatin_c transiently;
+# disease-specific tx (e.g., for diabetic nephropathy) can stabilise them.
 n18_(chronic_renal_failure):
-  - cystatin_c
   - creatinine
+  - cystatin_c
+  - urea
 
+# Same panel for unspecified renal failure.
 n19_(unspecified_renal_failure):
-  - cystatin_c
   - creatinine
+  - cystatin_c
+  - urea
 
+# Parathyroid disorders — cinacalcet / parathyroidectomy lower serum Ca in
+# hyperPT; calcium + active-vitD analogues raise it in hypoPT. Phosphate
+# is co-regulated by PTH and shifts in the opposite direction.
+e21_(hyperparathyroidism_and_other_disorders_of_parathyroid_gland):
+  - calcium
+  - phosphate
+
+# Iron-deficiency anaemia — iron repletion raises Hb and normalises MCV.
+d50_(iron_deficiency_anaemia):
+  - haemoglobin_concentration
+  - mean_corpuscular_volume
+
+# Folate-deficiency anaemia — folate supplementation raises Hb and
+# normalises MCV (macrocytic → normocytic).
+d52_(folate_deficiency_anaemia):
+  - haemoglobin_concentration
+  - mean_corpuscular_volume
+
+# Alcoholic liver disease — abstinence normalises GGT and AST within
+# weeks-to-months (GGT half-life ~26 d; AST falls in parallel).
 k70_(alcoholic_liver_disease):
   - gamma_glutamyltransferase
+  - aspartate_aminotransferase
 
-k74_(fibrosis_and_cirrhosis_of_liver):
-  - gamma_glutamyltransferase
+# Lymphoid leukaemia — chemotherapy / targeted therapy dramatically reduces
+# lymphocyte counts and total WBC.
+c91_lymphoid_leukaemia:
+  - lymphocyte_count
+  - white_blood_cell_count
+
+# Nasal polyposis — intranasal/systemic corticosteroids reduce eosinophilic
+# inflammation; peripheral eosinophil counts also respond, especially with
+# biologics (anti-IL-5, dupilumab).
+j33_(nasal_polyp):
+  - eosinophill_count
