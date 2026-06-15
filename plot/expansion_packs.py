@@ -23,15 +23,14 @@ mpl.rcParams["figure.dpi"] = 300
 @dataclass(kw_only=True)
 class TaskConfig(CliConfig):
     packs: list[str] = field(default_factory=list)
+    write: str = "results/expansion_packs"
 
 
 args = TaskConfig.from_cli()
 args.print()
 
 dataset_name = os.environ.get("DELPHI_DATASET") or detect_dataset()
-OUT_DIR = (
-    Path(__file__).resolve().parents[1] / "results" / "expansion_packs" / dataset_name
-)
+OUT_DIR = Path(args.write) / dataset_name
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 mm_cls = multimodal_reader_cls()
