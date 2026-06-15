@@ -34,6 +34,114 @@ This project uses a memory-efficient flat-file storage scheme for patient event 
 
 ---
 
+## AoU Storage and Cross-Dataset Alignment (UKB ↔ AoU)
+
+The repo supports two datasets — UK Biobank and All of Us — and the
+data layer is designed so downstream code (eval scripts, model training,
+plotting) can run dataset-agnostically against either via
+`delphi.data.auto.multimodal_reader_cls()`. Alignment is enforced at
+three levels.
+
+### Storage layout — UKB vs AoU side by side
+
+| Aspect | UKB | AoU |
+|--------|-----|-----|
+| Base dir | `data/ukb_real_data/` | `data/aou_uk/` |
+| Token stream | `data.bin` + `time.bin` (`uint32` flat arrays) + `p2i.csv` (`pid, start_pos, seq_len`) | `data.parquet` (rows: `person_id, age_in_days, token`); indexed at load time via `np.unique` |
+| Biomarker storage | `biomarkers/{name}/data.bin` (float32) + `features.yaml` + `p2i.csv` (`pid, visit, start_pos, seq_len, time`) | `biomarkers/{name}/data.parquet` (columns: `person_id, age_in_days`, plus per-feature `{feat}` and `{feat}_raw_value/_unit_id/_unit_name/_concept_id/_concept_name`) |
+| Expansion packs | `expansion_packs/{name}/{data.bin, time.bin, p2i.csv, tokenizer.yaml}` | `expansion_packs/{name}/{data.parquet, tokenizer.yaml}` |
+
+Despite the different on-disk formats, both reader classes expose the
+same Python interface (`__getitem__(pid) -> (tokens, times)`, `seq_len`,
+`start_pos`, `tokenizer`, `participants(fold)`). Multimodal readers share
+`__getitem__`'s 5-tuple return contract.
+
+### Disease token alignment
+
+Both datasets use the **same tokenizer** — AoU's vocabulary is a strict
+subset of UKB's:
+
+- UKB tokens are generated from `data/ukb_real_data/labels.csv` via
+  `notebook/df2yml.py` → lowercase `e78_(disorders_of_lipoprotein_...)`
+  form, one ICD-10 3-char prefix per token.
+- `delphi/data/aou/core.py:335-343` extracts the ICD-10 prefix (regex
+  `[a-z]\d{2}`) from the UKB tokenizer keys and matches AoU's
+  SNOMED→ICD-10 path to those tokens. AoU-only codes are dropped;
+  unmappable codes are logged to `aou_uk/missing_icd_codes.yaml`.
+
+**Practical implication**: a token name like
+`e78_(disorders_of_lipoprotein_metabolism_and_other_lipidaemias)` resolves
+to a token in BOTH `data/ukb_real_data/tokenizer.yaml` AND
+`data/aou_uk/tokenizer.yaml`. Cross-dataset comparisons keyed on disease
+token names work without translation.
+
+### Biomarker alignment
+
+`data/biomarker.yaml` is the master cross-reference between UKB field
+IDs and AoU OMOP concept IDs. Each biomarker entry has dual keys:
+
+```yaml
+cholesterol:
+  ukb: 30690                # UKB field ID
+  aou:
+    id: [3027114]           # OMOP concept ID(s)
+    unit: {8840: 0.02586}   # unit conversion factor → mmol/L
+  range: [0, 20]            # QC bounds (post-conversion)
+```
+
+Both prep pipelines (`data/ukb/codon/gather.py` for UKB;
+`delphi/data/aou/biomarker.py` for AoU) consume this YAML and produce
+files where:
+- Feature names are identical across datasets (`cholesterol`, `hdl`,
+  `ldl_direct`, `triglycerides`, etc.).
+- Numeric values are in the same units (e.g., mmol/L for lipids).
+- Plausibility-range bounds are applied identically.
+
+**Modality directory naming** differs slightly between datasets. UKB has
+`lipid/` (6 features: cholesterol, hdl, ldl_direct, triglycerides,
+apolipoprotein_a, apolipoprotein_b). AoU has `lipid_panel/` (4 features:
+cholesterol, hdl, ldl_direct, triglycerides — common subset). Callers
+that need to work across datasets should resolve the modality via the
+dataset's panel YAML (`data/panel/aou.yaml`) or by searching the active
+reader's `biomarkers` dict, not by hardcoding the dir name.
+
+**Distribution shifts** between datasets at the feature level are
+documented in `data/aou/biomarker_stats.md`; e.g., cholesterol shows
+~−0.82σ in AoU vs UKB (likely reflecting statin therapy prevalence in
+the AoU cohort). This is the kind of artifact downstream analyses need
+to account for.
+
+### Expansion-pack alignment
+
+Each pack's tokenizer is shared across datasets:
+
+- UKB writes the canonical tokenizer (e.g.,
+  `data/ukb/dictionary/prescriptions_tokenizer.yaml`,
+  `ops_tokenizer.yaml`).
+- AoU's `delphi/data/aou/medications.py:69` and `operations.py:62` load
+  these UKB tokenizers directly. AoU-only codes are dropped; shared
+  codes get identical local token IDs across datasets.
+
+**Practical implication**: expansion-pack token IDs (within an
+offset-adjusted merged vocab) are directly comparable across UKB and AoU.
+
+### Pair-list convention for cross-dataset analyses
+
+For analyses that iterate (disease, biomarker_feature) pairs (e.g.,
+`plot/data/expansion_packs.py`, biomarker-distribution-by-disease
+plots), pairs can be specified dataset-agnostically:
+
+- Disease: a token name from the shared tokenizer (e.g.,
+  `e78_(disorders_of_lipoprotein_metabolism_and_other_lipidaemias)`).
+- Biomarker feature: a feature name shared across modalities (e.g.,
+  `ldl_direct`).
+
+The script resolves the modality directory per-dataset (`lipid` for UKB,
+`lipid_panel` for AoU) by searching the active dataset's biomarker
+catalog.
+
+---
+
 ## Preprocessing Pipeline
 
 `__getitem__` applies transforms in a specific order. Each step has a corresponding `identity_transform` fallback when disabled.

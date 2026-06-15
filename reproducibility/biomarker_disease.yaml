@@ -1,0 +1,32 @@
+# Disease → biomarker feature pairs for plot/data/biomarker_distribution.py.
+# Diseases are token names from the shared UKB/AoU tokenizer.
+# Features are shared names from data/biomarker.yaml (present in both datasets).
+
+e78_(disorders_of_lipoprotein_metabolism_and_other_lipidaemias):
+  - cholesterol
+  - hdl
+  - ldl_direct
+  - triglycerides
+
+e11_(non-insulin-dependent_diabetes_mellitus):
+  - glycated_haemoglobin
+
+e14_(unspecified_diabetes_mellitus):
+  - glycated_haemoglobin
+
+m10_(gout):
+  - urate
+
+n18_(chronic_renal_failure):
+  - cystatin_c
+  - creatinine
+
+n19_(unspecified_renal_failure):
+  - cystatin_c
+  - creatinine
+
+k70_(alcoholic_liver_disease):
+  - gamma_glutamyltransferase
+
+k74_(fibrosis_and_cirrhosis_of_liver):
+  - gamma_glutamyltransferase
