@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # Sweep plot/data/biomarker_distribution.py over a curated set of
-# (disease, biomarker_feature) pairs across UKB and AoU.
+# (disease, biomarker_feature) pairs on the active dataset.
 #
-# Each pair produces one PNG per dataset under
-# results/biomarker_disease/{ukb,aou}/{disease_short}_{feature}.png with two
-# subplots: all-cases vs cases-where-biomarker-was-measured-pre-diagnosis.
+# Each pair produces one PNG under
+# results/biomarker_disease/{dataset_name}/{disease_short}_{feature}.png
+# with two subplots: all-cases vs cases-where-biomarker-was-measured-pre-
+# diagnosis.
+#
+# Dataset is auto-detected by delphi.data.auto.detect_dataset() — any one
+# compute platform hosts a single dataset (UKB or AoU). Re-run this script
+# on the other platform to fill in the comparison.
 #
 # Pairs are listed in the co-located biomarker_disease.yaml. The shell reads
 # the YAML via inline Python — it does not accept the YAML as a CLI arg, but
@@ -28,9 +33,7 @@ EOF
 )
 
 while IFS=$'\t' read -r DISEASE FEATURE; do
-    for DATASET in ukb aou; do
-        echo "=== $DATASET / $DISEASE / $FEATURE ==="
-        DELPHI_DATASET="$DATASET" python plot/data/biomarker_distribution.py \
-            "disease=$DISEASE" "feature=$FEATURE"
-    done
+    echo "=== $DISEASE / $FEATURE ==="
+    python plot/data/biomarker_distribution.py \
+        "disease=$DISEASE" "feature=$FEATURE"
 done <<< "$PAIRS"
