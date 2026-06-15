@@ -137,9 +137,8 @@ _df = _df.join(_icd_meta, on="icd")
 _df["chapter"] = _df["chapter"].fillna("Unknown")
 
 chapter_table = (
-    _df.groupby("chapter")
-    .agg(n_diseases=("val", "size"), mean_c_index=("val", "mean"))
-    .sort_values("mean_c_index", ascending=False)
+    _df.groupby("chapter").agg(n_diseases=("val", "size"), mean_c_index=("val", "mean"))
+    # .sort_values("mean_c_index", ascending=False)
 )
 print("\nPer-chapter mean c-index:")
 print(chapter_table.to_string(float_format=lambda x: f"{x:.3f}"))
