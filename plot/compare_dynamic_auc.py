@@ -183,7 +183,7 @@ for p in args.parquets:
     paths.append(path)
     dfs.append(df)
 
-labels = args.labels or [p.stem for p in paths]
+labels = args.labels or [p.parent.stem for p in paths]
 # Baseline = black (emphasized via thicker line); non-baseline parquets use tab10.
 _tab10 = list(mpl.colormaps["tab10"].colors)
 colors = ["black"] + _tab10[: len(dfs) - 1]
@@ -290,13 +290,13 @@ for icd in icd_list:
                 label=f"{labels[i]} (n={len(s)})",
             )
         ax.axhline(0.5, color="grey", linestyle="--", linewidth=0.8)
-        ax.set_xlabel(xlabel)
+        ax.set_xlabel(xlabel, fontsize=14)
         ax.set_title(sex)
         ax.set_ylim(0.4, 1.0)
-        ax.legend(fontsize=8)
+        ax.legend(fontsize=14)
 
-    axes[0].set_ylabel("I/D AUC")
-    fig.suptitle(f"{icd} — Dynamic AUC ({mode_str})")
+    axes[0].set_ylabel("I/D AUC", fontsize=14)
+    fig.suptitle(f"{icd} — Incident/Dynamic AUC", fontsize=20)
     fig.tight_layout()
 
     out_path = out_dir / f"{icd}.png"
@@ -331,7 +331,7 @@ for ax, (sex, _) in zip(axes, panels):
     ax.legend(fontsize=8)
 
 axes[0].set_ylabel("I/D AUC")
-fig.suptitle(f"Mean across {n_diseases} diseases ({mode_str})")
+fig.suptitle(f"Mean across {n_diseases} diseases")
 fig.tight_layout()
 
 out_path = out_dir / "summary.png"
