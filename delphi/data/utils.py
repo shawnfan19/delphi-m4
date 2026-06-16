@@ -377,9 +377,19 @@ def list_subdirs(base_dir, marker: str) -> list[str]:
     Returns [] if `base_dir` does not exist (e.g. a dataset with no expansion
     packs), so callers can treat the result uniformly. Works on both
     pathlib.Path and cloudpathlib.AnyPath.
+
+    We discover children via `glob("*/<marker>")` rather than
+    `iterdir()` + per-child probing. On cloud backends (cloudpathlib GS/S3),
+    `iterdir()` is driven by a *delimiter* listing whose server-computed
+    "directory" set (`list_blobs(delimiter="/").prefixes`) was observed to
+    deterministically return an incomplete set on an AoU clone bucket — e.g.
+    14 of 21 biomarker dirs, the same 7 missing every run, even though each
+    missing dir's `data.parquet` was directly readable. `glob("*/<marker>")`
+    instead uses a recursive, *non-delimiter* key scan (`list_blobs(prefix=...)`
+    over real object keys), which avoids the flaky `.prefixes` computation
+    entirely; matching one level of `*` preserves the immediate-children
+    contract, and matching `marker` directly makes an `is_dir()` gate redundant.
     """
     if not base_dir.exists():
         return []
-    return sorted(
-        p.name for p in base_dir.iterdir() if p.is_dir() and (p / marker).exists()
-    )
+    return sorted(p.parent.name for p in base_dir.glob(f"*/{marker}"))
