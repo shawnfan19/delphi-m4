@@ -7,7 +7,12 @@ from typing import Any, ClassVar
 import numpy as np
 import pandas as pd
 
-from delphi.data.utils import list_subdirs, sort_by_time, update_tokenizer
+from delphi.data.utils import (
+    filter_participants,
+    list_subdirs,
+    sort_by_time,
+    update_tokenizer,
+)
 
 RESERVED_MOD_IDX = 2  # 0 = padding, 1 = event tokens
 
@@ -210,14 +215,19 @@ class ExpansionPackReader(abc.ABC):
 
 
 class MultimodalReader:
-    """Composes a base TokenReader + expansion packs + biomarkers.
+    """Composes a main-stream TokenReader + expansion packs + biomarkers.
 
-    Pure composer. Subclasses are responsible for constructing the components
-    (token reader, packs, biomarkers) and passing them in; the base only
-    stores them and assembles them in __getitem__. Dataset-specific concerns
-    (file loading, classmethods like participants, methods like is_female)
-    live on the subclass.
+    Subclasses (one concrete per dataset) build the components — they load the
+    main stream into a TokenReader (``_load_token_reader``) and bind the
+    ``biomarker_cls`` / ``expansion_pack_cls`` hooks — and add dataset-specific
+    extras (``participants(fold)``, UKB ``labels`` / ``recruitment_times``). The
+    base owns assembly (__getitem__), the trajectory queries over the main stream
+    (is_female / event_times / exit_times / participants_with_event), and the
+    modality participant filters.
     """
+
+    biomarker_cls: ClassVar[type[BiomarkerReader]]
+    expansion_pack_cls: ClassVar[type[ExpansionPackReader]]
 
     def __init__(
         self,
@@ -373,3 +383,27 @@ class MultimodalReader:
             bio_t, bio_m = sort_by_time(bio_t, bio_m)
 
         return x, t, bio_x_dict, bio_t, bio_m
+
+    @classmethod
+    def filter_participants_with_biomarkers(cls, pids, biomarkers, any=True):
+        filter_list = [cls.biomarker_cls.participants(b) for b in biomarkers]
+        return filter_participants(pids, filter_list, any)
+
+    @classmethod
+    def filter_participants_with_expansion_packs(cls, pids, expansion_packs, any=True):
+        filter_list = [cls.expansion_pack_cls.participants(p) for p in expansion_packs]
+        return filter_participants(pids, filter_list, any)
+
+    @classmethod
+    def filter_participants_with_modalities(cls, pids, biomarkers, expansion_packs):
+        if biomarkers is not None:
+            total = pids.size
+            pids = cls.filter_participants_with_biomarkers(pids, biomarkers, any=True)
+            print(f"{pids.size} / {total} pids (biomarker filter)")
+        if expansion_packs is not None:
+            total = pids.size
+            pids = cls.filter_participants_with_expansion_packs(
+                pids, expansion_packs, any=True
+            )
+            print(f"{pids.size} / {total} pids (expansion pack filter)")
+        return pids
