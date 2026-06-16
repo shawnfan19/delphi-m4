@@ -16,7 +16,7 @@ This project uses a memory-efficient flat-file storage scheme for patient event 
 
 `p2i.csv` maps each `person_id` to their location in the binary files:
 - `pid`: person_id
-- `start_pos`: byte offset where this person's sequence begins
+- `start_pos`: element index into the flat arrays where this person's sequence begins
 - `seq_len`: number of tokens for this person
 
 ### Tokenizer
@@ -48,32 +48,43 @@ three levels.
 |--------|-----|-----|
 | Base dir | `data/ukb_real_data/` | `data/aou_uk/` |
 | Token stream | `data.bin` + `time.bin` (`uint32` flat arrays) + `p2i.csv` (`pid, start_pos, seq_len`) | `data.parquet` (rows: `person_id, age_in_days, token`); indexed at load time via `np.unique` |
-| Biomarker storage | `biomarkers/{name}/data.bin` (float32) + `features.yaml` + `p2i.csv` (`pid, visit, start_pos, seq_len, time`) | `biomarkers/{name}/data.parquet` (columns: `person_id, age_in_days`, plus per-feature `{feat}` and `{feat}_raw_value/_unit_id/_unit_name/_concept_id/_concept_name`) |
+| Biomarker storage | `biomarkers/{name}/data.bin` (float32) + `features.yaml` + `p2i.csv` (`pid, time, start_pos, seq_len`) | `biomarkers/{name}/data.parquet` (columns: `person_id, age_in_days`, plus per-feature `{feat}` and `{feat}_raw_value/_unit_id/_unit_name/_concept_id/_concept_name`) |
 | Expansion packs | `expansion_packs/{name}/{data.bin, time.bin, p2i.csv, tokenizer.yaml}` | `expansion_packs/{name}/{data.parquet, tokenizer.yaml}` |
+| Disease labels | `labels_chapters_colours.csv` | `labels_chapters_colours.csv` (a copy of UKB's; see below) |
 
-Despite the different on-disk formats, both reader classes expose the
-same Python interface (`__getitem__(pid) -> (tokens, times)`, `seq_len`,
-`start_pos`, `tokenizer`, `participants(fold)`). Multimodal readers share
-`__getitem__`'s 5-tuple return contract.
+Despite the different on-disk formats, downstream code is dataset-agnostic:
+`delphi.data.auto.multimodal_reader_cls()` returns the concrete
+`MultimodalReader` subclass for the active dataset (env `DELPHI_DATASET`, else
+auto-detected from the data dir), and code is written against the one reader
+contract — the 5-tuple `__getitem__` and the trajectory / `participants(fold)` /
+`labels()` surface. See [Readers and Datasets](#readers-and-datasets). The
+per-dataset storage difference is confined to each reader's `_load*` methods.
 
 ### Disease token alignment
 
 Both datasets use the **same tokenizer** — AoU's vocabulary is a strict
 subset of UKB's:
 
-- UKB tokens are generated from `data/ukb_real_data/labels.csv` via
-  `notebook/df2yml.py` → lowercase `e78_(disorders_of_lipoprotein_...)`
-  form, one ICD-10 3-char prefix per token.
-- `delphi/data/aou/core.py:335-343` extracts the ICD-10 prefix (regex
-  `[a-z]\d{2}`) from the UKB tokenizer keys and matches AoU's
-  SNOMED→ICD-10 path to those tokens. AoU-only codes are dropped;
-  unmappable codes are logged to `aou_uk/missing_icd_codes.yaml`.
+- The canonical UKB disease tokenizer is `data/ukb/dictionary/tokenizer.yaml` —
+  lowercase `e78_(disorders_of_lipoprotein_...)` form, one ICD-10 3-char prefix
+  per token. (Git-tracked in the repo so the AoU prep can read it without the
+  UKB data volume.)
+- `data/aou/core.py` reads that tokenizer, extracts the ICD-10 prefix (regex
+  `[a-z]\d{2}`) from the keys, and maps AoU's SNOMED→ICD-10 path onto those
+  tokens. AoU-only codes are dropped; unmappable codes are logged to
+  `aou_uk/missing_icd_codes.yaml`.
 
 **Practical implication**: a token name like
 `e78_(disorders_of_lipoprotein_metabolism_and_other_lipidaemias)` resolves
 to a token in BOTH `data/ukb_real_data/tokenizer.yaml` AND
 `data/aou_uk/tokenizer.yaml`. Cross-dataset comparisons keyed on disease
 token names work without translation.
+
+**Disease labels** (ICD chapter + color per token, read by `reader.labels()`)
+are vocabulary metadata keyed on this shared tokenizer, so they are dataset-
+independent. The canonical file is `data/ukb/dictionary/labels_chapters_colours.csv`
+(git-tracked); `data/aou/core.py` uploads a byte-faithful copy to
+`aou_uk/labels_chapters_colours.csv` so `MultimodalAOUReader.labels()` resolves.
 
 ### Biomarker alignment
 
@@ -90,7 +101,7 @@ cholesterol:
 ```
 
 Both prep pipelines (`data/ukb/codon/gather.py` for UKB;
-`delphi/data/aou/biomarker.py` for AoU) consume this YAML and produce
+`data/aou/biomarker.py` for AoU) consume this YAML and produce
 files where:
 - Feature names are identical across datasets (`cholesterol`, `hdl`,
   `ldl_direct`, `triglycerides`, etc.).
@@ -118,9 +129,9 @@ Each pack's tokenizer is shared across datasets:
 - UKB writes the canonical tokenizer (e.g.,
   `data/ukb/dictionary/prescriptions_tokenizer.yaml`,
   `ops_tokenizer.yaml`).
-- AoU's `delphi/data/aou/medications.py:69` and `operations.py:62` load
-  these UKB tokenizers directly. AoU-only codes are dropped; shared
-  codes get identical local token IDs across datasets.
+- AoU's `data/aou/medications.py` and `operations.py` load these UKB
+  tokenizers directly. AoU-only codes are dropped; shared codes get
+  identical local token IDs across datasets.
 
 **Practical implication**: expansion-pack token IDs (within an
 offset-adjusted merged vocab) are directly comparable across UKB and AoU.
@@ -144,7 +155,7 @@ catalog.
 
 ## Preprocessing Pipeline
 
-`__getitem__` applies transforms in a specific order. Each step has a corresponding `identity_transform` fallback when disabled.
+`TokenTransform.__call__` applies transforms in a specific order. Each step has a corresponding `identity_transform` fallback when disabled.
 
 ### Pipeline Order
 
@@ -186,81 +197,85 @@ When `deterministic=True`:
 
 ---
 
-## UKBDataset (`delphi/data/ukb.py`)
+## Readers and Datasets
 
-### Constructor Arguments
+The data layer is one shared slicing engine composed by per-dataset readers, all
+obtained through the factory:
 
-**Data Loading**
-| Argument | Description |
-|----------|-------------|
-| `data_dir` | Directory containing binary files, tokenizer, and p2i.csv |
-| `subject_list` | Path to participant list (relative to `data_dir`), e.g., `"participants/train_fold.bin"` |
-| `memmap` | Use memory-mapped files instead of loading into RAM |
-
-**Preprocessing Toggles**
-| Argument | Description |
-|----------|-------------|
-| `no_event_interval` | Interval (in days) for inserting no-event tokens. `None` disables. |
-| `no_event_mode` | Strategy for placing no-event tokens: `"random"`, `"regular"`, `"legacy-random"`, `"exponential"` |
-| `perturb` / `perturb_list` | Enable timestamp perturbation for specified tokens (default: lifestyle). Rarely used. |
-| `exclude` / `exclude_list` | Remove specified tokens entirely (default: lifestyle). Rarely used. |
-| `block_size` | Max sequence length. `None` disables cropping. |
-| `crop_mode` | How to crop: `"left"`, `"right"`, or `"random"` |
-| `break_clusters` | Enable cluster dissolution (see Preprocessing Pipeline) |
-| `additional_dx_token` | If `True`, add new `dx` token to vocab. If `False`, reuse `NO_EVENT_TOKEN`. |
-
-**Reproducibility**
-| Argument | Description |
-|----------|-------------|
-| `seed` | RNG seed for stochastic transforms |
-| `deterministic` | If `True`, seed RNG per-patient (`pid + seed`) for reproducible augmentation |
-
----
-
-## MultimodalUKBDataset (`delphi/data/ukb.py`)
-
-Extends `UKBDataset` to load multi-modal data from the UK Biobank:
-- **Biomarkers** (also referred to as Modalities): continuous feature vectors, e.g. whole blood count
-- **Expansion packs**: additional discrete tokens beyond the base vocabulary, e.g. tokens for surgical operations
-
-### Constructor Arguments
-
-`MultimodalUKBDataset` inherits all `UKBDataset` arguments (data loading, preprocessing, reproducibility). Multimodal-specific additions:
-
-**Defaults that differ from `UKBDataset`**
-| Argument | UKBDataset default | MultimodalUKBDataset default | Notes |
-|----------|--------------------|------------------------------|-------|
-| `crop_mode` | `"right"` | `"left"` | Left-crop retains the most recent history |
-| `perturb` | `True` | `False` | Perturbation off by default for multimodal |
-
-**Expansion pack arguments**
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `expansion_packs` | `None` | List of pack names to load (e.g. `["ops"]`); each must be a subdirectory of `expansion_pack_dir` |
-| `expansion_pack_dir` | `"expansion_packs"` | Subdirectory of `data_dir` containing expansion pack directories |
-
-**Biomarker arguments**
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `biomarkers` | `None` | List of lowercase modality name strings to load (e.g. `["wbc", "lipid"]`) |
-| `biomarker_dir` | `"biomarkers"` | Subdirectory of `data_dir` containing per-modality biomarker directories |
-| `biomarker_datasets` | `None` | Pre-initialized `dict[Modality, Biomarker]`; mutually exclusive with `biomarkers`. Pass `train_ds.mod_ds` to validation dataset to share normalization stats. |
-| `z_score_biomarkers` | `True` | Whether to z-score biomarker values. Stats computed on `stats_subject_list` participants. |
-| `first_time_only` | `True` | If `True`, use only the first visit's measurement per participant (typical for UKB blood biomarkers collected at recruitment). |
-| `stats_subject_list` | `None` | Subpath to a `.bin` participant list for computing biomarker mean/std. Defaults to `subject_list` participants if `None`. |
-| `must_have_biomarkers` | `None` | List of lowercase modality names; filters `self.participants` to those with data for all listed modalities. See below. |
-| `biomarker_dropout` | `None` | If set, each biomarker measurement is independently dropped with this probability during `__getitem__`. Training augmentation only — do not pass to the validation dataset. |
-
-**Sharing biomarker stats between train and val**:
 ```python
-train_ds = MultimodalUKBDataset(biomarkers=["wbc"], ...)       # computes mean/std on train participants
-val_ds   = MultimodalUKBDataset(biomarker_datasets=train_ds.mod_ds, ...)  # reuses train Biomarker objects
+from delphi.data.auto import multimodal_reader_cls
+reader = multimodal_reader_cls()(biomarkers=["wbc"], expansion_packs=["ops"])
 ```
-Passing `biomarker_datasets` bypasses `Biomarker.__init__` entirely; normalization stats are identical to training.
+
+### Reader hierarchy (`delphi/data/reader.py`, `ukb.py`, `aou.py`)
+
+- **`TokenReader`** — a pure pid-indexed `(token, time)` slicing engine over
+  in-memory arrays: `__getitem__(pid) -> (x, t)`, plus `start_pos`, `seq_len`,
+  `tokenizer`, `detokenizer`. It is **composed**, never subclassed per dataset.
+- **`MultimodalReader(abc.ABC)`** — composes a main-stream `TokenReader` +
+  expansion packs + biomarkers. The base owns everything dataset-agnostic: the
+  5-tuple `__getitem__`, the trajectory queries over the main stream
+  (`is_female`, `event_times`, `exit_times`, `participants_with_event`), the
+  modality participant filters, the shared `labels()`, and the public
+  `__init__(expansion_packs, biomarkers)` (which builds the components via the
+  abstract seam + the `*_cls` hooks). The per-dataset **seam** is two abstract
+  classmethods — `_load_token_reader()` (load the main stream into a
+  `TokenReader`) and `participants(fold)` — plus the `base_dir` /
+  `biomarker_cls` / `expansion_pack_cls` class attrs.
+- **`MultimodalUKBReader` / `MultimodalAOUReader`** — the concrete per-dataset
+  subclasses, essentially pure declarations: `base_dir`, the three bindings, the
+  lifestyle/sex key lists, the two seam methods, plus genuine extras (UKB
+  `recruitment_times` / `labels`; AoU `first_biomarker_times`).
+- **`BiomarkerReader(abc.ABC)` → `Biomarker`** and
+  **`ExpansionPackReader(abc.ABC)` → `ExpansionPack`** — the composed modality
+  stores (own sections below). Both concretes are named the same in `ukb.py` and
+  `aou.py`: only one dataset is ever live in a given secure environment, so the
+  same-name classes are mutually exclusive at runtime and the factory resolves
+  the right one.
+
+There is no longer a unimodal reader or unimodal `Dataset`: the old
+`UKBReader`/`AOUReader` were folded into the multimodal readers, and
+`MultimodalDataset` is the only dataset class. Code that needs the raw main-stream
+`(x, t)` 2-tuple (rather than the 5-tuple) reaches it via `reader.token_reader[pid]`.
+
+### Biomarker indexing — `reader.biomarker2idx`
+
+The integer modality ids in `bio_M` come from `reader.biomarker2idx` (a per-reader
+`name -> int` map), **not** a global enum. `0` / `1` are reserved (padding / event
+token); biomarkers start at `RESERVED_MOD_IDX = 2`. Pass `biomarkers=` as either:
+- a **list** of names → indices auto-assigned from sorted order, or
+- a **dict** `{name: idx}` → used as-is (e.g. a checkpoint's
+  `model_args["biomarker2idx"]`, so eval matches training).
+
+Names are lowercased. (The `Modality` enum in `delphi/multimodal.py` is a
+model-side registry; it is not the source of `bio_M` ids — the biomarker set
+churns, so prefer the per-reader / per-checkpoint `biomarker2idx`.)
+
+### `MultimodalDataset` (`delphi/data/dataset.py`)
+
+`MultimodalDataset(reader, pids, token_transform=None, biomarker_transform=None,
+prompt_transform=None)` wraps a reader + a participant array, applies the
+transforms in `__getitem__`, and collates batches. It is the only dataset class.
+
+`__getitem__(idx) -> (x0, t0, bio_x_dict, bio_t, bio_m, x1, t1)`. The optional
+transforms (all in `delphi/data/transform.py`) are:
+
+- **`TokenTransform`** — `no_event_interval` / `no_event_mode`, `block_size` /
+  `crop_mode`, `perturb_tokens`, `blacklist_tokens`, `break_clusters` (see
+  Preprocessing Pipeline). Applied to `(x, t)`.
+- **`BiomarkerTransform`** — `first_time_only`, `dropout`, `z_score` (+ `mean` /
+  `std`), keyed by the reader's `biomarker2idx`. This is where biomarker
+  normalization / first-visit selection / dropout now live (**not** on the
+  `Biomarker` class).
+- **`Prompt` / `MultimodalPrompt`** — split a sequence into prompt + ground truth
+  at a cutoff age.
+
+Transforms round-trip through a checkpoint via `.config` / `from_ckpt` / `to_ckpt`.
 
 ### `get_batch(batch_idx)`
 
-Collates multiple samples into a batch for model training/inference.
+Collates multiple samples into a batch for model training/inference (`collate`
+doubles as a torch `DataLoader` `collate_fn`).
 
 **Arguments**: `batch_idx` — an iterable of integer indices corresponding to samples in the dataset
 
@@ -270,9 +285,9 @@ Collates multiple samples into a batch for model training/inference.
 |--------|-------|-------------|
 | `X0` | `(B, L)` | Token sequences (disease codes, no-event, lifestyle, etc.) |
 | `T0` | `(B, L)` | Token timestamps in days; `-1e4` for padding |
-| `bio_x_dict` | `dict[Modality, Tensor]` | Raw biomarker feature vectors (see below) |
+| `bio_x_dict` | `dict[str, Tensor]` | Raw biomarker feature vectors keyed by lowercase modality name (see below) |
 | `bio_T` | `(B, L_bio)` | Biomarker timestamps; `-1e4` for padding |
-| `bio_M` | `(B, L_bio)` | Modality index per position (0 = padding) |
+| `bio_M` | `(B, L_bio)` | Modality index per position (0 = padding; values from `reader.biomarker2idx`) |
 | `X1` | `(B, L)` | Target tokens (next event) |
 | `T1` | `(B, L)` | Target timestamps |
 
@@ -286,52 +301,56 @@ All tensors are **left-padded** (valid entries right-aligned; `collate_batch` us
 
 ### `bio_x_dict` Row-Indexing Invariant
 
-`bio_x_dict[M]` is a **flat 2-D tensor** of shape `(K, input_size)` where `K` is the total number of modality-M measurements across the entire batch — it is **not** batched by sample.
+`bio_x_dict[name]` is a **flat 2-D tensor** of shape `(K, input_size)` where `K` is the total number of measurements of that modality across the entire batch — it is **not** batched by sample.
 
-**Invariant**: row `k` of `bio_x_dict[M]` corresponds to the `k`-th `True` entry of `(bio_M == M.value)` in **row-major order** (iterating over batch dim first, then position dim).
+**Invariant**: row `k` of `bio_x_dict[name]` corresponds to the `k`-th `True` entry of `(bio_M == reader.biomarker2idx[name])` in **row-major order** (iterating over batch dim first, then position dim).
 
-This arises from `get_batch`:
+This arises from `collate`:
 ```python
-for idx in batch_idx:
-    x0, t0, bio_x_dict, bio_t, bio_m, x1, t1 = self[idx]
+for x0, t0, bio_x_dict, bio_t, bio_m, x1, t1 in samples:
     for modality in bio_x_dict.keys():
         bio_X_dict[modality].extend(bio_x_dict[modality])  # appends per-sample rows
 ```
 
 The model recovers per-position embeddings via:
 ```python
-mod_mask = mod_idx == modality.value   # (B, L_bio) boolean
-biomarker_emb[modality] += mod_age_emb[mod_mask]   # selects K positions
+mod_mask = mod_idx == idx               # (B, L_bio) boolean
+biomarker_emb[name] += mod_age_emb[mod_mask]   # selects K positions
 ```
 
-**Consequence**: any operation that changes which positions in `bio_M` carry a given modality value — masking entries to 0, removing positions — **silently breaks** `bio_x_dict` unless you reindex it to match. The row count in `bio_x_dict[M]` must always equal `(bio_M == M.value).sum()`.
+**Consequence**: any operation that changes which positions in `bio_M` carry a given modality value — masking entries to 0, removing positions — **silently breaks** `bio_x_dict` unless you reindex it to match. The row count in `bio_x_dict[name]` must always equal `(bio_M == reader.biomarker2idx[name]).sum()`.
 
 #### Reindexing pattern
 
 After modifying `bio_M` (e.g. masking entries to 0), reindex `bio_x_dict` as follows:
 
 ```python
-for mod, bio_x in bio_x_dict.items():
-    old_mask = bio_m_orig == mod.value   # (B, L_bio) — before modification
-    new_mask = bio_m_new  == mod.value   # (B, L_bio) — after modification
-    keep = new_mask[old_mask]            # 1-D bool over original rows
+for name, bio_x in bio_x_dict.items():
+    old_mask = bio_m_orig == biomarker2idx[name]   # (B, L_bio) — before modification
+    new_mask = bio_m_new  == biomarker2idx[name]   # (B, L_bio) — after modification
+    keep = new_mask[old_mask]                       # 1-D bool over original rows
     if keep.any():
-        new_bio_x_dict[mod] = bio_x[keep]
+        new_bio_x_dict[name] = bio_x[keep]
     # if not keep.any(): omit this modality from the dict entirely
 ```
 
-To **drop a modality entirely** (e.g. for ablation), also set `bio_M[bio_M == M.value] = 0` and `bio_T[...] = -1e4`, then exclude the key from `bio_x_dict`. Do not leave a mismatched key in the dict.
+The helpers `filter_biomarker_array` / `remove_after` / `dropout_biomarkers` in
+`delphi/data/utils.py` already maintain this invariant — prefer them over hand-rolled masking.
 
-### `must_have_biomarkers` — Filtering Participants
+### Filtering participants by modality
+
+Filtering is a **reader** concern (classmethods); the kept pids are then passed to `MultimodalDataset`:
 
 ```python
-data_args["must_have_biomarkers"] = ["wbc"]   # lowercase strings
-ds = MultimodalUKBDataset(**data_args)
+R = multimodal_reader_cls()
+pids = R.participants("all")
+pids = R.filter_participants_with_modalities(pids, biomarkers=["wbc"], expansion_packs=["ops"])
 ```
 
-Accepts a list of **lowercase modality name strings**; internally calls `Modality[name.upper()]`. Filters `self.participants` to only those present in every listed modality's `Biomarker.pids`. Apply before the eval loop to avoid per-batch `has_modality` checks.
-
-The modality must also appear in `data_args["biomarkers"]` (loaded from the checkpoint) — if it wasn't part of the training biomarkers list, `self.mod_ds` won't contain it and the filter will fail.
+`filter_participants_with_biomarkers` / `..._with_expansion_packs` keep pids
+present in (any of) the named modalities; `..._with_modalities` chains both. They
+route through the `biomarker_cls` / `expansion_pack_cls` hooks, reading each
+modality's `participants(name)` from disk without building a full reader.
 
 ---
 
@@ -347,7 +366,7 @@ Argument names in the model signature: `(idx, age, biomarker, mod_age, mod_idx, 
 
 | Call | `out_dict["logits"]` shape | Notes |
 |------|---------------------------|-------|
-| With `targets` / `targets_age` | `(B, L, V)` | Logits filtered to token positions only (biomarker positions excluded via `fuse_targets_mask`) |
+| With `targets` / `targets_age` | `(B, L, V)` | Logits filtered to token positions only (biomarker positions, `fused_mod_idx > 1`, excluded) |
 | Without targets (eval mode) | `(B, L_fused, V)` | Logits for **all** fused positions; `L_fused = L_bio + L` |
 
 ### Fused Sequence — Sort Semantics
@@ -386,152 +405,99 @@ When constructing a sub-batch to pass directly to the model (e.g. after `remove_
 
 ## Modality (`delphi/multimodal.py`)
 
-`Modality` is an `Enum` that assigns a unique integer ID to each biomarker type. The values 0 and 1 are reserved: `0` = padding in `bio_M`, `1` = disease event tokens in the fused sequence.
-
-| Value | Name | Description |
-|-------|------|-------------|
-| 0 | *(reserved)* | Padding |
-| 1 | *(reserved)* | Disease event token slots (in fused sequence) |
-| 2 | `PRS` | Polygenic Risk Score |
-| 3 | `WBC` | White Blood Cell count |
-| 4 | `LIPID` | Lipid panel |
-| 5 | `LFT` | Liver Function Tests |
-| 6 | `RENAL` | Renal function |
-| 7 | `HBA1C` | Haemoglobin A1c |
-| 8 | `CRP` | C-Reactive Protein |
-| 9 | `URATE` | Uric Acid |
-| 10 | `CYSC` | Cystatin C |
-| 11 | `APO` | Apolipoprotein |
-| 12 | `VITD` | Vitamin D |
-| 13 | `DHT` | Dihydrotestosterone |
-| 14 | `SHBG` | Sex Hormone Binding Globulin |
-| 15 | `IGF1` | Insulin-like Growth Factor 1 |
-| 16 | `NAK` | Sodium and Potassium |
-| 17 | `CREAT` | Creatinine |
-| 18 | `ALBU` | Albumin |
-| 19 | `DIET` | Dietary data |
-| 20 | `MET` | Metabolomics |
-| 21 | `TELOMERE` | Telomere length |
-| 22 | `ABDO_FAT_CROSS` | Abdominal fat (cross-sectional) |
-| 23 | `ABDO_FAT_LONG` | Abdominal fat (longitudinal) |
-
-**`module_name(modality)`** converts `Modality.PRS` → `"prs"` (used as `nn.ModuleDict` key and as biomarker directory name).
-
-Modality names are stored as the **key** in `config.biomarkers` (lowercase), e.g.:
-```python
-config.biomarkers = {"wbc": BiomarkerEmbedConfig(...), "lipid": BiomarkerEmbedConfig(...)}
-```
-`Modality[name.upper()]` converts from string → enum; `modality.value` gives the integer ID stored in `bio_M`.
+`Modality` is a **model-side** `Enum` (with `module_name(Modality.PRS) -> "prs"`,
+used for the model's per-modality `nn.ModuleDict` keys). It is **not** how the data
+layer assigns `bio_M` ids — those come from `reader.biomarker2idx` (see
+[Biomarker indexing](#biomarker-indexing--readerbiomarker2idx)). Because the
+biomarker set churns, prefer the per-reader / per-checkpoint `biomarker2idx` over
+the enum's fixed values.
 
 ---
 
-## Biomarker (`delphi/data/ukb.py`)
+## BiomarkerReader / Biomarker (`delphi/data/reader.py`, `ukb.py`, `aou.py`)
 
-`Biomarker` wraps **continuous-valued measurements** for a single modality (e.g. a blood test panel). It is distinct from `ExpansionPack` (discrete tokens); one `Biomarker` object per `Modality` is stored in `MultimodalUKBDataset.mod_ds`.
+`BiomarkerReader` is an ABC for **continuous-valued measurements** of a single
+modality (e.g. a blood test panel). The concrete subclass is named `Biomarker` in
+both `ukb.py` and `aou.py` (storage adapters); all shared logic lives on the ABC.
+It is distinct from `ExpansionPack` (discrete tokens) and is composed into a
+`MultimodalReader` via `self.biomarkers[name]`.
 
-### Disk Format
+### Canonical in-memory layout
 
-```
-biomarkers/<modality_name>/
-├── data.bin        # float32, flat array of all feature vectors concatenated
-├── p2i.csv         # columns: pid, visit, start_pos, seq_len, time
-└── features.yaml   # ordered list of feature names (length = n_features)
-```
+Each `_load` normalizes its on-disk storage to a single layout:
+- `data`: `(n_measurements, n_features)` float32, rows grouped by pid then ordered by time.
+- `times`: `(n_measurements,)` float32, aligned row-for-row to `data`.
+- `pid2idx` / `pid2cnt`: `pid -> first row index / number of rows` in `data`.
 
-`p2i.csv` rows (sorted by `pid`, then `time` on load):
-- `pid` — participant ID
-- `visit` — visit index (0 = first, 1 = second, ...)
-- `start_pos` — index into `data.bin` where this measurement begins
-- `seq_len` — number of features (= `n_features`; constant within a modality)
-- `time` — measurement timestamp in days
+UKB stores a flat `data.bin` + `p2i.csv` (`pid, time, start_pos, seq_len`) and its
+`_load` gathers the ragged-flat rows into the 2-D layout; AoU's `data.parquet` is
+already 2-D. (No `memmap` — readers always load into memory.)
 
-### Constructor
+### Per-dataset seam (the only subclass code)
 
-```python
-Biomarker(
-    path: str,
-    stats_subjects: None | np.ndarray = None,   # pids for computing mean/std; defaults to all uniq_pids
-    memmap: bool = False,
-    first_time_only: bool = True,               # use only first visit per participant
-    z_score: bool = False,
-)
-```
+| Member | Role |
+|--------|------|
+| `base_dir`, `_marker` | class attrs: data dir + the file that marks a biomarker dir (`data.bin` / `data.parquet`) |
+| `_load(name) -> (values, times, pids, features)` | read + normalize to the canonical layout |
+| `_read_features(name) -> list[str]` | feature names, without building an instance |
+| `_read_index(name) -> DataFrame[pid, time]` | the (pid, time) table, without the feature payload |
 
-Key instance attributes:
-- `features` (`list[str]`): Feature names from `features.yaml`
-- `n_features` (`int`): Number of features
-- `feat2idx` (`dict`): Feature name → column index
-- `uniq_pids` (`np.ndarray`): All participant IDs with data
-- `pid2idx`, `pid2cnt` (`dict`): pid → first row index and count in the measurement list (used by `__getitem__`)
-- `mean`, `std` (`np.ndarray`, shape `(n_features,)`): Computed on `stats_subjects`
-- `first_time_only`, `z_score` (`bool`): Set at init
+### Shared surface (on the ABC)
 
-### `__getitem__(pid)`
+- `Biomarker(name)` — construct; the ABC `__init__` derives `pid2idx`/`pid2cnt` via `np.unique`.
+- `__getitem__(pid) -> (list[np.ndarray] | None, np.ndarray | None)` — per-measurement feature vectors + times, or `(None, None)` if absent.
+- `to_array(subjects) -> (len(subjects), n_features)` — first-occurrence vector per subject (NaN where absent); `stats(subjects) -> (mean, std)`.
+- `features`, `n_features`, `feat2idx`.
+- classmethods `catalog()`, `input_size(name)`, `participants(name)`, `first_occurrence_times(name, pids)`.
 
-```python
-biomarker[pid]  ->  (list[np.ndarray] | None, np.ndarray | None)
-```
-
-Returns `(None, None)` if `pid` has no data.
-
-Otherwise:
-- `pid_data`: list of `np.ndarray` of shape `(n_features,)`, one per visit (length 1 if `first_time_only=True`)
-- `pid_time`: `np.ndarray` of timestamps (days), shape `(n_visits,)` — length matches `pid_data`
-
-`transform(x)` is applied to each feature array: z-scores if `z_score=True`, else identity.
-
-### `background` Property
-
-```python
-@property
-def background(self):   # shape (n_features,)
-    return np.zeros((self.n_features,)) if self.z_score else self.mean
-```
-
-Returns the value to use for missing/absent measurements: zero in z-scored space (= population mean), or the raw population mean otherwise.
+Normalization (`z_score`), first-visit selection (`first_time_only`) and `dropout`
+are **not** on `Biomarker` — they live in `BiomarkerTransform` (see MultimodalDataset).
 
 ---
 
-## ExpansionPack (`delphi/data/ukb.py`)
+## ExpansionPackReader / ExpansionPack (`delphi/data/reader.py`, `ukb.py`, `aou.py`)
 
-`ExpansionPack` wraps **additional discrete EHR tokens** (e.g. surgical operations coded via OPCS-4 or OMOP) that are not present in the base UKB vocabulary. This is fundamentally different from `Biomarker`: expansion pack tokens join the disease token timeline as ordinary discrete events; biomarkers are continuous vectors handled on a separate path.
+`ExpansionPackReader` is an ABC for **additional discrete EHR tokens** (e.g.
+surgical operations via OPCS-4/OMOP) that are not in the base vocabulary. Unlike
+biomarkers, pack tokens join the disease token timeline as ordinary discrete
+events. The concrete subclass is named `ExpansionPack` in both `ukb.py` and
+`aou.py`.
 
-### Disk Format
+`ExpansionPackReader` **composes** a `TokenReader` (`self.reader`) rather than
+subclassing it, and exposes only the slicing surface the composer reads:
+`__getitem__(pid) -> (x, t)`, `start_pos`, `seq_len`, `tokenizer`, plus `pids`.
 
-Identical structure to the base UKB data:
-```
-expansion_packs/<pack_name>/
-├── data.bin        # uint32, token IDs in the pack's local vocabulary
-├── time.bin        # uint32, timestamps in days (parallel to data.bin)
-├── p2i.csv         # columns: pid, start_pos, seq_len (same schema as base UKB p2i.csv)
-└── tokenizer.yaml  # name → int mapping (local IDs, before offset is applied)
-```
+### Per-dataset seam
 
-### Token Offset
+| Member | Role |
+|--------|------|
+| `base_dir` | data dir; `_marker = "tokenizer.yaml"` is shared on the ABC |
+| `_load(name) -> (tokens, timesteps, start_pos, seq_len, tokenizer)` | read the pack |
+| `participants(name)` / `first_occurrence_times(name, pids)` | abstract classmethods — UKB pack times live in `time.bin`, AoU's in the parquet, so they genuinely differ |
 
-Because expansion pack tokens must not collide with base vocabulary token IDs, each pack is assigned an `offset` at load time via `update_tokenizer`:
+`catalog()` is shared on the ABC. UKB disk: `data.bin` + `time.bin` (uint32) +
+`p2i.csv` (`pid, start_pos, seq_len`) + `tokenizer.yaml`; AoU: `data.parquet` +
+`tokenizer.yaml`.
+
+### Token offset + merge into the vocabulary
+
+A pack's local token IDs must not collide with the base vocabulary, so
+`MultimodalReader.__init__` assigns each pack an `offset` via `update_tokenizer`:
 
 ```python
-self.tokenizer, offset = update_tokenizer(base_tokenizer, add_tokenizer)
-# ExpansionPack stores: self.offset = offset
-# __getitem__: returns tokens + self.offset
+for name in sorted(expansion_packs or []):
+    pack = self.expansion_pack_cls(name=name)
+    self.tokenizer, offset = update_tokenizer(self.tokenizer, pack.tokenizer)
+    self.expansion_offset[name] = offset
 ```
 
-All `tokenizer.yaml` IDs in the pack are shifted by `offset` before being returned or stored in a merged batch.
-
-### `__getitem__(pid)`
+In `MultimodalReader.__getitem__`, each pack's tokens are offset and concatenated
+with the base stream before assembly:
 
 ```python
-expansion_pack[pid]  ->  (x_pid, t_pid)
-# x_pid: np.ndarray uint32, tokens + offset applied
-# t_pid: np.ndarray uint32, timestamps in days
+exp_x, exp_t = expansion_pack[pid]
+x_lst.append(exp_x + self.expansion_offset[name])   # then concatenate + assemble the 5-tuple
 ```
 
-In `MultimodalUKBDataset.__getitem__`, each expansion pack's output is **concatenated** with the base EHR tokens before any preprocessing:
-```python
-x = np.concatenate([base_tokens] + [ep[pid][0] for ep in self.expansion_packs])
-t = np.concatenate([base_times]  + [ep[pid][1] for ep in self.expansion_packs])
-# then sort_by_time, crop, etc. — exactly like base tokens
-```
-
-The merged tokens participate in the same autoregressive loss as base tokens. Expansion pack token IDs are accessible via `ds.expansion_tokens` (list of all shifted IDs across all loaded packs).
+The merged tokens participate in the same autoregressive loss as base tokens. The
+shifted IDs are available via `reader.expansion_tokens`.
