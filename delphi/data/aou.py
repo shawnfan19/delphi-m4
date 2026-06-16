@@ -133,8 +133,12 @@ class MultimodalAOUReader(MultimodalReader):
         )
 
     @classmethod
-    def _load_token_reader(cls) -> TokenReader:
-        """Load the AoU main event stream (data.parquet) into a TokenReader."""
+    def _load_token_reader(cls, memmap: bool = False) -> TokenReader:
+        """Load the AoU main event stream (data.parquet) into a TokenReader.
+
+        ``memmap`` is accepted for signature parity with the base seam but
+        ignored — parquet has no memmap path.
+        """
         with open(cls.base_dir / "tokenizer.yaml", "r") as f:
             tokenizer = yaml.safe_load(f)
         df = pd.read_parquet(

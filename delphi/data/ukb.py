@@ -168,11 +168,6 @@ class MultimodalUKBReader(MultimodalReader):
             cls.base_dir / "participants" / f"{fold}_fold.bin", dtype=np.uint32
         )
 
-    @classmethod
-    def labels(cls) -> pd.DataFrame:
-        """Load disease label metadata (ICD chapters, colors)."""
-        return pd.read_csv(str(cls.base_dir / "labels_chapters_colours.csv"))
-
     def recruitment_times(self, pids: np.ndarray) -> np.ndarray:
         """Earliest lifestyle-token time per pid (UKB recruitment proxy); NaN if none.
 

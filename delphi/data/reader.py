@@ -214,20 +214,43 @@ class ExpansionPackReader(abc.ABC):
         """Earliest pack-token time per pid, aligned to ``pids`` (NaN if absent)."""
 
 
-class MultimodalReader:
+class MultimodalReader(abc.ABC):
     """Composes a main-stream TokenReader + expansion packs + biomarkers.
 
-    Subclasses (one concrete per dataset) build the components — they load the
-    main stream into a TokenReader (``_load_token_reader``) and bind the
-    ``biomarker_cls`` / ``expansion_pack_cls`` hooks — and add dataset-specific
-    extras (``participants(fold)``, UKB ``labels`` / ``recruitment_times``). The
-    base owns assembly (__getitem__), the trajectory queries over the main stream
-    (is_female / event_times / exit_times / participants_with_event), and the
-    modality participant filters.
+    Concrete subclasses (one per dataset) provide the per-dataset seam — the
+    ``base_dir`` / ``biomarker_cls`` / ``expansion_pack_cls`` bindings and the
+    ``_load_token_reader`` / ``participants`` implementations — plus genuine
+    extras (UKB ``recruitment_times``; AoU ``first_biomarker_times``). The base
+    owns assembly (__getitem__), the trajectory queries over the main stream
+    (is_female / event_times / exit_times / participants_with_event), the
+    modality participant filters, and ``labels`` (shared vocab metadata, read
+    from each dataset's own labels_chapters_colours.csv).
     """
 
+    base_dir: ClassVar[Any]
     biomarker_cls: ClassVar[type[BiomarkerReader]]
     expansion_pack_cls: ClassVar[type[ExpansionPackReader]]
+
+    # ---- per-dataset seam (subclasses implement) ----------------------------
+    @classmethod
+    @abc.abstractmethod
+    def _load_token_reader(cls, memmap: bool = False) -> TokenReader:
+        """Load the dataset's main event stream into a TokenReader."""
+
+    @classmethod
+    @abc.abstractmethod
+    def participants(cls, fold) -> np.ndarray:
+        """Participant ids for a split ('all' or a dataset-specific fold)."""
+
+    @classmethod
+    def labels(cls) -> pd.DataFrame:
+        """Disease label metadata (ICD chapters, colors).
+
+        Shared vocabulary metadata: read from each dataset's own
+        labels_chapters_colours.csv. The vocab is shared (AoU ⊂ UKB), so the AoU
+        file is a copy of the UKB one.
+        """
+        return pd.read_csv(str(cls.base_dir / "labels_chapters_colours.csv"))
 
     def __init__(
         self,
