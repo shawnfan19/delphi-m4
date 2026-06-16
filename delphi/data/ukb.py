@@ -6,8 +6,13 @@ import pandas as pd
 import yaml
 from cloudpathlib import AnyPath
 
-from delphi.data.reader import BiomarkerReader, MultimodalReader, TokenReader
-from delphi.data.utils import filter_participants, list_subdirs
+from delphi.data.reader import (
+    BiomarkerReader,
+    ExpansionPackReader,
+    MultimodalReader,
+    TokenReader,
+)
+from delphi.data.utils import filter_participants
 from delphi.env import DELPHI_DATA_READ as DELPHI_DATA_DIR
 
 NO_EVENT_TOKEN = 1
@@ -79,9 +84,24 @@ class UKBReader(TokenReader):
         return out
 
     def recruitment_times(self, pids: np.ndarray) -> np.ndarray:
-        event_times = self.event_times(pids)
+        """Earliest lifestyle-token time per pid (UKB recruitment proxy); NaN if none.
+
+        Computed directly over the token arrays so it stays self-contained — it
+        does not depend on the trajectory queries that now live on
+        MultimodalReader (the main stream is time-ordered per pid, so the
+        earliest lifestyle-token time equals its first-occurrence time).
+        """
         lifestyle_tokens = np.array([self.tokenizer[e] for e in self.lifestyle_keys])
-        return np.nanmin(event_times[:, lifestyle_tokens], axis=1)
+        out = np.full(len(pids), np.nan, dtype=np.float32)
+        for i, pid in enumerate(pids):
+            start = self.start_pos[int(pid)]
+            length = self.seq_len[int(pid)]
+            x = self.tokens[start : start + length]
+            t = self.timesteps[start : start + length].astype(np.float32)
+            mask = np.isin(x, lifestyle_tokens)
+            if mask.any():
+                out[i] = t[mask].min()
+        return out
 
 
 class Biomarker(BiomarkerReader):
@@ -128,19 +148,19 @@ class Biomarker(BiomarkerReader):
         return pd.read_csv(cls.base_dir / name / "p2i.csv")[["pid", "time"]]  # type: ignore
 
 
-class ExpansionPack(TokenReader):
+class ExpansionPack(ExpansionPackReader):
+    """UKB expansion pack. Flat data.bin/time.bin (uint32) + p2i.csv
+    (pid, start_pos, seq_len; pack times live in time.bin, not p2i)."""
 
     base_dir = Path(DELPHI_DATA_DIR) / "ukb_real_data" / "expansion_packs"
 
-    def __init__(self, name: str, memmap: bool = False):
-
+    def _load(self, name, memmap=False):
         path = self.base_dir / name
         assert os.path.exists(path), FileNotFoundError(
             f"expansion pack {path} not found"
         )
         p2i = pd.read_csv(os.path.join(path, "p2i.csv"), index_col="pid")
         p2i = p2i[p2i["seq_len"] > 0]
-        self.pids = p2i.index.to_numpy()
         start_pos = p2i["start_pos"].to_dict()
         seq_len = p2i["seq_len"].to_dict()
         data_path = os.path.join(path, "data.bin")
@@ -151,12 +171,9 @@ class ExpansionPack(TokenReader):
         else:
             tokens = np.fromfile(data_path, dtype=np.uint32)
             timesteps = np.fromfile(time_path, dtype=np.uint32)
-
-        tokenizer_path = os.path.join(path, "tokenizer.yaml")
-        with open(tokenizer_path, "r") as f:
+        with open(os.path.join(path, "tokenizer.yaml"), "r") as f:
             tokenizer = yaml.safe_load(f)
-
-        super().__init__(tokens, timesteps, start_pos, seq_len, tokenizer)
+        return tokens, timesteps, start_pos, seq_len, tokenizer
 
     @classmethod
     def participants(cls, name: str) -> np.ndarray:
@@ -169,13 +186,8 @@ class ExpansionPack(TokenReader):
         result = np.full(len(pids), np.nan, dtype=np.float32)
         for i, pid in enumerate(pids):
             if pid in pack.start_pos:
-                result[i] = pack.timesteps[pack.start_pos[pid]]
+                result[i] = pack.reader.timesteps[pack.start_pos[pid]]
         return result
-
-    @classmethod
-    def catalog(cls) -> list[str]:
-        """All expansion-pack names available under base_dir."""
-        return list_subdirs(cls.base_dir, "tokenizer.yaml")
 
 
 class MultimodalUKBReader(MultimodalReader):
@@ -227,17 +239,8 @@ class MultimodalUKBReader(MultimodalReader):
     def is_female(self, pids: np.ndarray) -> np.ndarray:
         return self.token_reader.is_female(pids)
 
-    def event_times(self, pids: np.ndarray) -> np.ndarray:
-        return self.token_reader.event_times(pids)
-
-    def exit_times(self, pids: np.ndarray) -> np.ndarray:
-        return self.token_reader.exit_times(pids)
-
     def recruitment_times(self, pids: np.ndarray) -> np.ndarray:
         return self.token_reader.recruitment_times(pids)
-
-    def participants_with_event(self, pids: np.ndarray, event: str) -> np.ndarray:
-        return self.token_reader.participants_with_event(pids, event)
 
     @classmethod
     def filter_participants_with_biomarkers(cls, pids, biomarkers, any=True):

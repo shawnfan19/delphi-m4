@@ -146,38 +146,67 @@ class TokenReader:
 
         return x_pid, t_pid
 
-    def event_times(self, pids: np.ndarray) -> np.ndarray:
-        """N by (max_token_id+1) array of first-occurrence times; NaN where a token never occurs."""
-        n_cols = max(self.tokenizer.values()) + 1
-        out = np.full((len(pids), n_cols), np.nan, dtype=np.float32)
-        for i, pid in enumerate(pids):
-            start = self.start_pos[int(pid)]
-            length = self.seq_len[int(pid)]
-            x = self.tokens[start : start + length]
-            t = self.timesteps[start : start + length].astype(np.float32)
-            uniq, first_idx = np.unique(x, return_index=True)
-            out[i, uniq] = t[first_idx]
-        return out
 
-    def participants_with_event(self, pids: np.ndarray, event: str) -> np.ndarray:
-        token = self.tokenizer[event]
-        pids_with_event = list()
-        for i, pid in enumerate(pids):
-            start = self.start_pos[int(pid)]
-            length = self.seq_len[int(pid)]
-            x = self.tokens[start : start + length]
-            if token in x:
-                pids_with_event.append(pid)
-        return np.array(pids_with_event)
+class ExpansionPackReader(abc.ABC):
+    """Abstract expansion-pack store: a supplementary token stream merged into
+    the main vocabulary.
 
-    def exit_times(self, pids: np.ndarray) -> np.ndarray:
-        """N array of last token times (exit / censoring time)."""
-        out = np.empty(len(pids), dtype=np.float32)
-        for i, pid in enumerate(pids):
-            start = self.start_pos[int(pid)]
-            length = self.seq_len[int(pid)]
-            out[i] = self.timesteps[start + length - 1]
-        return out
+    Composes a :class:`TokenReader` for per-pid (token, time) access and exposes
+    only the slicing surface the composer reads. Concrete subclasses (both named
+    ``ExpansionPack``, one per dataset) implement only the storage seam: the
+    ``base_dir`` class attribute, the ``_load`` hook, and the disk-only
+    ``participants`` / ``first_occurrence_times`` queries (whose backends — UKB
+    ``time.bin`` vs AoU parquet — genuinely differ, so they stay abstract).
+    """
+
+    base_dir: ClassVar[Any]
+    _marker: ClassVar[str] = "tokenizer.yaml"
+
+    @abc.abstractmethod
+    def _load(
+        self, name: str, memmap: bool = False
+    ) -> tuple[np.ndarray, np.ndarray, dict, dict, dict]:
+        """Return (tokens, timesteps, start_pos, seq_len, tokenizer) for the pack."""
+
+    def __init__(self, name: str, memmap: bool = False):
+        self.name = name
+        tokens, timesteps, start_pos, seq_len, tokenizer = self._load(
+            name, memmap=memmap
+        )
+        self.reader = TokenReader(tokens, timesteps, start_pos, seq_len, tokenizer)
+        self.pids = np.array(list(start_pos))
+
+    # ---- delegated slicing surface (what the composer reads) ----------------
+    def __getitem__(self, pid: int):
+        return self.reader[pid]
+
+    @property
+    def start_pos(self):
+        return self.reader.start_pos
+
+    @property
+    def seq_len(self):
+        return self.reader.seq_len
+
+    @property
+    def tokenizer(self):
+        return self.reader.tokenizer
+
+    # ---- disk-only catalog queries (no full instance needed) ----------------
+    @classmethod
+    def catalog(cls) -> list[str]:
+        """All expansion-pack names available under base_dir."""
+        return list_subdirs(cls.base_dir, cls._marker)
+
+    @classmethod
+    @abc.abstractmethod
+    def participants(cls, name: str) -> np.ndarray:
+        """Pids present in the pack ``name``, read from disk."""
+
+    @classmethod
+    @abc.abstractmethod
+    def first_occurrence_times(cls, name: str, pids: np.ndarray) -> np.ndarray:
+        """Earliest pack-token time per pid, aligned to ``pids`` (NaN if absent)."""
 
 
 class MultimodalReader:
@@ -193,7 +222,7 @@ class MultimodalReader:
     def __init__(
         self,
         token_reader: TokenReader,
-        expansion_packs: Mapping[str, TokenReader] | None = None,
+        expansion_packs: Mapping[str, ExpansionPackReader] | None = None,
         biomarkers: Mapping[str, BiomarkerReader] | None = None,
         biomarker2idx: dict[str, int] | None = None,
     ):
@@ -259,6 +288,43 @@ class MultimodalReader:
             "biomarkers": sorted(self.biomarkers),
         }
         pprint.pp(config)
+
+    # ---- full-sequence trajectory queries over the main token stream --------
+    def event_times(self, pids: np.ndarray) -> np.ndarray:
+        """N by (max main-stream token id + 1) array of first-occurrence times;
+        NaN where a token never occurs."""
+        tr = self.token_reader
+        n_cols = max(tr.tokenizer.values()) + 1
+        out = np.full((len(pids), n_cols), np.nan, dtype=np.float32)
+        for i, pid in enumerate(pids):
+            start = tr.start_pos[int(pid)]
+            length = tr.seq_len[int(pid)]
+            x = tr.tokens[start : start + length]
+            t = tr.timesteps[start : start + length].astype(np.float32)
+            uniq, first_idx = np.unique(x, return_index=True)
+            out[i, uniq] = t[first_idx]
+        return out
+
+    def exit_times(self, pids: np.ndarray) -> np.ndarray:
+        """N array of last token times (exit / censoring time)."""
+        tr = self.token_reader
+        out = np.empty(len(pids), dtype=np.float32)
+        for i, pid in enumerate(pids):
+            start = tr.start_pos[int(pid)]
+            length = tr.seq_len[int(pid)]
+            out[i] = tr.timesteps[start + length - 1]
+        return out
+
+    def participants_with_event(self, pids: np.ndarray, event: str) -> np.ndarray:
+        tr = self.token_reader
+        token = tr.tokenizer[event]
+        pids_with_event = list()
+        for pid in pids:
+            start = tr.start_pos[int(pid)]
+            length = tr.seq_len[int(pid)]
+            if token in tr.tokens[start : start + length]:
+                pids_with_event.append(pid)
+        return np.array(pids_with_event)
 
     def __getitem__(self, pid: int):
 
