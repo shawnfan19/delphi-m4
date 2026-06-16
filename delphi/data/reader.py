@@ -1,6 +1,5 @@
 import abc
 import pprint
-from collections.abc import Mapping
 from functools import cached_property
 from typing import Any, ClassVar
 
@@ -41,14 +40,8 @@ class BiomarkerReader(abc.ABC):
 
     # ---- storage seam: the only per-dataset code ----------------------------
     @abc.abstractmethod
-    def _load(
-        self, name: str, memmap: bool = False
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str]]:
-        """Return (values[N, n_features], times[N], pids[N], features) sorted by (pid, time).
-
-        ``memmap`` is a UKB-only storage hint; datasets without a memmap path
-        accept and ignore it.
-        """
+    def _load(self, name: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str]]:
+        """Return (values[N, n_features], times[N], pids[N], features) sorted by (pid, time)."""
 
     @classmethod
     @abc.abstractmethod
@@ -61,9 +54,9 @@ class BiomarkerReader(abc.ABC):
         """A (pid, time) table for ``name`` (no feature payload), read from disk."""
 
     # ---- shared construction: index derivation lives once -------------------
-    def __init__(self, name: str, memmap: bool = False):
+    def __init__(self, name: str):
         self.name = name
-        self.data, self.times, pids, self.features = self._load(name, memmap=memmap)
+        self.data, self.times, pids, self.features = self._load(name)
         self.feat2idx = {feat: i for i, feat in enumerate(self.features)}
         self.n_features = len(self.features)
         uniq, first_idx, counts = np.unique(pids, return_index=True, return_counts=True)
@@ -168,16 +161,12 @@ class ExpansionPackReader(abc.ABC):
     _marker: ClassVar[str] = "tokenizer.yaml"
 
     @abc.abstractmethod
-    def _load(
-        self, name: str, memmap: bool = False
-    ) -> tuple[np.ndarray, np.ndarray, dict, dict, dict]:
+    def _load(self, name: str) -> tuple[np.ndarray, np.ndarray, dict, dict, dict]:
         """Return (tokens, timesteps, start_pos, seq_len, tokenizer) for the pack."""
 
-    def __init__(self, name: str, memmap: bool = False):
+    def __init__(self, name: str):
         self.name = name
-        tokens, timesteps, start_pos, seq_len, tokenizer = self._load(
-            name, memmap=memmap
-        )
+        tokens, timesteps, start_pos, seq_len, tokenizer = self._load(name)
         self.reader = TokenReader(tokens, timesteps, start_pos, seq_len, tokenizer)
         self.pids = np.array(list(start_pos))
 
@@ -234,7 +223,7 @@ class MultimodalReader(abc.ABC):
     # ---- per-dataset seam (subclasses implement) ----------------------------
     @classmethod
     @abc.abstractmethod
-    def _load_token_reader(cls, memmap: bool = False) -> TokenReader:
+    def _load_token_reader(cls) -> TokenReader:
         """Load the dataset's main event stream into a TokenReader."""
 
     @classmethod
@@ -254,19 +243,26 @@ class MultimodalReader(abc.ABC):
 
     def __init__(
         self,
-        token_reader: TokenReader,
-        expansion_packs: Mapping[str, ExpansionPackReader] | None = None,
-        biomarkers: Mapping[str, BiomarkerReader] | None = None,
-        biomarker2idx: dict[str, int] | None = None,
+        expansion_packs: list[str] | None = None,
+        biomarkers: list[str] | dict[str, int] | None = None,
     ):
-        self.token_reader = token_reader
-        self.base_tokenizer = token_reader.tokenizer.copy()
+        """
+        args:
+            expansion_packs: expansion-pack names to compose into the vocabulary.
+            biomarkers: either a list of biomarker names (sorted and assigned
+                indices from RESERVED_MOD_IDX), or a {name: idx} mapping to use
+                as-is (e.g. loaded from a checkpoint). Names are lowercased.
+        """
+        bm_names, biomarker2idx = self._normalize_biomarkers(biomarkers)
+
+        self.token_reader = self._load_token_reader()
+        self.base_tokenizer = self.token_reader.tokenizer.copy()
         self.tokenizer = self.base_tokenizer.copy()
 
         self.expansion_packs = dict()
         self.expansion_offset = dict()
-        for name in sorted(expansion_packs or {}):
-            pack = (expansion_packs or {})[name]
+        for name in sorted(expansion_packs or []):
+            pack = self.expansion_pack_cls(name=name)
             self.expansion_packs[name] = pack
             self.tokenizer, offset = update_tokenizer(
                 base_tokenizer=self.tokenizer,
@@ -275,10 +271,11 @@ class MultimodalReader(abc.ABC):
             self.expansion_offset[name] = offset
         self.vocab_size = len(self.tokenizer)
 
+        built = {name: self.biomarker_cls(name=name) for name in bm_names}
         if biomarker2idx is None:
             self.biomarker2idx = {
                 name.lower(): i + RESERVED_MOD_IDX
-                for i, name in enumerate(sorted(biomarkers or {}))
+                for i, name in enumerate(sorted(built))
             }
         else:
             self.biomarker2idx = {k.lower(): v for k, v in biomarker2idx.items()}
@@ -288,7 +285,7 @@ class MultimodalReader(abc.ABC):
                     f"biomarker indices must be >= {RESERVED_MOD_IDX} "
                     f"(0=padding, 1=event token); got {bad}"
                 )
-        self.biomarkers = {k.lower(): v for k, v in (biomarkers or {}).items()}
+        self.biomarkers = {k.lower(): v for k, v in built.items()}
 
     @staticmethod
     def _normalize_biomarkers(

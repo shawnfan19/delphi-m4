@@ -36,7 +36,7 @@ class Biomarker(BiomarkerReader):
     base_dir = AnyPath(DELPHI_DATA_DIR) / "aou_uk" / "biomarkers"
     _marker = "data.parquet"
 
-    def _load(self, name, memmap=False):  # memmap ignored: parquet has no memmap path
+    def _load(self, name):
         path = self.base_dir / name / "data.parquet"
         assert path.exists(), FileNotFoundError(f"biomarker {path} not found")
         features = self._read_features(name)
@@ -70,7 +70,7 @@ class ExpansionPack(ExpansionPackReader):
 
     base_dir = AnyPath(DELPHI_DATA_DIR) / "aou_uk" / "expansion_packs"
 
-    def _load(self, name, memmap=False):  # memmap ignored: parquet has no memmap path
+    def _load(self, name):
         path = self.base_dir / name
         assert path.exists(), FileNotFoundError(f"expansion pack {path} not found")
         with open(path / "tokenizer.yaml", "r") as f:
@@ -119,26 +119,9 @@ class MultimodalAOUReader(MultimodalReader):
     sex_keys = ["female", "male"]
     FOLDS = ("val", "val_1", "val_2", "val_3", "val_4")
 
-    def __init__(
-        self,
-        expansion_packs: list[str] | None = None,
-        biomarkers: list[str] | dict[str, int] | None = None,
-    ):
-        bm_names, biomarker2idx = self._normalize_biomarkers(biomarkers)
-        super().__init__(
-            token_reader=self._load_token_reader(),
-            expansion_packs={n: ExpansionPack(name=n) for n in expansion_packs or []},
-            biomarkers={n: Biomarker(name=n) for n in bm_names},
-            biomarker2idx=biomarker2idx,
-        )
-
     @classmethod
-    def _load_token_reader(cls, memmap: bool = False) -> TokenReader:
-        """Load the AoU main event stream (data.parquet) into a TokenReader.
-
-        ``memmap`` is accepted for signature parity with the base seam but
-        ignored — parquet has no memmap path.
-        """
+    def _load_token_reader(cls) -> TokenReader:
+        """Load the AoU main event stream (data.parquet) into a TokenReader."""
         with open(cls.base_dir / "tokenizer.yaml", "r") as f:
             tokenizer = yaml.safe_load(f)
         df = pd.read_parquet(

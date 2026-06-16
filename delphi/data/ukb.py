@@ -25,14 +25,10 @@ class Biomarker(BiomarkerReader):
     base_dir = Path(DELPHI_DATA_DIR) / "ukb_real_data" / "biomarkers"
     _marker = "data.bin"
 
-    def _load(self, name, memmap=False):
+    def _load(self, name):
         path = self.base_dir / name
         assert os.path.exists(path), FileNotFoundError(f"biomarker {path} not found")
-        data_path = os.path.join(path, "data.bin")
-        if memmap:
-            flat = np.memmap(data_path, dtype=np.float32, mode="r")
-        else:
-            flat = np.fromfile(data_path, dtype=np.float32)
+        flat = np.fromfile(os.path.join(path, "data.bin"), dtype=np.float32)
 
         features = self._read_features(name)
         p2i = pd.read_csv(os.path.join(path, "p2i.csv")).sort_values(by=["pid", "time"])
@@ -67,7 +63,7 @@ class ExpansionPack(ExpansionPackReader):
 
     base_dir = Path(DELPHI_DATA_DIR) / "ukb_real_data" / "expansion_packs"
 
-    def _load(self, name, memmap=False):
+    def _load(self, name):
         path = self.base_dir / name
         assert os.path.exists(path), FileNotFoundError(
             f"expansion pack {path} not found"
@@ -76,14 +72,8 @@ class ExpansionPack(ExpansionPackReader):
         p2i = p2i[p2i["seq_len"] > 0]
         start_pos = p2i["start_pos"].to_dict()
         seq_len = p2i["seq_len"].to_dict()
-        data_path = os.path.join(path, "data.bin")
-        time_path = os.path.join(path, "time.bin")
-        if memmap:
-            tokens = np.memmap(data_path, dtype=np.uint32, mode="r")
-            timesteps = np.memmap(time_path, dtype=np.uint32, mode="r")
-        else:
-            tokens = np.fromfile(data_path, dtype=np.uint32)
-            timesteps = np.fromfile(time_path, dtype=np.uint32)
+        tokens = np.fromfile(os.path.join(path, "data.bin"), dtype=np.uint32)
+        timesteps = np.fromfile(os.path.join(path, "time.bin"), dtype=np.uint32)
         with open(os.path.join(path, "tokenizer.yaml"), "r") as f:
             tokenizer = yaml.safe_load(f)
         return tokens, timesteps, start_pos, seq_len, tokenizer
@@ -95,7 +85,7 @@ class ExpansionPack(ExpansionPackReader):
 
     @classmethod
     def first_occurrence_times(cls, name: str, pids: np.ndarray) -> np.ndarray:
-        pack = cls(name=name, memmap=True)
+        pack = cls(name=name)
         result = np.full(len(pids), np.nan, dtype=np.float32)
         for i, pid in enumerate(pids):
             if pid in pack.start_pos:
@@ -115,47 +105,16 @@ class MultimodalUKBReader(MultimodalReader):
     lifestyle_keys = bmi_keys + smoking_keys + alcohol_keys
     sex_keys = ["female", "male"]
 
-    def __init__(
-        self,
-        expansion_packs: list[str] | None = None,
-        biomarkers: list[str] | dict[str, int] | None = None,
-        memmap: bool = False,
-    ):
-        """
-        args:
-            expansion_packs: a list of expansion packs to include
-            biomarkers: either a list of biomarker names (sorted and assigned
-                indices starting at RESERVED_MOD_IDX), or a {name: idx} mapping
-                to use as-is (e.g. loaded from a checkpoint). Keys/names are
-                normalized to lowercase.
-            memmap: whether to load data files in memmap mode
-        """
-        bm_names, biomarker2idx = self._normalize_biomarkers(biomarkers)
-        super().__init__(
-            token_reader=self._load_token_reader(memmap=memmap),
-            expansion_packs={
-                n: ExpansionPack(name=n, memmap=memmap) for n in expansion_packs or []
-            },
-            biomarkers={n: Biomarker(name=n, memmap=memmap) for n in bm_names},
-            biomarker2idx=biomarker2idx,
-        )
-
     @classmethod
-    def _load_token_reader(cls, memmap: bool = False) -> TokenReader:
+    def _load_token_reader(cls) -> TokenReader:
         """Load the UKB main event stream (data.bin/time.bin + p2i.csv) into a TokenReader."""
         with open(cls.base_dir / "tokenizer.yaml", "r") as f:
             tokenizer = yaml.safe_load(f)
         p2i = pd.read_csv(cls.base_dir / "p2i.csv", index_col="pid")
         start_pos = p2i["start_pos"].to_dict()
         seq_len = p2i["seq_len"].to_dict()
-        tokens_path = cls.base_dir / "data.bin"
-        time_steps_path = cls.base_dir / "time.bin"
-        if memmap:
-            tokens = np.memmap(tokens_path, dtype=np.uint32, mode="r")
-            timesteps = np.memmap(time_steps_path, dtype=np.uint32, mode="r")
-        else:
-            tokens = np.fromfile(tokens_path, dtype=np.uint32)
-            timesteps = np.fromfile(time_steps_path, dtype=np.uint32)
+        tokens = np.fromfile(cls.base_dir / "data.bin", dtype=np.uint32)
+        timesteps = np.fromfile(cls.base_dir / "time.bin", dtype=np.uint32)
         return TokenReader(tokens, timesteps, start_pos, seq_len, tokenizer)
 
     @classmethod

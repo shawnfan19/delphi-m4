@@ -38,7 +38,7 @@ base_pids = mm_cls.participants("all")
 
 pack_names = args.packs or mm_cls.expansion_pack_cls.catalog()
 for pack_name in pack_names:
-    reader = mm_cls(expansion_packs=[pack_name], memmap=True)
+    reader = mm_cls(expansion_packs=[pack_name])
     pack = reader.expansion_packs[pack_name]
 
     # Intersect pack pids with the base reader's pids — drop orphan pids
