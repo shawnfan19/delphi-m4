@@ -45,7 +45,7 @@ from delphi.multimodal import parse_panel
 class TaskConfig(CliConfig):
     ckpt: str = "delphi-m4/delphi-m4/ckpt.pt"
     batch_size: int = 64
-    min_time_gap: float = 0
+    offset: float = 0
     panel: None | str = None
     biomarkers: None | list = None
     expansion_packs: None | list[str] = None
@@ -70,6 +70,8 @@ class TaskConfig(CliConfig):
                     self.fname += f"-{'-'.join(self.biomarkers)}"
                 if self.expansion_packs is not None:
                     self.fname += f"-{'-'.join(self.expansion_packs)}"
+            if self.offset != 0:
+                self.fname += f"_offset{self.offset}"
 
 
 args = TaskConfig.from_cli()
@@ -146,7 +148,7 @@ ds = MultimodalDataset(
 val_pids = ds.sort_by_length(descending=True)
 
 # +
-offset_days = args.min_time_gap * 365.25
+offset_days = args.offset * 365.25
 model_targets = model.targets.to(device)
 model_targets = model_targets[model_targets != 1]
 

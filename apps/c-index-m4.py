@@ -28,7 +28,7 @@ class TaskConfig(CliConfig):
     ckpt: str = "delphi-m4/delphi-m4/ckpt.pt"
     batch_size: int = 64
     chunk_size: int = 8192
-    min_time_gap: float = 0
+    offset: float = 0
     panel: None | str = None
     biomarkers: None | list = None
     expansion_packs: None | list[str] = None
@@ -52,6 +52,8 @@ class TaskConfig(CliConfig):
                     self.fname += f"-{'-'.join(self.biomarkers)}"
                 if self.expansion_packs is not None:
                     self.fname += f"-{'-'.join(self.expansion_packs)}"
+            if self.offset != 0:
+                self.fname += f"_offset{self.offset}"
 
 
 args = TaskConfig.from_cli()
@@ -132,7 +134,7 @@ ds = MultimodalDataset(
 val_pids = ds.sort_by_length(descending=True)
 
 # +
-offset_days = args.min_time_gap * 365.25
+offset_days = args.offset * 365.25
 model_targets = model.targets.to(device)
 model_targets = model_targets[model_targets != 1]
 
@@ -209,7 +211,7 @@ ckpt_write = AnyPath(str(ckpt).replace(DELPHI_CKPT_READ, DELPHI_CKPT_WRITE))
 ckpt_write.parent.mkdir(parents=True, exist_ok=True)
 
 pids_np = np.array(val_pids)
-ts_df = pd.DataFrame(
+cindex_df = pd.DataFrame(
     {
         "icd": pd.Categorical(
             [reader.detokenizer.get(int(d), str(d)) for d in case_tokens]
@@ -221,7 +223,7 @@ ts_df = pd.DataFrame(
         "total_pairs": total_pairs.astype(np.int32),
     }
 )
-ts_path = ckpt_write.parent / f"{args.fname}_timeseries.parquet"
-with ts_path.open("wb") as f:
-    ts_df.to_parquet(f, engine="pyarrow", compression="snappy", index=False)
-print(f"Saved time series to {ts_path}")
+cindex_path = ckpt_write.parent / f"{args.fname}.parquet"
+with cindex_path.open("wb") as f:
+    cindex_df.to_parquet(f, engine="pyarrow", compression="snappy", index=False)
+print(f"Saved c-index to {cindex_path}")
