@@ -1,8 +1,8 @@
 # CLAUDE.md
 
-> Single source of truth for agent guidance. `AGENTS.md` is a symlink to this
-> file, so Claude Code (`CLAUDE.md`) and other agent tools (`AGENTS.md`) read the
-> same content.
+> Single source of truth for agent guidance — edit this file. `AGENTS.md` is a
+> one-line stub pointing here (Claude Code auto-loads `CLAUDE.md`; other tools
+> follow the `AGENTS.md` pointer).
 
 **Delphi** is a transformer temporal point process (TPP) model of disease natural
 history from EHR sequences of `(token, age-in-days)` events — it predicts what
