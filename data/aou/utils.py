@@ -165,3 +165,8 @@ def _bucket():
 def upload_yaml(data, path: str) -> None:
     """Dump `data` to YAML and upload to gs://{DATA_BUCKET}/{path}."""
     _bucket().blob(path).upload_from_string(yaml.dump(data), content_type="text/yaml")
+
+
+def upload_file(local_path, path: str) -> None:
+    """Upload a local file byte-for-byte to gs://{DATA_BUCKET}/{path}."""
+    _bucket().blob(path).upload_from_filename(str(local_path))

@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import yaml
-from utils import DATA_BUCKET, WORKSPACE_CDR, Client, upload_yaml
+from utils import DATA_BUCKET, WORKSPACE_CDR, Client, upload_file, upload_yaml
 
 # -
 
@@ -14,6 +14,7 @@ try:
 except NameError:  # Jupyter cell execution
     _CORE_DIR = Path(os.getcwd())
 TOKENIZER_PATH = _CORE_DIR.parent / "ukb" / "dictionary" / "tokenizer.yaml"
+LABELS_PATH = _CORE_DIR.parent / "ukb" / "dictionary" / "labels_chapters_colours.csv"
 
 client = Client(dataset=WORKSPACE_CDR)
 
@@ -341,6 +342,11 @@ tokenizer = {
     ): code
     for event, code in tokenizer.items()
 }
+
+# Disease-label metadata (ICD chapters/colors) is shared vocabulary metadata,
+# keyed on the same tokenizer; ship a byte-faithful copy of the canonical UKB
+# file so MultimodalAOUReader.labels() can read it from the AoU data dir.
+upload_file(LABELS_PATH, "aou_uk/labels_chapters_colours.csv")
 
 
 # ## identify tokens not found in UKB (ICD10CM tokens not in ICD10)
