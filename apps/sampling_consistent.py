@@ -7,9 +7,9 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from delphi.data import Dataset
-from delphi.data.transform import Prompt, TokenTransform
-from delphi.data.ukb import UKBReader
+from delphi.data import MultimodalDataset
+from delphi.data.transform import MultimodalPrompt, TokenTransform
+from delphi.data.ukb import MultimodalUKBReader
 from delphi.data.utils import collate_batches
 from delphi.env import DELPHI_CKPT_DIR
 from delphi.eval import (
@@ -35,17 +35,17 @@ pprint.pp(args)
 model, ckpt_dict = load_ckpt(Path(DELPHI_CKPT_DIR) / args.ckpt)
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-reader = UKBReader()
-pids = UKBReader.participants("val")
+reader = MultimodalUKBReader(biomarkers=None)
+pids = MultimodalUKBReader.participants("val")
 
 token_transform = TokenTransform(block_size=None)
 if args.prompt_age is not None:
     args.prompt_age = args.prompt_age * 365.25
-prompt_transform = Prompt(
-    prompt_age=args.prompt_age, append_no_event=args.prompt_no_event
+prompt_transform = MultimodalPrompt(
+    prompt_age=args.prompt_age, biomarker2idx={}, append_no_event=args.prompt_no_event
 )
 
-ds = Dataset(
+ds = MultimodalDataset(
     reader=reader,
     pids=pids,
     token_transform=token_transform,
@@ -63,7 +63,7 @@ it = eval_iter(total_size=len(ds), batch_size=args.batch_size)
 pbar = tqdm(it, total=math.ceil(len(ds) / args.batch_size))
 for batch_idx in pbar:
 
-    pmt_idx, pmt_age, _, _ = ds.get_batch(batch_idx)
+    pmt_idx, pmt_age, _, _, _, _, _ = ds.get_batch(batch_idx)
     pmt_idx = pmt_idx.to(device)
     pmt_age = pmt_age.to(device)
 
@@ -119,7 +119,7 @@ calc = kaplan_meier_incidence(
 syn = syn_estimator.incidence(start_age * 365.25, end_age * 365.25)
 
 
-labels = UKBReader.labels()
+labels = MultimodalUKBReader.labels()
 
 plt.figure()
 plt.scatter(calc[13:], syn[13:], marker=".", c=labels["color"][13:])

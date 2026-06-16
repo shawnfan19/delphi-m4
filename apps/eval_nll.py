@@ -11,9 +11,9 @@ import numpy as np
 import torch
 from tqdm.autonotebook import tqdm
 
-from delphi.data import Dataset
+from delphi.data import MultimodalDataset
 from delphi.data.transform import TokenTransform
-from delphi.data.ukb import NO_EVENT_TOKEN, UKBReader
+from delphi.data.ukb import NO_EVENT_TOKEN, MultimodalUKBReader
 from delphi.env import DELPHI_CKPT_DIR
 from delphi.experiment import eval_iter, load_ckpt, move_batch_to_device
 
@@ -177,13 +177,14 @@ model, ckpt_dict = load_ckpt(ckpt_path)
 device = next(model.parameters()).device
 
 token_transform_args = ckpt_dict["token_transform_args"]
-val_pids = UKBReader.participants("val")
+val_pids = MultimodalUKBReader.participants("val")
 
-reader = UKBReader()
+# unimodal eval: multimodal reader with no biomarkers loaded
+reader = MultimodalUKBReader(biomarkers=None)
 token_transform = TokenTransform(**token_transform_args)
 token_transform.describe()
 
-ds = Dataset(reader=reader, pids=val_pids, token_transform=token_transform)
+ds = MultimodalDataset(reader=reader, pids=val_pids, token_transform=token_transform)
 
 has_no_event = token_transform_args.get("no_event_interval") is not None
 print(f"has_no_event: {has_no_event}")
@@ -191,7 +192,7 @@ print(f"has_no_event: {has_no_event}")
 # build reverse tokenizer
 idx_to_event = {v: k for k, v in reader.tokenizer.items()}
 
-# determine which tokens are ignored (matching training logic in Delphi2M.forward)
+# determine which tokens are ignored (matching the model's training logic)
 ignored_tokens = {0}
 if model.config.ignore_tokens is not None:
     ignored_tokens.update(model.config.ignore_tokens)
@@ -218,9 +219,9 @@ with torch.no_grad():
     for batch_idx in it:
         batch_input = ds.get_batch(batch_idx)
         batch_input = move_batch_to_device(batch_input, device=device)
-        x0, t0, x1, t1 = batch_input
+        x0, t0, _, _, _, x1, t1 = batch_input
 
-        # forward pass without targets to get outputs
+        # forward pass without targets to get outputs (unimodal: no biomarkers)
         outputs, _, _ = model(x0, t0)
 
         # compute per-position loss (invalid positions are NaN)

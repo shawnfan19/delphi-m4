@@ -23,9 +23,9 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from delphi.data import Dataset
-from delphi.data.transform import Prompt, TokenTransform
-from delphi.data.ukb import UKBReader
+from delphi.data import MultimodalDataset
+from delphi.data.transform import MultimodalPrompt, TokenTransform
+from delphi.data.ukb import MultimodalUKBReader
 from delphi.data.utils import pack_clusters
 from delphi.env import DELPHI_CKPT_DIR
 from delphi.eval import ClusterStatsTracker, CooccurrenceTracker
@@ -42,8 +42,8 @@ model, ckpt_dict = load_ckpt(Path(DELPHI_CKPT_DIR) / args.ckpt)
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 # %%
-reader = UKBReader()
-pids = UKBReader.participants("val")
+reader = MultimodalUKBReader(biomarkers=None)
+pids = MultimodalUKBReader.participants("val")
 
 token_transform_args = ckpt_dict["token_transform_args"]
 token_transform = TokenTransform(**token_transform_args)
@@ -69,8 +69,10 @@ if prompt_age_arg == "recruitment":
     prompt_age = {int(p): float(a) for p, a in zip(pids, rec[has_rec])}
 else:
     prompt_age = float(prompt_age_arg) * 365.25
-prompt_transform = Prompt(prompt_age=prompt_age, append_no_event=args.prompt_no_event)
-ds = Dataset(
+prompt_transform = MultimodalPrompt(
+    prompt_age=prompt_age, biomarker2idx={}, append_no_event=args.prompt_no_event
+)
+ds = MultimodalDataset(
     reader=reader,
     pids=pids,
     token_transform=token_transform,
@@ -92,7 +94,7 @@ stats = ClusterStatsTracker()
 torch.manual_seed(42)
 
 for batch_idx in pbar:
-    pmt_idx, pmt_age, X1, T1 = ds.get_batch(batch_idx)
+    pmt_idx, pmt_age, _, _, _, X1, T1 = ds.get_batch(batch_idx)
     if isinstance(prompt_age, dict):
         batch_pids = ds.participants[batch_idx]
         cutoff = np.array([prompt_age[int(p)] for p in batch_pids])[:, None]

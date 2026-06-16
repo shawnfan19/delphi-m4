@@ -1,1 +1,1 @@
-from .dataset import Dataset, MultimodalDataset
+from .dataset import MultimodalDataset

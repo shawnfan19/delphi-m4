@@ -296,6 +296,9 @@ class MultimodalUKBReader(MultimodalReader):
     def recruitment_times(self, pids: np.ndarray) -> np.ndarray:
         return self.token_reader.recruitment_times(pids)
 
+    def participants_with_event(self, pids: np.ndarray, event: str) -> np.ndarray:
+        return self.token_reader.participants_with_event(pids, event)
+
     @classmethod
     def filter_participants_with_biomarkers(cls, pids, biomarkers, any=True):
         filter_list = [Biomarker.participants(b) for b in biomarkers]

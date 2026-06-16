@@ -1,1 +1,1 @@
-from .transformer import Delphi2M, Delphi2MConfig
+from .multimodal import DelphiM4, DelphiM4Config

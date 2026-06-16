@@ -14,7 +14,8 @@ production.
 
 import torch
 
-from delphi.model.transformer import CausalSelfAttention, Delphi2MConfig
+from delphi.model.multimodal import DelphiM4Config
+from delphi.model.transformer import CausalSelfAttention
 from delphi.model.utils import causal_attention_mask, incremental_attention_mask
 
 ATOL, RTOL = 1e-5, 1e-4
@@ -23,7 +24,7 @@ N_HEAD, N_EMBD = 4, 32
 
 def _attention():
     torch.manual_seed(0)
-    cfg = Delphi2MConfig(n_head=N_HEAD, n_embd=N_EMBD, dropout=0.0)
+    cfg = DelphiM4Config(n_head=N_HEAD, n_embd=N_EMBD, dropout=0.0)
     return CausalSelfAttention(cfg).eval()
 
 

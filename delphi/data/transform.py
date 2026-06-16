@@ -300,42 +300,6 @@ class BiomarkerTransform:
         }
 
 
-class Prompt:
-    """Instance-level prompt cutting for token sequences.
-
-    Splits a full sequence into prompt and ground truth at a cutoff age.
-    `prompt_age` may be a scalar shared across participants, or a dict
-    mapping pid -> age.
-    """
-
-    def __init__(
-        self,
-        prompt_age: float | dict,
-        append_no_event: bool = False,
-    ):
-        self._init_args = {k: v for k, v in locals().items() if k != "self"}
-
-        self.prompt_age = prompt_age
-        self.append_no_event = append_no_event
-
-    def __call__(self, x, t, pid=None):
-        if isinstance(self.prompt_age, dict):
-            assert pid is not None, "pid is required when prompt_age is a mapping"
-            cutoff = self.prompt_age[pid]
-        else:
-            cutoff = self.prompt_age
-
-        pmt_mask = t <= cutoff
-        pmt_x = x[pmt_mask]
-        pmt_t = t[pmt_mask]
-
-        if self.append_no_event:
-            pmt_x = np.append(pmt_x, 1)
-            pmt_t = np.append(pmt_t, cutoff)
-
-        return pmt_x, pmt_t, x, t
-
-
 class MultimodalPrompt:
     """instance-level prompt cutting for multimodal data.
 

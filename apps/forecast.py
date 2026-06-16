@@ -9,9 +9,9 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from delphi.data.dataset import Dataset
-from delphi.data.transform import Prompt, TokenTransform
-from delphi.data.ukb import UKBReader
+from delphi.data.dataset import MultimodalDataset
+from delphi.data.transform import MultimodalPrompt, TokenTransform
+from delphi.data.ukb import MultimodalUKBReader
 from delphi.env import DELPHI_CKPT_READ, DELPHI_CKPT_WRITE
 from delphi.eval.auc import batched_mann_whitney_auc
 from delphi.eval.survival import KaplanMeierEstimator, NelsonAalenEstimator
@@ -62,10 +62,11 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 assert model.config.block_size is None
 
 token_transform_args = ckpt_dict["token_transform_args"]
-val_pids = UKBReader.participants("val")
+val_pids = MultimodalUKBReader.participants("val")
 # -
 
-reader = UKBReader()
+# unimodal forecast: multimodal reader with no biomarkers loaded
+reader = MultimodalUKBReader(biomarkers=None)
 token_transform = TokenTransform(**token_transform_args)
 token_transform.describe()
 
@@ -80,11 +81,11 @@ exit_times = reader.exit_times(val_pids)
 val_pids = val_pids[exit_times > prompt_age]
 prompt_age = prompt_age[exit_times > prompt_age]
 prompt_age_dict = dict(zip(val_pids, prompt_age))
-prompt_transform = Prompt(
-    prompt_age=prompt_age_dict, append_no_event=args.prompt_no_event
+prompt_transform = MultimodalPrompt(
+    prompt_age=prompt_age_dict, biomarker2idx={}, append_no_event=args.prompt_no_event
 )
 
-ds = Dataset(
+ds = MultimodalDataset(
     reader=reader,
     pids=val_pids,
     token_transform=token_transform,
@@ -99,7 +100,7 @@ if args.method == "hazards":
     predictor_tally = defaultdict(list)
     for batch_idx in pbar:
 
-        pmt_idx, pmt_age, X1, T1 = move_batch_to_device(
+        pmt_idx, pmt_age, _, _, _, X1, T1 = move_batch_to_device(
             ds.get_batch(batch_idx), device=device
         )
 
@@ -129,7 +130,7 @@ else:
     for batch_idx in pbar:
 
         batch_idx = np.repeat(batch_idx, args.n_repeats)
-        pmt_idx, pmt_age, X1, T1 = move_batch_to_device(
+        pmt_idx, pmt_age, _, _, _, X1, T1 = move_batch_to_device(
             ds.get_batch(batch_idx), device=device
         )
         t0 = torch.as_tensor(

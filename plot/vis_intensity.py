@@ -8,9 +8,9 @@ import torch
 import torch.nn.functional as F
 from cloudpathlib import AnyPath
 
-from delphi.data import Dataset
+from delphi.data import MultimodalDataset
 from delphi.data.transform import TokenTransform
-from delphi.data.ukb import UKBReader
+from delphi.data.ukb import MultimodalUKBReader
 from delphi.env import DELPHI_CKPT_READ
 from delphi.experiment import CliConfig, load_ckpt, move_batch_to_device
 from delphi.model.tpp import HomoPoissonTPP, NeuralTPP, tpp_dispatch
@@ -31,8 +31,8 @@ ckpt = AnyPath(DELPHI_CKPT_READ) / args.ckpt
 model, ckpt_dict = load_ckpt(ckpt)
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-val_pids = UKBReader.participants("val")
-reader = UKBReader()
+val_pids = MultimodalUKBReader.participants("val")
+reader = MultimodalUKBReader(biomarkers=None)
 val_pids = reader.participants_with_event(pids=val_pids, event=args.event)
 rng = np.random.default_rng(seed=42)
 val_pids = rng.permutation(val_pids)
@@ -43,14 +43,14 @@ token_transform_args = ckpt_dict["token_transform_args"]
 token_transform = TokenTransform(**token_transform_args)
 token_transform.describe()
 
-ds = Dataset(
+ds = MultimodalDataset(
     reader=reader,
     pids=val_pids,
     token_transform=token_transform,
 )
 
 for i in range(len(ds)):
-    x0, t0, x1, t1 = move_batch_to_device(ds.get_batch([i]), device=device)
+    x0, t0, _, _, _, x1, t1 = move_batch_to_device(ds.get_batch([i]), device=device)
     outputs, _, _ = model(x0, t0)
     tpp = tpp_dispatch(model, outputs)
     # Reshape to (1, 1, N) for the interpolate function

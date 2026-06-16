@@ -11,9 +11,6 @@ import torch
 import torch.nn.functional as F
 from cloudpathlib import AnyPath
 
-from delphi.data import Dataset
-from delphi.data.transform import TokenTransform
-from delphi.data.ukb import UKBReader
 from delphi.env import DELPHI_CKPT_READ as DELPHI_CKPT_DIR
 from delphi.experiment import CliConfig, flexi_list, load_json
 

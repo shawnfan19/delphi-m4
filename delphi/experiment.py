@@ -23,7 +23,6 @@ from delphi import distributed
 from delphi.env import DELPHI_CKPT_DIR
 from delphi.log import Checkpointer, Logger, _format_for_display
 from delphi.model.multimodal import DelphiM4, DelphiM4Config
-from delphi.model.transformer import Delphi2M, Delphi2MConfig
 from delphi.optim import (
     configure_optimizer,
     configure_scheduler,
@@ -541,6 +540,47 @@ def _remap_legacy_state_dict(state_dict: dict) -> dict:
     return out
 
 
+# Delphi2M (the retired unimodal model) is the zero-biomarker special case of
+# DelphiM4: the two build an identical transformer/lm_head state_dict (verified
+# key-for-key) and DelphiM4's forward reduces to Delphi2M's when no biomarkers are
+# passed. So a delphi-2m checkpoint loads by translating its config into a
+# zero-biomarker DelphiM4Config; the weights then transfer 1:1 via load_state_dict.
+_DELPHI2M_LOSS_REMAP = {
+    # delphi-2m loss name -> delphi-m4 loss name. "default" and "homo_poisson" both
+    # produce logits via lm_head and are read through HomoPoissonTPP at inference,
+    # so they map to the same M4 head with identical forward numerics.
+    "default": "homo_poisson",
+    "homo_poisson": "homo_poisson",
+}
+
+
+def _upgrade_delphi2m_model_args(model_args: dict) -> dict:
+    """Translate delphi-2m model_args into zero-biomarker delphi-m4 model_args.
+
+    Only fields shared with DelphiM4Config survive load_ckpt's later field filter,
+    so this just remaps the loss name, clears biomarkers, and rejects the two
+    settings DelphiM4 cannot reproduce (cluster-poisson has no M4 head;
+    mask_no_event_attention has no M4 equivalent).
+    """
+    out = dict(model_args)
+    if out.get("mask_no_event_attention"):
+        raise ValueError(
+            "cannot load delphi-2m checkpoint with mask_no_event_attention=True: "
+            "DelphiM4 has no equivalent attention-masking flag"
+        )
+    loss = out.get("loss", "default")
+    if loss not in _DELPHI2M_LOSS_REMAP:
+        raise ValueError(
+            f"cannot load delphi-2m checkpoint with loss={loss!r} into DelphiM4 "
+            f"(supported: {sorted(_DELPHI2M_LOSS_REMAP)}); "
+            "e.g. homo_cluster_poisson is not wired into DelphiM4"
+        )
+    out["loss"] = _DELPHI2M_LOSS_REMAP[loss]
+    out["biomarkers"] = {}
+    out["biomarker2idx"] = {}
+    return out
+
+
 def load_ckpt(ckpt_path):
 
     ckpt_path = AnyPath(ckpt_path)
@@ -549,16 +589,27 @@ def load_ckpt(ckpt_path):
         ckpt_dict = torch.load(f, map_location=device)
     model_type = ckpt_dict["model_type"]
     if model_type == "delphi-2m":
-        model_cfg_cls = Delphi2MConfig
-        model_cls = Delphi2M
-    elif model_type == "delphi-m4":
+        # Delphi2M was retired; load its checkpoints as a zero-biomarker DelphiM4
+        # (identical transformer/lm_head weights and forward numerics).
+        print(
+            "[load_ckpt] upgrading delphi-2m checkpoint to DelphiM4 (zero biomarkers)"
+        )
+        ckpt_dict["model_args"] = _upgrade_delphi2m_model_args(ckpt_dict["model_args"])
+        ckpt_dict.setdefault(
+            "reader_args", {"biomarkers": None, "expansion_packs": None}
+        )
+        model_type = "delphi-m4"
+
+    if model_type == "delphi-m4":
         model_cfg_cls = DelphiM4Config
         model_cls = DelphiM4
     else:
-        raise ValueError
+        raise ValueError(
+            f"unsupported model_type {model_type!r}; expected 'delphi-m4' "
+            "(or 'delphi-2m', which is upgraded to DelphiM4 on load)"
+        )
 
-    if model_type == "delphi-m4":
-        _backfill_biomarker2idx(ckpt_dict["model_args"])
+    _backfill_biomarker2idx(ckpt_dict["model_args"])
     _backfill_reader_args(ckpt_dict)
 
     pprint.pp(ckpt_dict["model_args"])
