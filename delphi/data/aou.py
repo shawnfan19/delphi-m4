@@ -6,7 +6,7 @@ import pyarrow.parquet as pq
 import yaml
 from cloudpathlib import AnyPath
 
-from delphi.data.reader import MultimodalReader, TokenReader
+from delphi.data.reader import BiomarkerReader, MultimodalReader, TokenReader
 from delphi.data.utils import filter_participants, list_subdirs
 from delphi.env import DELPHI_DATA_READ as DELPHI_DATA_DIR
 
@@ -81,95 +81,40 @@ def _infer_features(columns) -> list[str]:
     return [c for c in columns if all(f"{c}{suf}" in cols for suf in METADATA_SUFFIXES)]
 
 
-class AOUBiomarker:
+class Biomarker(BiomarkerReader):
+    """AoU biomarker store. ``data.parquet`` already holds a 2-D measurement
+    matrix (rows = measurements, cols = features), so ``_load`` reads the feature
+    columns directly. All access logic lives on :class:`BiomarkerReader`."""
 
     base_dir = AnyPath(DELPHI_DATA_DIR) / "aou_uk" / "biomarkers"
+    _marker = "data.parquet"
 
-    def __init__(self, name: str):
+    def _load(self, name, memmap=False):  # memmap ignored: parquet has no memmap path
         path = self.base_dir / name / "data.parquet"
         assert path.exists(), FileNotFoundError(f"biomarker {path} not found")
-        self.path = path
-
-        features = _infer_features(pq.read_schema(str(path)).names)
+        features = self._read_features(name)
         df = pd.read_parquet(
             path, columns=["person_id", "age_in_days"] + features
         ).sort_values(["person_id", "age_in_days"])
-
-        self.features = features
-        self.feat2idx = {f: i for i, f in enumerate(features)}
-        self.n_features = len(features)
-
-        self.data = df[features].to_numpy(dtype=np.float32)
-        self.time_steps = df["age_in_days"].to_numpy(dtype=np.float32)
-        self.pids = df["person_id"].to_numpy()
-
-        uniq, first_idx, counts = np.unique(
-            self.pids, return_index=True, return_counts=True
+        return (
+            df[features].to_numpy(dtype=np.float32),
+            df["age_in_days"].to_numpy(dtype=np.float32),
+            df["person_id"].to_numpy(),
+            features,
         )
-        self.pid2idx = dict(zip(uniq, first_idx))
-        self.pid2cnt = dict(zip(uniq, counts))
 
     @classmethod
-    def catalog(cls) -> list[str]:
-        """All biomarker names available under base_dir."""
-        return list_subdirs(cls.base_dir, "data.parquet")
-
-    @classmethod
-    def input_size(cls, name: str) -> int:
+    def _read_features(cls, name: str) -> list[str]:
         cols = pq.read_schema(str(cls.base_dir / name / "data.parquet")).names
-        return len(_infer_features(cols))
+        return _infer_features(cols)
 
     @classmethod
-    def participants(cls, name: str) -> np.ndarray:
-        df = pd.read_parquet(
-            cls.base_dir / name / "data.parquet", columns=["person_id"]
-        )
-        return df["person_id"].unique()
-
-    @classmethod
-    def first_occurrence_times(cls, name: str, pids: np.ndarray) -> np.ndarray:
+    def _read_index(cls, name: str) -> pd.DataFrame:
         df = pd.read_parquet(
             cls.base_dir / name / "data.parquet",
             columns=["person_id", "age_in_days"],
-        ).sort_values(["person_id", "age_in_days"])
-        first = df.groupby("person_id")["age_in_days"].first()
-        result = np.full(len(pids), np.nan, dtype=np.float32)
-        for i, pid in enumerate(pids):
-            if pid in first.index:
-                result[i] = first.loc[pid]
-        return result
-
-    def __repr__(self):
-        return f"AOUBiomarker(path={self.path}, n_features={self.n_features})"
-
-    def __getitem__(
-        self, pid: int
-    ) -> tuple[None | list[np.ndarray], None | np.ndarray]:
-
-        if pid not in self.pid2idx:
-            return None, None
-
-        i = self.pid2idx[pid]
-        n = self.pid2cnt[pid]
-        pid_data = [self.data[j] for j in range(i, i + n)]
-        return pid_data, self.time_steps[i : i + n]
-
-    def to_array(self, subjects) -> np.ndarray:
-        """First-occurrence feature vector per subject, aligned to `subjects`.
-
-        Returns an (len(subjects), n_features) array; rows for subjects with no
-        measurement are NaN. pid2idx maps a pid to its first row in self.data.
-        """
-        out = np.full((len(subjects), self.n_features), np.nan, dtype=np.float32)
-        for k, pid in enumerate(subjects):
-            j = self.pid2idx.get(int(pid))
-            if j is not None:
-                out[k] = self.data[j]
-        return out
-
-    def stats(self, subjects: np.ndarray):
-        data = self.to_array(subjects)
-        return np.nanmean(data, axis=0), np.nanstd(data, axis=0)
+        )
+        return df.rename(columns={"person_id": "pid", "age_in_days": "time"})
 
 
 class AOUExpansionPack(TokenReader):
@@ -230,7 +175,7 @@ class MultimodalAOUReader(MultimodalReader):
     token_reader: AOUReader
 
     reader_cls = AOUReader
-    biomarker_cls = AOUBiomarker
+    biomarker_cls = Biomarker
     expansion_pack_cls = AOUExpansionPack
 
     bmi_keys = AOUReader.bmi_keys
@@ -249,7 +194,7 @@ class MultimodalAOUReader(MultimodalReader):
             expansion_packs={
                 n: AOUExpansionPack(name=n) for n in expansion_packs or []
             },
-            biomarkers={n: AOUBiomarker(name=n) for n in bm_names},
+            biomarkers={n: Biomarker(name=n) for n in bm_names},
             biomarker2idx=biomarker2idx,
         )
 
@@ -263,11 +208,11 @@ class MultimodalAOUReader(MultimodalReader):
 
         NaN where the participant has no biomarker measurements at all.
         """
-        names = AOUBiomarker.catalog()
+        names = Biomarker.catalog()
         if not names:
             return np.full(len(pids), np.nan, dtype=np.float32)
         stack = np.stack(
-            [AOUBiomarker.first_occurrence_times(n, pids) for n in names], axis=0
+            [Biomarker.first_occurrence_times(n, pids) for n in names], axis=0
         )
         return np.fmin.reduce(stack, axis=0)
 
@@ -282,7 +227,7 @@ class MultimodalAOUReader(MultimodalReader):
 
     @classmethod
     def filter_participants_with_biomarkers(cls, pids, biomarkers, any=True):
-        filter_list = [AOUBiomarker.participants(b) for b in biomarkers]
+        filter_list = [Biomarker.participants(b) for b in biomarkers]
         return filter_participants(pids, filter_list, any)
 
     @classmethod

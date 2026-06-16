@@ -1,22 +1,125 @@
+import abc
 import pprint
+from collections.abc import Mapping
 from functools import cached_property
-from typing import Protocol
+from typing import Any, ClassVar
 
 import numpy as np
+import pandas as pd
 
-from delphi.data.utils import sort_by_time, update_tokenizer
+from delphi.data.utils import list_subdirs, sort_by_time, update_tokenizer
 
 RESERVED_MOD_IDX = 2  # 0 = padding, 1 = event tokens
 
 
-class _Biomarker(Protocol):
-    """Structural type for biomarker instances composed by MultimodalReader."""
+class BiomarkerReader(abc.ABC):
+    """Abstract biomarker store: shared access logic + a per-dataset storage seam.
 
-    features: list[str]
+    Concrete subclasses (one per dataset, all named ``Biomarker`` because only
+    one dataset is ever live in a given environment) implement *only* the
+    storage adapter: the ``base_dir`` / ``_marker`` class attributes and the
+    ``_load`` / ``_read_features`` / ``_read_index`` hooks. Everything else —
+    per-pid access, first-occurrence vectors, stats, and the disk-only catalog
+    queries — lives here once.
 
+    Canonical in-memory layout (each ``_load`` normalizes its storage to it):
+        data:  (n_measurements, n_features) float32, rows grouped by pid then
+               ordered by time.
+        times: (n_measurements,) float32, aligned row-for-row to ``data``.
+        pid2idx / pid2cnt: pid -> first row / number of rows in ``data``.
+    """
+
+    # Set by subclasses: base_dir is a pathlib.Path (UKB) or cloudpathlib.AnyPath
+    # (AoU); _marker is the filename marking a biomarker dir.
+    base_dir: ClassVar[Any]
+    _marker: ClassVar[str]
+
+    # ---- storage seam: the only per-dataset code ----------------------------
+    @abc.abstractmethod
+    def _load(
+        self, name: str, memmap: bool = False
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str]]:
+        """Return (values[N, n_features], times[N], pids[N], features) sorted by (pid, time).
+
+        ``memmap`` is a UKB-only storage hint; datasets without a memmap path
+        accept and ignore it.
+        """
+
+    @classmethod
+    @abc.abstractmethod
+    def _read_features(cls, name: str) -> list[str]:
+        """Feature names for ``name``, read from disk without building an instance."""
+
+    @classmethod
+    @abc.abstractmethod
+    def _read_index(cls, name: str) -> pd.DataFrame:
+        """A (pid, time) table for ``name`` (no feature payload), read from disk."""
+
+    # ---- shared construction: index derivation lives once -------------------
+    def __init__(self, name: str, memmap: bool = False):
+        self.name = name
+        self.data, self.times, pids, self.features = self._load(name, memmap=memmap)
+        self.feat2idx = {feat: i for i, feat in enumerate(self.features)}
+        self.n_features = len(self.features)
+        uniq, first_idx, counts = np.unique(pids, return_index=True, return_counts=True)
+        self.pid2idx = dict(zip(uniq, first_idx))
+        self.pid2cnt = dict(zip(uniq, counts))
+
+    # ---- shared per-instance access -----------------------------------------
     def __getitem__(
         self, pid: int
-    ) -> tuple[list[np.ndarray] | None, np.ndarray | None]: ...
+    ) -> tuple[list[np.ndarray] | None, np.ndarray | None]:
+        if pid not in self.pid2idx:
+            return None, None
+        i, n = self.pid2idx[pid], self.pid2cnt[pid]
+        return list(self.data[i : i + n]), self.times[i : i + n]
+
+    def to_array(self, subjects) -> np.ndarray:
+        """First-occurrence feature vector per subject, aligned to ``subjects``.
+
+        Returns an (len(subjects), n_features) array; rows for subjects with no
+        measurement are NaN. pid2idx points at each pid's first row, which —
+        because rows are time-ordered within a pid — is the earliest measurement.
+        """
+        out = np.full((len(subjects), self.n_features), np.nan, dtype=np.float32)
+        for k, pid in enumerate(subjects):
+            j = self.pid2idx.get(int(pid))
+            if j is not None:  # absent (note: j may be 0, so test `is None`)
+                out[k] = self.data[j]
+        return out
+
+    def stats(self, subjects: np.ndarray):
+        data = self.to_array(subjects)
+        return np.nanmean(data, axis=0), np.nanstd(data, axis=0)
+
+    def __repr__(self):
+        return (
+            f"{type(self).__name__}(name={self.name!r}, n_features={self.n_features})"
+        )
+
+    # ---- shared disk-only catalog queries (no instance needed) --------------
+    @classmethod
+    def catalog(cls) -> list[str]:
+        """All biomarker names available under base_dir."""
+        return list_subdirs(cls.base_dir, cls._marker)
+
+    @classmethod
+    def input_size(cls, name: str) -> int:
+        return len(cls._read_features(name))
+
+    @classmethod
+    def participants(cls, name: str) -> np.ndarray:
+        return cls._read_index(name)["pid"].unique()  # type: ignore
+
+    @classmethod
+    def first_occurrence_times(cls, name: str, pids: np.ndarray) -> np.ndarray:
+        idx = cls._read_index(name).sort_values(["pid", "time"])
+        first = idx.groupby("pid")["time"].first()
+        result = np.full(len(pids), np.nan, dtype=np.float32)
+        for i, pid in enumerate(pids):
+            if pid in first.index:
+                result[i] = first.loc[pid]
+        return result
 
 
 class TokenReader:
@@ -90,8 +193,8 @@ class MultimodalReader:
     def __init__(
         self,
         token_reader: TokenReader,
-        expansion_packs: dict[str, TokenReader] | None = None,
-        biomarkers: dict[str, _Biomarker] | None = None,
+        expansion_packs: Mapping[str, TokenReader] | None = None,
+        biomarkers: Mapping[str, BiomarkerReader] | None = None,
         biomarker2idx: dict[str, int] | None = None,
     ):
         self.token_reader = token_reader

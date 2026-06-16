@@ -6,7 +6,7 @@ import pandas as pd
 import yaml
 from cloudpathlib import AnyPath
 
-from delphi.data.reader import MultimodalReader, TokenReader
+from delphi.data.reader import BiomarkerReader, MultimodalReader, TokenReader
 from delphi.data.utils import filter_participants, list_subdirs
 from delphi.env import DELPHI_DATA_READ as DELPHI_DATA_DIR
 
@@ -84,108 +84,48 @@ class UKBReader(TokenReader):
         return np.nanmin(event_times[:, lifestyle_tokens], axis=1)
 
 
-class Biomarker:
+class Biomarker(BiomarkerReader):
+    """UKB biomarker store. Flat ``data.bin`` (float32) + ``p2i.csv`` (pid, time,
+    start_pos, seq_len); ``_load`` gathers the ragged-flat rows into the 2-D
+    canonical layout. All access logic lives on :class:`BiomarkerReader`."""
 
     base_dir = Path(DELPHI_DATA_DIR) / "ukb_real_data" / "biomarkers"
+    _marker = "data.bin"
 
-    def __init__(
-        self,
-        name: str,
-        memmap: bool = False,
-    ):
-
+    def _load(self, name, memmap=False):
         path = self.base_dir / name
         assert os.path.exists(path), FileNotFoundError(f"biomarker {path} not found")
-        self.path = path
         data_path = os.path.join(path, "data.bin")
         if memmap:
-            self.data = np.memmap(data_path, dtype=np.float32, mode="r")
+            flat = np.memmap(data_path, dtype=np.float32, mode="r")
         else:
-            self.data = np.fromfile(data_path, dtype=np.float32)
+            flat = np.fromfile(data_path, dtype=np.float32)
 
-        with open(os.path.join(path, "features.yaml"), "r") as f:
-            self.features = yaml.safe_load(f)
-        self.feat2idx = {feat: i for i, feat in enumerate(self.features)}
-        self.n_features = len(self.features)
-
+        features = self._read_features(name)
         p2i = pd.read_csv(os.path.join(path, "p2i.csv")).sort_values(by=["pid", "time"])
-        self.start_pos = p2i["start_pos"].to_numpy()
-        self.seq_len = p2i["seq_len"].to_numpy()
-        self.time_steps = p2i["time"].to_numpy()
-        self.pids = p2i["pid"].to_numpy()
-        self.uniq_pids, ct = np.unique(p2i["pid"].to_numpy(), return_counts=True)
-        cumul_ct = np.insert(np.cumsum(ct), 0, 0, axis=0)
-        self.pid2idx = dict(zip(self.uniq_pids, cumul_ct))
-        self.pid2cnt = dict(zip(self.uniq_pids, ct))
-
-    @classmethod
-    def input_size(cls, name: str):
-        with open(cls.base_dir / name / "features.yaml", "r") as f:
-            features = yaml.safe_load(f)
-        return len(features)
-
-    @classmethod
-    def participants(cls, name: str) -> np.ndarray:
-        p2i = pd.read_csv(cls.base_dir / name / "p2i.csv")
-        return p2i["pid"].unique()  # type: ignore
-
-    @classmethod
-    def first_occurrence_times(cls, name: str, pids: np.ndarray) -> np.ndarray:
-        """Like first_occurrence_times, but reads p2i.csv without a full instance."""
-        p2i = pd.read_csv(cls.base_dir / name / "p2i.csv").sort_values(
-            by=["pid", "time"]
+        start_pos = p2i["start_pos"].to_numpy()
+        seq_len = p2i["seq_len"].to_numpy()
+        if len(start_pos):
+            # each visit is one fixed-width (== n_features) feature vector; gather
+            # the flat slices, in (pid, time) order, into a 2-D measurement matrix
+            values = np.stack([flat[i : i + l] for i, l in zip(start_pos, seq_len)])
+        else:
+            values = np.empty((0, len(features)), dtype=np.float32)
+        return (
+            values,
+            p2i["time"].to_numpy(dtype=np.float32),
+            p2i["pid"].to_numpy(),
+            features,
         )
-        first = p2i.groupby("pid")["time"].first()
-        result = np.full(len(pids), np.nan, dtype=np.float32)
-        for i, pid in enumerate(pids):
-            if pid in first.index:
-                result[i] = first.loc[pid]
-        return result
 
     @classmethod
-    def catalog(cls) -> list[str]:
-        """All biomarker names available under base_dir."""
-        return list_subdirs(cls.base_dir, "data.bin")
+    def _read_features(cls, name: str) -> list[str]:
+        with open(cls.base_dir / name / "features.yaml", "r") as f:
+            return yaml.safe_load(f)
 
-    def __repr__(self):
-        return f"Biomarker(path={self.path}, n_features={self.n_features})"
-
-    def to_array(self, subjects) -> np.ndarray:
-        """First-occurrence feature vector per subject, aligned to `subjects`.
-
-        Returns an (len(subjects), n_features) array; rows for subjects with no
-        measurement are NaN. pid2idx maps a pid to its first row in p2i, which
-        is sorted by [pid, time], so that row is the earliest measurement.
-        """
-        out = np.full((len(subjects), self.n_features), np.nan, dtype=np.float32)
-        for k, pid in enumerate(subjects):
-            j = self.pid2idx.get(int(pid))
-            if j is None:  # absent (note: j may be 0, so test `is None`)
-                continue
-            i, l = self.start_pos[j], self.seq_len[j]
-            out[k] = self.data[i : i + l]
-        return out
-
-    def stats(self, subjects: np.ndarray):
-        data = self.to_array(subjects)
-        return np.nanmean(data, axis=0), np.nanstd(data, axis=0)
-
-    def __getitem__(
-        self, pid: int
-    ) -> tuple[None | list[np.ndarray], None | np.ndarray]:
-
-        if pid not in self.pid2idx:
-            return None, None
-
-        pid_i = self.pid2idx[pid]
-        pid_l = self.pid2cnt[pid]
-        pid_slice = slice(pid_i, pid_i + pid_l)
-
-        pid_time = self.time_steps[pid_slice]
-        pid_seq_len = self.seq_len[pid_slice]
-        pid_start_pos = self.start_pos[pid_slice]
-        pid_data = [self.data[i : i + l] for i, l in zip(pid_start_pos, pid_seq_len)]
-        return pid_data, pid_time
+    @classmethod
+    def _read_index(cls, name: str) -> pd.DataFrame:
+        return pd.read_csv(cls.base_dir / name / "p2i.csv")[["pid", "time"]]  # type: ignore
 
 
 class ExpansionPack(TokenReader):
