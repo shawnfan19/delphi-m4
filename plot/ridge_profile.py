@@ -33,7 +33,7 @@ from cloudpathlib import AnyPath
 from scipy.stats import rankdata
 from tqdm import tqdm
 
-from delphi.data.ukb import UKBReader
+from delphi.data.ukb import MultimodalUKBReader
 from delphi.env import DELPHI_CKPT_WRITE
 from delphi.experiment import CliConfig
 
@@ -71,7 +71,7 @@ print(f"loaded {intensities.shape} intensities from {npz_path}")
 
 # disease-token columns = every chapter except the non-disease ones (keeps Death
 # and Neoplasms); risk = total predicted disease hazard at the prompt.
-labels = UKBReader.labels()
+labels = MultimodalUKBReader.labels()
 col_chapter = labels.set_index("index")["ICD-10 Chapter"].reindex(token_ids).to_numpy()
 disease_col = (
     pd.notna(col_chapter)
@@ -84,7 +84,7 @@ risk = intensities[:, disease_col].sum(axis=1)
 # Per-participant history covariates from the token reader: count tokens before
 # each participant's prompt cutoff, splitting disease events from the structural
 # (sex/lifestyle/no_event/padding) scaffold.
-reader = UKBReader()
+reader = MultimodalUKBReader()
 female_tok = reader.tokenizer["female"]
 whitelist = np.array(
     sorted(
@@ -107,7 +107,7 @@ n_chapters = np.zeros(n, np.int32)
 seq_len_total = np.zeros(n, np.int32)
 is_female = np.zeros(n, bool)
 for i, pid in enumerate(tqdm(participant_ids, desc="covariates", mininterval=5)):
-    toks, times = reader[int(pid)]
+    toks, times = reader.token_reader[int(pid)]
     seq_len_total[i] = toks.size
     is_female[i] = (toks == female_tok).any()
     pt = toks[times <= prompt_age[i]]  # prompt = events before the cutoff

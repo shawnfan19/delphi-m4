@@ -18,92 +18,6 @@ from delphi.env import DELPHI_DATA_READ as DELPHI_DATA_DIR
 NO_EVENT_TOKEN = 1
 
 
-class UKBReader(TokenReader):
-    base_dir = AnyPath(DELPHI_DATA_DIR) / "ukb_real_data"
-    bmi_keys = [
-        "bmi_low",
-        "bmi_mid",
-        "bmi_high",
-    ]
-    smoking_keys = [
-        "smoking_low",
-        "smoking_mid",
-        "smoking_high",
-    ]
-    alcohol_keys = [
-        "alcohol_low",
-        "alcohol_mid",
-        "alcohol_high",
-    ]
-    lifestyle_keys = bmi_keys + smoking_keys + alcohol_keys
-    sex_keys = ["female", "male"]
-
-    def __init__(self, memmap: bool = False):
-
-        tokenizer_path = self.base_dir / "tokenizer.yaml"
-        with open(tokenizer_path, "r") as f:
-            tokenizer = yaml.safe_load(f)
-
-        self.p2i = pd.read_csv(self.base_dir / "p2i.csv", index_col="pid")
-        start_pos = self.p2i["start_pos"].to_dict()
-        seq_len = self.p2i["seq_len"].to_dict()
-
-        tokens_path = self.base_dir / "data.bin"
-        time_steps_path = self.base_dir / "time.bin"
-        if memmap:
-            tokens = np.memmap(tokens_path, dtype=np.uint32, mode="r")
-            timesteps = np.memmap(time_steps_path, dtype=np.uint32, mode="r")
-        else:
-            tokens = np.fromfile(tokens_path, dtype=np.uint32)
-            timesteps = np.fromfile(time_steps_path, dtype=np.uint32)
-
-        super().__init__(tokens, timesteps, start_pos, seq_len, tokenizer)
-
-    @classmethod
-    def participants(cls, fold):
-        if fold == "all":
-            return pd.read_csv(cls.base_dir / "p2i.csv", usecols=["pid"])[
-                "pid"
-            ].to_numpy(dtype=np.uint32)
-        return np.fromfile(
-            cls.base_dir / "participants" / f"{fold}_fold.bin", dtype=np.uint32
-        )
-
-    @classmethod
-    def labels(cls) -> pd.DataFrame:
-        """Load disease label metadata (ICD chapters, colors)."""
-        return pd.read_csv(str(cls.base_dir / "labels_chapters_colours.csv"))
-
-    def is_female(self, pids: np.ndarray) -> np.ndarray:
-        female_token = self.tokenizer["female"]
-        out = np.zeros(len(pids), dtype=bool)
-        for i, pid in enumerate(pids):
-            start = self.start_pos[int(pid)]
-            length = self.seq_len[int(pid)]
-            out[i] = (self.tokens[start : start + length] == female_token).any()
-        return out
-
-    def recruitment_times(self, pids: np.ndarray) -> np.ndarray:
-        """Earliest lifestyle-token time per pid (UKB recruitment proxy); NaN if none.
-
-        Computed directly over the token arrays so it stays self-contained — it
-        does not depend on the trajectory queries that now live on
-        MultimodalReader (the main stream is time-ordered per pid, so the
-        earliest lifestyle-token time equals its first-occurrence time).
-        """
-        lifestyle_tokens = np.array([self.tokenizer[e] for e in self.lifestyle_keys])
-        out = np.full(len(pids), np.nan, dtype=np.float32)
-        for i, pid in enumerate(pids):
-            start = self.start_pos[int(pid)]
-            length = self.seq_len[int(pid)]
-            x = self.tokens[start : start + length]
-            t = self.timesteps[start : start + length].astype(np.float32)
-            mask = np.isin(x, lifestyle_tokens)
-            if mask.any():
-                out[i] = t[mask].min()
-        return out
-
-
 class Biomarker(BiomarkerReader):
     """UKB biomarker store. Flat ``data.bin`` (float32) + ``p2i.csv`` (pid, time,
     start_pos, seq_len); ``_load`` gathers the ragged-flat rows into the 2-D
@@ -191,17 +105,16 @@ class ExpansionPack(ExpansionPackReader):
 
 
 class MultimodalUKBReader(MultimodalReader):
-    token_reader: UKBReader
 
-    reader_cls = UKBReader
+    base_dir = AnyPath(DELPHI_DATA_DIR) / "ukb_real_data"
     biomarker_cls = Biomarker
     expansion_pack_cls = ExpansionPack
 
-    bmi_keys = UKBReader.bmi_keys
-    smoking_keys = UKBReader.smoking_keys
-    alcohol_keys = UKBReader.alcohol_keys
-    lifestyle_keys = UKBReader.lifestyle_keys
-    sex_keys = UKBReader.sex_keys
+    bmi_keys = ["bmi_low", "bmi_mid", "bmi_high"]
+    smoking_keys = ["smoking_low", "smoking_mid", "smoking_high"]
+    alcohol_keys = ["alcohol_low", "alcohol_mid", "alcohol_high"]
+    lifestyle_keys = bmi_keys + smoking_keys + alcohol_keys
+    sex_keys = ["female", "male"]
 
     def __init__(
         self,
@@ -220,7 +133,7 @@ class MultimodalUKBReader(MultimodalReader):
         """
         bm_names, biomarker2idx = self._normalize_biomarkers(biomarkers)
         super().__init__(
-            token_reader=UKBReader(memmap=memmap),
+            token_reader=self._load_token_reader(memmap=memmap),
             expansion_packs={
                 n: ExpansionPack(name=n, memmap=memmap) for n in expansion_packs or []
             },
@@ -229,18 +142,56 @@ class MultimodalUKBReader(MultimodalReader):
         )
 
     @classmethod
-    def participants(cls, fold):
-        return UKBReader.participants(fold)
+    def _load_token_reader(cls, memmap: bool = False) -> TokenReader:
+        """Load the UKB main event stream (data.bin/time.bin + p2i.csv) into a TokenReader."""
+        with open(cls.base_dir / "tokenizer.yaml", "r") as f:
+            tokenizer = yaml.safe_load(f)
+        p2i = pd.read_csv(cls.base_dir / "p2i.csv", index_col="pid")
+        start_pos = p2i["start_pos"].to_dict()
+        seq_len = p2i["seq_len"].to_dict()
+        tokens_path = cls.base_dir / "data.bin"
+        time_steps_path = cls.base_dir / "time.bin"
+        if memmap:
+            tokens = np.memmap(tokens_path, dtype=np.uint32, mode="r")
+            timesteps = np.memmap(time_steps_path, dtype=np.uint32, mode="r")
+        else:
+            tokens = np.fromfile(tokens_path, dtype=np.uint32)
+            timesteps = np.fromfile(time_steps_path, dtype=np.uint32)
+        return TokenReader(tokens, timesteps, start_pos, seq_len, tokenizer)
 
     @classmethod
-    def labels(cls):
-        return UKBReader.labels()
+    def participants(cls, fold):
+        if fold == "all":
+            return pd.read_csv(cls.base_dir / "p2i.csv", usecols=["pid"])[
+                "pid"
+            ].to_numpy(dtype=np.uint32)
+        return np.fromfile(
+            cls.base_dir / "participants" / f"{fold}_fold.bin", dtype=np.uint32
+        )
 
-    def is_female(self, pids: np.ndarray) -> np.ndarray:
-        return self.token_reader.is_female(pids)
+    @classmethod
+    def labels(cls) -> pd.DataFrame:
+        """Load disease label metadata (ICD chapters, colors)."""
+        return pd.read_csv(str(cls.base_dir / "labels_chapters_colours.csv"))
 
     def recruitment_times(self, pids: np.ndarray) -> np.ndarray:
-        return self.token_reader.recruitment_times(pids)
+        """Earliest lifestyle-token time per pid (UKB recruitment proxy); NaN if none.
+
+        The main stream is time-ordered per pid, so the earliest lifestyle-token
+        time equals its first-occurrence time.
+        """
+        tr = self.token_reader
+        lifestyle_tokens = np.array([tr.tokenizer[e] for e in self.lifestyle_keys])
+        out = np.full(len(pids), np.nan, dtype=np.float32)
+        for i, pid in enumerate(pids):
+            start = tr.start_pos[int(pid)]
+            length = tr.seq_len[int(pid)]
+            x = tr.tokens[start : start + length]
+            t = tr.timesteps[start : start + length].astype(np.float32)
+            mask = np.isin(x, lifestyle_tokens)
+            if mask.any():
+                out[i] = t[mask].min()
+        return out
 
     @classmethod
     def filter_participants_with_biomarkers(cls, pids, biomarkers, any=True):

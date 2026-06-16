@@ -39,7 +39,7 @@ import pandas as pd
 from cloudpathlib import AnyPath
 from scipy.stats import pearsonr, spearmanr
 
-from delphi.data.ukb import UKBReader
+from delphi.data.ukb import MultimodalUKBReader
 from delphi.env import DELPHI_CKPT_WRITE
 from delphi.experiment import CliConfig, match_unique
 
@@ -86,7 +86,7 @@ print(f"loaded {intensities.shape} intensities from {npz_path}")
 # Map each vocab column to its ICD-10 chapter via labels()['index'] == token id.
 # reindex(token_ids) keeps positional order, so col_chapter[i] is column i's
 # chapter (NaN for any token id absent from labels).
-labels = UKBReader.labels()
+labels = MultimodalUKBReader.labels()
 chapter_by_idx = labels.set_index("index")["ICD-10 Chapter"]
 col_chapter = chapter_by_idx.reindex(token_ids).to_numpy()
 valid = pd.notna(col_chapter)
@@ -280,7 +280,7 @@ def plot_grid(mask, label):
 # pooled grid mixes two populations. Sex is the actual label, not inferred.
 print(f"resolving sex for {participant_ids.size} participants via UKBReader...")
 try:
-    is_female = UKBReader().is_female(participant_ids)
+    is_female = MultimodalUKBReader().is_female(participant_ids)
 except KeyError as e:
     raise SystemExit(f"sex split needs UKB participant ids; pid {e} not in reader")
 print(f"female fraction = {is_female.mean():.3f}")

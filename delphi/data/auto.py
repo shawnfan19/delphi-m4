@@ -37,8 +37,8 @@ def multimodal_reader_cls():
     """Return the MultimodalReader class for the active dataset.
 
     Honors DELPHI_DATASET env var override; otherwise auto-detects. Use
-    ``.reader_cls``, ``.biomarker_cls``, ``.expansion_pack_cls`` on the
-    returned class to access the per-dataset component types.
+    ``.biomarker_cls`` / ``.expansion_pack_cls`` on the returned class to
+    access the per-dataset component types.
     """
     dataset = os.environ.get("DELPHI_DATASET") or detect_dataset()
     if dataset == "ukb":

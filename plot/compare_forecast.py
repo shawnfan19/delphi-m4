@@ -9,7 +9,7 @@ import pandas as pd
 from cloudpathlib import AnyPath
 from matplotlib.patches import Patch
 
-from delphi.data.ukb import UKBReader
+from delphi.data.ukb import MultimodalUKBReader
 from delphi.env import DELPHI_CKPT_READ as DELPHI_CKPT_DIR
 from delphi.experiment import CliConfig, flexi_list
 from delphi.plot import plot_by_chapter
@@ -182,7 +182,7 @@ for h in horizons:
 # Per-horizon ΔAUC bar plot for the requested --events ("either" sex), colored
 # by ICD-10 chapter (mirrors plot/compare_cindex.py). Skipped when no events.
 if args.events is not None:
-    _labels_df = UKBReader.labels()
+    _labels_df = MultimodalUKBReader.labels()
     _labels_df["icd"] = _labels_df["name"].str.split().str[0].str.upper()
     _icd_meta = (
         _labels_df.drop_duplicates("icd")

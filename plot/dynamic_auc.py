@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 from cloudpathlib import AnyPath
 
-from delphi.data.ukb import UKBReader
+from delphi.data.ukb import MultimodalUKBReader
 from delphi.env import DELPHI_CKPT_READ, DELPHI_CKPT_WRITE
 from delphi.experiment import CliConfig
 
@@ -57,8 +57,8 @@ class TaskConfig(CliConfig):
 args = TaskConfig.from_cli()
 
 # %%
-# Resolve disease: integer -> ICD via UKBReader detokenizer; string -> as-is.
-reader = UKBReader()
+# Resolve disease: integer -> ICD via MultimodalUKBReader detokenizer; string -> as-is.
+reader = MultimodalUKBReader()
 try:
     icd = reader.detokenizer[int(args.disease)]
 except (ValueError, KeyError):

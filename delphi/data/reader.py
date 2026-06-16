@@ -326,6 +326,16 @@ class MultimodalReader:
                 pids_with_event.append(pid)
         return np.array(pids_with_event)
 
+    def is_female(self, pids: np.ndarray) -> np.ndarray:
+        tr = self.token_reader
+        female_token = tr.tokenizer["female"]
+        out = np.zeros(len(pids), dtype=bool)
+        for i, pid in enumerate(pids):
+            start = tr.start_pos[int(pid)]
+            length = tr.seq_len[int(pid)]
+            out[i] = (tr.tokens[start : start + length] == female_token).any()
+        return out
+
     def __getitem__(self, pid: int):
 
         x, t = self.token_reader[pid]

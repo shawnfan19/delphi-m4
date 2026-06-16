@@ -31,7 +31,7 @@ import yaml
 from cloudpathlib import AnyPath
 
 from delphi.data.auto import multimodal_reader_cls
-from delphi.data.ukb import UKBReader
+from delphi.data.ukb import MultimodalUKBReader
 from delphi.env import DELPHI_CKPT_READ as DELPHI_CKPT_DIR
 from delphi.experiment import CliConfig
 from delphi.plot import plot_by_chapter
@@ -237,7 +237,7 @@ plt.show()
 # %%
 # Top-k improved diseases — horizontal bar plot
 
-_labels_df = UKBReader.labels()
+_labels_df = MultimodalUKBReader.labels()
 _labels_df["icd"] = _labels_df["name"].str.split().str[0].str.upper()
 _icd_meta = (
     _labels_df.drop_duplicates("icd")

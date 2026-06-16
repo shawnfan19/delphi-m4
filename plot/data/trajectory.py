@@ -31,7 +31,7 @@ def pick_pids(args: TaskConfig, mm_cls) -> list[int]:
     if args.pid is not None:
         return [args.pid]
 
-    pids = mm_cls.reader_cls.participants("all")
+    pids = mm_cls.participants("all")
     if args.biomarkers or args.expansion_packs:
         pids = mm_cls.filter_participants_with_modalities(
             pids,

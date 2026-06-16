@@ -34,7 +34,7 @@ OUT_DIR = Path(args.write) / dataset_name
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 mm_cls = multimodal_reader_cls()
-base_pids = mm_cls.reader_cls.participants("all")
+base_pids = mm_cls.participants("all")
 
 pack_names = args.packs or mm_cls.expansion_pack_cls.catalog()
 for pack_name in pack_names:

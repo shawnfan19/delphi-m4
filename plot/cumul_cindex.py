@@ -6,14 +6,14 @@ import numpy as np
 import pandas as pd
 from cloudpathlib import AnyPath
 
-from delphi.data.ukb import UKBReader
+from delphi.data.ukb import MultimodalUKBReader
 from delphi.env import DELPHI_CKPT_DIR
 from delphi.plot import _icd_from_key
 
 mpl.rcParams["figure.dpi"] = 300
 
 
-labels = UKBReader.labels()
+labels = MultimodalUKBReader.labels()
 
 json_lst = [
     AnyPath(DELPHI_CKPT_DIR) / "m4/baseline/cindex_blood+urine+prs.json",

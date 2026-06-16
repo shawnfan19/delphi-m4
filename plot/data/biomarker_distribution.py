@@ -66,7 +66,7 @@ disease_token_id = reader.tokenizer[args.disease]
 feat_idx = pack.feat2idx[args.feature]
 
 # Intersect biomarker pids with the base reader's pids (drop orphans).
-base_pids = mm_cls.reader_cls.participants("all")
+base_pids = mm_cls.participants("all")
 bio_pids = np.array(list(pack.pid2idx.keys()))
 bio_pids = bio_pids[np.isin(bio_pids, base_pids)]
 print(f"{len(bio_pids)} participants with a {biomarker} measurement")

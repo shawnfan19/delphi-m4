@@ -21,7 +21,7 @@ from matplotlib.backend_bases import FigureManagerBase, _Backend
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.lines import Line2D
 
-from delphi.data.ukb import UKBReader
+from delphi.data.ukb import MultimodalUKBReader
 
 
 def _emit_kitty(fig, dpi=100):
@@ -98,7 +98,7 @@ def plot_by_chapter(
     fig, ax
     """
     # Join with label metadata to get chapter + color
-    labels_df = UKBReader.labels()
+    labels_df = MultimodalUKBReader.labels()
     labels_df["icd"] = labels_df["name"].str.split().str[0].str.upper()
     icd_meta = (
         labels_df.drop_duplicates("icd")

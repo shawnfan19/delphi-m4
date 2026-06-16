@@ -33,7 +33,7 @@ import numpy as np
 import pandas as pd
 from cloudpathlib import AnyPath
 
-from delphi.data.ukb import UKBReader
+from delphi.data.ukb import MultimodalUKBReader
 from delphi.env import DELPHI_CKPT_READ, DELPHI_CKPT_WRITE
 from delphi.experiment import CliConfig, flexi_list
 
@@ -81,7 +81,7 @@ class TaskConfig(CliConfig):
 
 
 args = TaskConfig.from_cli()
-reader = UKBReader()
+reader = MultimodalUKBReader()
 
 
 # %%

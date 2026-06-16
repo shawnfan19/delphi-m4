@@ -27,7 +27,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from cloudpathlib import AnyPath
 
-from delphi.data.ukb import UKBReader
+from delphi.data.ukb import MultimodalUKBReader
 from delphi.env import DELPHI_CKPT_READ, DELPHI_CKPT_WRITE
 from delphi.experiment import CliConfig
 from delphi.plot import plot_by_chapter
@@ -54,7 +54,7 @@ with ckpt_path.open("rb") as f:
     df = pd.read_parquet(f, engine="pyarrow")
 
 if args.after_recruit:
-    reader = UKBReader()
+    reader = MultimodalUKBReader()
     pids = df["participant_id"].unique()
     recruit = dict(zip(pids, reader.recruitment_times(pids)))
     df = df.assign(
@@ -123,7 +123,7 @@ for _, row in df_either.nsmallest(k, "val")[["key", "val", "n_events"]].iterrows
 
 # %%
 # Per-chapter mean c-index table (using "either")
-_labels_df = UKBReader.labels()
+_labels_df = MultimodalUKBReader.labels()
 _labels_df["icd"] = _labels_df["name"].str.split().str[0].str.upper()
 _icd_meta = (
     _labels_df.drop_duplicates("icd")

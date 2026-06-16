@@ -15,63 +15,6 @@ from delphi.data.reader import (
 from delphi.data.utils import filter_participants
 from delphi.env import DELPHI_DATA_READ as DELPHI_DATA_DIR
 
-
-class AOUReader(TokenReader):
-    base_dir = AnyPath(DELPHI_DATA_DIR) / "aou_uk"
-    bmi_keys = [
-        "bmi_low",
-        "bmi_mid",
-        "bmi_high",
-    ]
-    lifestyle_keys = bmi_keys
-    sex_keys = ["female", "male"]
-    FOLDS = ("val", "val_1", "val_2", "val_3", "val_4")
-
-    def __init__(self):
-
-        tokenizer_path = self.base_dir / "tokenizer.yaml"
-        with open(tokenizer_path, "r") as f:
-            tokenizer = yaml.safe_load(f)
-
-        df = pd.read_parquet(
-            self.base_dir / "data.parquet",
-            columns=["person_id", "age_in_days", "token"],
-        ).sort_values(["person_id", "age_in_days"])
-
-        tokens = df["token"].to_numpy(dtype=np.uint32)
-        timesteps = df["age_in_days"].to_numpy(dtype=np.float32)
-
-        pids = df["person_id"].to_numpy()
-        uniq, first_idx, counts = np.unique(pids, return_index=True, return_counts=True)
-        start_pos = pd.Series(first_idx, index=uniq)
-        seq_len = pd.Series(counts, index=uniq)
-
-        super().__init__(tokens, timesteps, start_pos, seq_len, tokenizer)
-
-    @classmethod
-    def participants(cls, fold):
-        pids = pd.read_parquet(cls.base_dir / "data.parquet", columns=["person_id"])[
-            "person_id"
-        ].unique()
-        pids = np.sort(pids)
-        if fold == "all":
-            return pids
-        if fold not in cls.FOLDS:
-            raise ValueError(
-                f"Unsupported fold {fold!r}; expected 'all' or one of {cls.FOLDS}"
-            )
-        return pids[cls.FOLDS.index(fold) :: len(cls.FOLDS)]
-
-    def is_female(self, pids: np.ndarray) -> np.ndarray:
-        female_token = self.tokenizer["female"]
-        out = np.zeros(len(pids), dtype=bool)
-        for i, pid in enumerate(pids):
-            start = self.start_pos[int(pid)]
-            length = self.seq_len[int(pid)]
-            out[i] = (self.tokens[start : start + length] == female_token).any()
-        return out
-
-
 METADATA_SUFFIXES = (
     "_raw_value",
     "_unit_id",
@@ -167,16 +110,15 @@ class ExpansionPack(ExpansionPackReader):
 
 
 class MultimodalAOUReader(MultimodalReader):
-    token_reader: AOUReader
 
-    reader_cls = AOUReader
+    base_dir = AnyPath(DELPHI_DATA_DIR) / "aou_uk"
     biomarker_cls = Biomarker
     expansion_pack_cls = ExpansionPack
 
-    bmi_keys = AOUReader.bmi_keys
-    lifestyle_keys = AOUReader.lifestyle_keys
-    sex_keys = AOUReader.sex_keys
-    FOLDS = AOUReader.FOLDS
+    bmi_keys = ["bmi_low", "bmi_mid", "bmi_high"]
+    lifestyle_keys = bmi_keys
+    sex_keys = ["female", "male"]
+    FOLDS = ("val", "val_1", "val_2", "val_3", "val_4")
 
     def __init__(
         self,
@@ -185,15 +127,42 @@ class MultimodalAOUReader(MultimodalReader):
     ):
         bm_names, biomarker2idx = self._normalize_biomarkers(biomarkers)
         super().__init__(
-            token_reader=AOUReader(),
+            token_reader=self._load_token_reader(),
             expansion_packs={n: ExpansionPack(name=n) for n in expansion_packs or []},
             biomarkers={n: Biomarker(name=n) for n in bm_names},
             biomarker2idx=biomarker2idx,
         )
 
     @classmethod
+    def _load_token_reader(cls) -> TokenReader:
+        """Load the AoU main event stream (data.parquet) into a TokenReader."""
+        with open(cls.base_dir / "tokenizer.yaml", "r") as f:
+            tokenizer = yaml.safe_load(f)
+        df = pd.read_parquet(
+            cls.base_dir / "data.parquet",
+            columns=["person_id", "age_in_days", "token"],
+        ).sort_values(["person_id", "age_in_days"])
+        tokens = df["token"].to_numpy(dtype=np.uint32)
+        timesteps = df["age_in_days"].to_numpy(dtype=np.float32)
+        pids = df["person_id"].to_numpy()
+        uniq, first_idx, counts = np.unique(pids, return_index=True, return_counts=True)
+        start_pos = pd.Series(first_idx, index=uniq)
+        seq_len = pd.Series(counts, index=uniq)
+        return TokenReader(tokens, timesteps, start_pos, seq_len, tokenizer)
+
+    @classmethod
     def participants(cls, fold):
-        return AOUReader.participants(fold)
+        pids = pd.read_parquet(cls.base_dir / "data.parquet", columns=["person_id"])[
+            "person_id"
+        ].unique()
+        pids = np.sort(pids)
+        if fold == "all":
+            return pids
+        if fold not in cls.FOLDS:
+            raise ValueError(
+                f"Unsupported fold {fold!r}; expected 'all' or one of {cls.FOLDS}"
+            )
+        return pids[cls.FOLDS.index(fold) :: len(cls.FOLDS)]
 
     @classmethod
     def first_biomarker_times(cls, pids: np.ndarray) -> np.ndarray:
@@ -208,9 +177,6 @@ class MultimodalAOUReader(MultimodalReader):
             [Biomarker.first_occurrence_times(n, pids) for n in names], axis=0
         )
         return np.fmin.reduce(stack, axis=0)
-
-    def is_female(self, pids: np.ndarray) -> np.ndarray:
-        return self.token_reader.is_female(pids)
 
     @classmethod
     def filter_participants_with_biomarkers(cls, pids, biomarkers, any=True):

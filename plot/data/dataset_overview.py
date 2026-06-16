@@ -28,15 +28,15 @@ args = TaskConfig.from_cli()
 args.print()
 
 mm_cls = multimodal_reader_cls()
-reader = mm_cls.reader_cls()
+reader = mm_cls()
 dataset_name = os.environ.get("DELPHI_DATASET") or detect_dataset()
 OUT_DIR = Path(args.write) / dataset_name
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-pids = mm_cls.reader_cls.participants("all")
+pids = mm_cls.participants("all")
 print(f"{dataset_name}: {len(pids)} participants")
 
-tokens_per_sub = np.array([reader.seq_len[int(p)] for p in pids])
+tokens_per_sub = np.array([reader.token_reader.seq_len[int(p)] for p in pids])
 
 whitelist_keys = ["padding", "no_event"] + reader.sex_keys + reader.lifestyle_keys
 whitelist = np.array(
@@ -46,7 +46,7 @@ whitelist = np.array(
 tracker = ClusterStatsTracker()
 cooccur_tracker = CooccurrenceTracker(vocab_size=reader.vocab_size)
 for pid in tqdm(pids):
-    tokens, times = reader[int(pid)]
+    tokens, times = reader.token_reader[int(pid)]
     masked = np.where(np.isin(tokens, whitelist), 0, tokens)
     tracker.step(masked[None, :], times[None, :])
     cooccur_tracker.step(masked[None, :], times[None, :])
