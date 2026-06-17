@@ -1,10 +1,13 @@
 # +
+import json
 import math
 import pprint
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import torch
 from cloudpathlib import AnyPath
 from tqdm import tqdm
@@ -223,7 +226,15 @@ cindex_df = pd.DataFrame(
         "total_pairs": total_pairs.astype(np.int32),
     }
 )
+# Embed the run config in the Parquet footer so it travels inside the file.
+table = pa.Table.from_pandas(cindex_df, preserve_index=False)
+table = table.replace_schema_metadata(
+    {
+        **(table.schema.metadata or {}),
+        b"config": json.dumps(asdict(args), default=str).encode(),
+    }
+)
 cindex_path = ckpt_write.parent / f"{args.fname}.parquet"
 with cindex_path.open("wb") as f:
-    cindex_df.to_parquet(f, engine="pyarrow", compression="snappy", index=False)
+    pq.write_table(table, f, compression="snappy")
 print(f"Saved c-index to {cindex_path}")

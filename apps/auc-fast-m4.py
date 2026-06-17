@@ -20,7 +20,7 @@ Output is the nested JSON logbook consumed by ``plot/compare_auc.py``:
 import json
 import math
 import pprint
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 import numpy as np
 import torch
@@ -249,5 +249,5 @@ ckpt_write = AnyPath(str(ckpt).replace(DELPHI_CKPT_READ, DELPHI_CKPT_WRITE))
 ckpt_write.parent.mkdir(parents=True, exist_ok=True)
 out_path = ckpt_write.parent / f"{args.fname}.json"
 with out_path.open("w") as f:
-    json.dump(logbook, f, indent=4)
+    json.dump({"config": asdict(args), "logbook": logbook}, f, indent=4)
 print(f"Saved to {out_path}")

@@ -73,7 +73,10 @@ min_events = args.min  # drop diseases with fewer events in either checkpoint
 # %%
 def load_logbook(path):
     with path.open("r") as f:
-        return json.load(f)
+        data = json.load(f)
+    # auc-fast-m4 now wraps output as {"config": ..., "logbook": ...}; older
+    # files are the flat logbook dict (icd -> ...). Support both.
+    return data["logbook"] if "logbook" in data else data
 
 
 logbook_a = load_logbook(ckpt_a_path)
