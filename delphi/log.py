@@ -1,10 +1,10 @@
 import os
 from datetime import datetime
-from pathlib import Path
 from pprint import pprint
 
 import torch
 import wandb
+from cloudpathlib import AnyPath
 
 from delphi import distributed
 from delphi.env import DELPHI_CKPT_DIR
@@ -139,12 +139,15 @@ class Checkpointer:
         backend: distributed.backend.DistributedBackend,
         metadata: dict | None = None,
     ):
-        self.dump_dir = Path(DELPHI_CKPT_DIR) / dump_dir
+        # AnyPath -> a local pathlib.Path or a cloudpathlib CloudPath, so a
+        # gs:// DELPHI_CKPT_DIR writes checkpoints straight to GCS (symmetric
+        # with load_ckpt). cloudpathlib uploads on close, atomically.
+        self.dump_dir = AnyPath(DELPHI_CKPT_DIR) / str(dump_dir)
         self.backend = backend
         self.metadata = metadata or {}
 
         if backend.is_master_process():
-            os.makedirs(self.dump_dir, exist_ok=True)
+            self.dump_dir.mkdir(parents=True, exist_ok=True)
 
     def save(
         self,
@@ -166,15 +169,15 @@ class Checkpointer:
                 "iter_num": step,
                 "best_val_loss": best_val_loss,
             } | self.metadata
-            ckpt_path = os.path.join(self.dump_dir, ckpt_fname)
+            ckpt_path = self.dump_dir / ckpt_fname
             print(f"saving checkpoint to {ckpt_path}")
-            torch.save(checkpoint, ckpt_path)
+            with ckpt_path.open("wb") as f:
+                torch.save(checkpoint, f)
 
     def load(self, ckpt_name: str = "ckpt.pt", device: str = "cpu") -> dict | None:
         path = self.dump_dir / ckpt_name
-        if os.path.exists(path):
-            return torch.load(
-                self.dump_dir / ckpt_name, map_location=torch.device(device)
-            )
+        if path.exists():
+            with path.open("rb") as f:
+                return torch.load(f, map_location=torch.device(device))
         else:
             return None
