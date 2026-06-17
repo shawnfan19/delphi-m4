@@ -2,7 +2,9 @@
 
 GPU batch jobs against the unified container image at `installation/containers/`.
 dsub ≈ SLURM's `sbatch`. All `dsub`/`gcloud` commands run **inside a Workbench
-Jupyter terminal** — AoU's VPC perimeter blocks them from a laptop.
+Jupyter terminal** — AoU's VPC perimeter blocks them from a laptop. **Pin dsub
+0.5.0 — the Workbench default (0.5.2) fails every GPU job; see *Install dsub*
+below.**
 
 ## How AoU handles custom container images
 
@@ -105,6 +107,49 @@ wb resource create gcs-bucket --id=ws_files \
 Referenced as `${WORKBENCH_ws_files}` in dsub flags (below). `wb resource list`
 to verify.
 
+## Install dsub (pin 0.5.0 — newer versions break GPU jobs)
+
+dsub runs on the **submitter** (the Workbench Jupyter terminal), not on the
+Batch VM — so this is a one-time terminal setup, not an image dependency
+(nothing to add to `requirements.txt`).
+
+**The Workbench's default dsub (`v0.5.2`) silently fails every GPU job under
+the `google-batch` provider.** The task dies during container start with
+`exit code 125` and **no log file is ever written** — so `gsutil cat <log>`
+404s, because the job never got far enough to emit one. `dstat --full` is the
+only place the failure surfaces (`status: FAILURE … exit code 125`).
+
+The fix (confirmed with AoU support, 2026-06-08) is to pin **dsub 0.5.0**,
+installed side-by-side with pipx so it doesn't disturb the system dsub:
+
+```bash
+pip install pipx
+pipx install dsub==0.5.0 --suffix=050   # installs dsub050 / dstat050 / ddel050
+```
+
+Use `dsub050` / `dstat050` / `ddel050` for every command below; plain `dsub`
+stays the broken 0.5.2 until AoU bumps the default.
+
+A thin wrapper keeps the mandatory AoU flags (see *Submit a job*) in one place
+— put it in `~/aou_dsub.bash` and `source` it from `~/.bashrc`:
+
+```bash
+function aou_dsub () {
+  dsub050 \
+    --provider google-batch \
+    --project "$GOOGLE_CLOUD_PROJECT" \
+    --user-project "$GOOGLE_CLOUD_PROJECT" \
+    --regions us-central1 \
+    --service-account "$GOOGLE_SERVICE_ACCOUNT_EMAIL" \
+    --network global/networks/network \
+    --subnetwork regions/us-central1/subnetworks/subnetwork \
+    --use-private-address \
+    "$@"
+}
+```
+
+A job then reduces to `aou_dsub --image ... --machine-type ... --script ...`.
+
 ## Where the code lives in the image
 
 The Delphi codebase is **baked into the image at `/workspace/Delphi`** at
@@ -144,8 +189,9 @@ Submission:
 SHA=<the git sha you built>
 IMAGE=$ARTIFACT_REGISTRY_DOCKER_REPO/<dockerhub-user>/delphi:$SHA
 
-dsub --provider google-batch \
+dsub050 --provider google-batch \
   --project $GOOGLE_CLOUD_PROJECT \
+  --user-project $GOOGLE_CLOUD_PROJECT \
   --regions us-central1 \
   --service-account $GOOGLE_SERVICE_ACCOUNT_EMAIL \
   --network global/networks/network \
@@ -161,9 +207,10 @@ dsub --provider google-batch \
   --script train.sh
 ```
 
-The first six flags are **mandatory plumbing for AoU**; the rest control
-the actual job. Without `--service-account` / `--network` / `--subnetwork`
-/ `--use-private-address` you'll hit a sequence of IAM and VPC-SC errors.
+The first seven flags (down through `--use-private-address`) are **mandatory
+plumbing for AoU**; the rest control the actual job. Without `--service-account`
+/ `--network` / `--subnetwork` / `--use-private-address` you'll hit a sequence
+of IAM and VPC-SC errors.
 
 Flag cheat sheet:
 
@@ -171,6 +218,7 @@ Flag cheat sheet:
 |---|---|
 | `--provider google-batch` | which compute backend to use (Google Cloud Batch) |
 | `--project` | GCP project for billing / quota |
+| `--user-project` | project billed for requester-pays GCS access (same project on AoU) |
 | `--regions` | region where the VM runs (must be `us-central1` on AoU) |
 | `--service-account` | identity the Batch VM authenticates as; AoU requires your pet SA |
 | `--network` / `--subnetwork` | AoU's VPC (literally `network` / `subnetwork`); full path form required |
@@ -199,7 +247,15 @@ AoU migrated off in 2025.
 
 **`--project`** — A GCP project is the billing + IAM boundary. Costs are
 charged here; VMs live in this project's quota. `$GOOGLE_CLOUD_PROJECT`
-is set by Workbench to your workspace's underlying project.
+is set by Workbench to your workspace's underlying project. (On AoU RWB,
+`$GOOGLE_PROJECT` and `$GOOGLE_CLOUD_PROJECT` hold the same value — either
+works; we standardise on `$GOOGLE_CLOUD_PROJECT`.)
+
+**`--user-project`** — The project to bill for **requester-pays** GCS
+operations. AoU workspace buckets are requester-pays: every read/write must
+name a billing project or the API rejects it, and dsub's input/output
+localisation needs it set to your workspace project. Harmless to include for
+non-requester-pays buckets too.
 
 **`--service-account`** — A non-human Google identity (looks like
 `pet-xxx@<project>.iam.gserviceaccount.com`). The Batch VM authenticates as
@@ -290,13 +346,15 @@ When you `dsub ...`:
 ## Monitor / debug
 
 ```bash
-dstat --provider google-batch --project $GOOGLE_CLOUD_PROJECT --jobs <job-id>
-dstat ... --jobs <job-id> --full        # full detail
-ddel  ... --jobs <job-id>               # cancel
-gsutil cat ${WORKBENCH_ws_files}/runs/run1/logs/log.txt   # tail logs mid-run
+dstat050 --provider google-batch --project $GOOGLE_CLOUD_PROJECT \
+  --location us-central1 --jobs <job-id> --status '*'        # any status, not just RUNNING
+dstat050 ... --jobs <job-id> --full                          # full detail (where exit code 125 shows up)
+ddel050  --provider google-batch --project $GOOGLE_CLOUD_PROJECT \
+  --location us-central1 --jobs <job-id>                      # cancel
+gsutil cat ${WORKBENCH_ws_files}/runs/run1/logs/log.txt      # tail logs mid-run
 ```
 
-SLURM mapping: `dsub` ≈ `sbatch`, `dstat` ≈ `squeue`, `ddel` ≈ `scancel`.
+SLURM mapping: `dsub050` ≈ `sbatch`, `dstat050` ≈ `squeue`, `ddel050` ≈ `scancel`.
 
 ## Network reachability from the perimeter
 
@@ -308,6 +366,12 @@ cloned at job start.
 
 ## Gotchas
 
+- **Pin dsub 0.5.0.** The Workbench default (`0.5.2`) fails every GPU job with
+  `exit code 125` and writes no log. `pipx install dsub==0.5.0 --suffix=050`
+  and drive everything via `dsub050`/`dstat050`/`ddel050` (confirmed with AoU
+  support, 2026-06-08). See *Install dsub* above.
+- **`dstat` defaults to live jobs only.** Add `--status '*'` to see a job that
+  already FAILED/CANCELED, and `--full` to read its `exit code` / `status-detail`.
 - **dsub bypasses the image ENTRYPOINT.** Your `--script` runs directly under
   bash; the Dockerfile's `ENTRYPOINT ["/entrypoint.sh"]` is not auto-invoked
   on dsub. Every dsub job script must `source /entrypoint.sh` explicitly
@@ -317,11 +381,13 @@ cloned at job start.
   the proxy. (`$ARTIFACT_REGISTRY_DOCKER_REPO` is the supported pattern.)
 - **Public Docker Hub only**: the proxy fronts public images. Private images
   need a support ticket.
-- **Use `${WORKBENCH_<id>}`, not `$WORKSPACE_BUCKET`.** The AoU-style env var
-  often points at a bucket that doesn't exist on Verily Workbench 2.0.
-  Workbench-managed resources expose themselves as `${WORKBENCH_<resource-id>}`.
-- **Use `$GOOGLE_CLOUD_PROJECT`, not `$GOOGLE_PROJECT`.** Both may be set but
-  the Verily docs standardise on the former.
+- **Use `${WORKBENCH_<id>}`, not `$WORKSPACE_BUCKET`.** `$WORKSPACE_BUCKET` is
+  undefined on this workspace (verify with `env | grep -i bucket`); Workbench-
+  managed resources expose themselves as `${WORKBENCH_<resource-id>}` instead.
+  (Some AoU workspaces — e.g. the support notebook's — *do* set
+  `$WORKSPACE_BUCKET`; it's workspace-dependent, so check before relying on it.)
+- **`$GOOGLE_CLOUD_PROJECT` and `$GOOGLE_PROJECT` are the same value** on AoU
+  RWB (verified) — use either; we standardise on `$GOOGLE_CLOUD_PROJECT`.
 - **`--output*` runs only on exit 0.** If the job crashes mid-training, dsub
   won't delocalize. Write checkpoints from inside `train.sh` via
   `gsutil cp /tmp/ckpt.pt gs://...` to survive failures.
