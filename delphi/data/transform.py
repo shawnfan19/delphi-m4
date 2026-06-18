@@ -32,6 +32,9 @@ class TokenTransform:
         break_clusters: bool = False,
         dx_token: None | int = None,
         whitelist_tokens: list | np.ndarray | None = None,
+        death_token: None | int = None,
+        ignore_tokens: list | np.ndarray | None = None,
+        epsilon: float = 0.01,
     ):
         """
         args:
@@ -96,10 +99,16 @@ class TokenTransform:
             self.dx_token = dx_token
 
             assert whitelist_tokens is not None
+            assert death_token is not None
             self.break_clusters = functools.partial(
                 dissolve_clusters,
                 whitelist=np.array(whitelist_tokens),
                 dx_token=self.dx_token,
+                death_token=death_token,
+                ignore_tokens=np.array(
+                    ignore_tokens if ignore_tokens is not None else [], dtype=int
+                ),
+                epsilon=epsilon,
             )
         else:
             self.break_clusters = identity_transform

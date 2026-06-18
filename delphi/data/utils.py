@@ -1,3 +1,4 @@
+import warnings
 from typing import Literal
 
 import numpy as np
@@ -64,9 +65,15 @@ def dissolve_clusters(
     rng: np.random.Generator,
     whitelist: np.ndarray,
     dx_token: int,
+    death_token: int,
+    ignore_tokens: np.ndarray,
+    epsilon: float = 0.01,
 ):
     t = t.copy()
     x = x.copy()
+
+    if t.size == 0:
+        return x.astype(np.uint32), t.astype(np.float32)
 
     is_dis = ~np.isin(x, whitelist)
     uniq_t = np.unique(t[is_dis])
@@ -80,12 +87,44 @@ def dissolve_clusters(
 
     perturb_t = rng.uniform(size=len(dt))
     perturb_t *= dt
+
+    # Keep each dissolved token strictly inside (prev_event, T) by a margin. When the
+    # preceding gap is too small for an epsilon margin on both sides, compress to gap/2
+    # (and warn) instead of letting a_min > a_max invert np.clip, which would yield a
+    # negative perturbation that pushes the token forward past its own dx anchor.
+    half = np.minimum(epsilon, dt / 2.0)
+    tight = is_dis & (dt < 2.0 * epsilon)
+    if tight.any():
+        warnings.warn(
+            f"dissolve_clusters: {int(tight.sum())} dissolved token(s) sit in a gap "
+            f"< 2*epsilon ({epsilon}); spacing margin compressed to gap/2.",
+            stacklevel=2,
+        )
+    perturb_t = np.clip(perturb_t, a_min=half, a_max=dt - half)
+
+    # death is terminal: give it the smallest backward offset in its tied group so a
+    # plain time-sort places it as the last cluster member, just before the dx anchor.
+    death_mask = x == death_token
+    assert death_mask.sum() <= 1
+    if death_mask.any():
+        d = np.flatnonzero(death_mask)[0]
+        mates = np.flatnonzero(is_dis & (t == t[d]))  # t is still pre-perturbation here
+        j = mates[np.argmin(perturb_t[mates])]
+        perturb_t[[d, j]] = perturb_t[[j, d]]  # no-op if death already smallest
+
     t[is_dis] = t[is_dis] - perturb_t[is_dis]
 
     t = np.concatenate((t, diag_t))
     x = np.concatenate((x, diag_x))
 
     t, x = sort_by_time(t, x)
+
+    dt = np.diff(t)
+    is_ignored = np.isin(x[1:], ignore_tokens)
+    dt = np.maximum(dt, epsilon, out=dt, where=~is_ignored)
+    # keep t[0] fixed and rebuild the rest from the (floored) gaps; prepend a 0 gap
+    # so the reconstructed t stays length-aligned with x (cumsum of diff is L-1).
+    t = t[0] + np.cumsum(np.insert(dt, 0, 0.0))
 
     return x.astype(np.uint32), t.astype(np.float32)
 
