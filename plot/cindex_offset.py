@@ -99,19 +99,12 @@ def save_fig(fig, name):
 
 
 # %%
-# Reader is only needed for --filter_after, and constructing it loads the dataset
-# into memory, so build it lazily.
-_reader = None
+# A string filter_after needs the reader's `<name>_times` cutoff; build it once
+# (this loads the full token dataset into memory). Numeric / None need no reader.
+reader = multimodal_reader_cls()() if isinstance(args.filter_after, str) else None
 
 
-def get_reader():
-    global _reader
-    if _reader is None:
-        _reader = multimodal_reader_cls()()
-    return _reader
-
-
-def apply_filter(df, name, label=""):
+def apply_filter(df, name, reader, label=""):
     if name is None:
         return df
     pids = df["participant_id"].unique()
@@ -120,7 +113,6 @@ def apply_filter(df, name, label=""):
         cutoff_arr = np.full(len(pids), float(name) * 365.25, dtype=np.float32)
     else:
         # string: per-participant cutoff from the reader's `<name>_times` method
-        reader = get_reader()
         method = getattr(reader, f"{name}_times", None)
         if method is None:
             raise ValueError(
@@ -150,7 +142,9 @@ def load_run(stem):
             f"{path} has no `config` metadata; was it written by c-index-m4.py?"
         )
     offset = float(json.loads(meta[b"config"])["offset"])
-    return offset, apply_filter(table.to_pandas(), args.filter_after, label=stem)
+    return offset, apply_filter(
+        table.to_pandas(), args.filter_after, reader, label=stem
+    )
 
 
 runs = sorted((load_run(s) for s in fnames), key=lambda r: r[0])
