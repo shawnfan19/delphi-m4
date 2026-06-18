@@ -19,6 +19,9 @@ changing that part of the codebase.**
 **Start here**
 - `AGENTS/DESIGN.md` — project scope, architecture overview, design philosophy.
 
+**Running jobs**
+- `AGENTS/LAUNCHPAD.md` — submitting training/eval/plot scripts to SLURM via the `submit` launcher (resources, sweeps, the `.env`/`slurm/` prerequisites, gotchas).
+
 **Data** (`delphi/data/`, prep in `data/`)
 - `AGENTS/DATA.md` — the data layer: on-disk formats (UKB flat `data.bin`/`time.bin`/`p2i.csv`, AoU `data.parquet`), the reader/dataset classes (`TokenReader` slicing engine; `MultimodalReader` ABC + per-env concretes; `BiomarkerReader`/`ExpansionPackReader` + same-name `Biomarker`/`ExpansionPack` concretes; `MultimodalDataset`), the `transform.py` transforms, the 7-tuple batch + `bio_x_dict` row-indexing invariant, and UKB↔AoU alignment.
 - `AGENTS/UKB.md` — UKB raw-phenotype extraction → flat binary format (`data/ukb/`).
