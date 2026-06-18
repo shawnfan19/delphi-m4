@@ -43,6 +43,7 @@
 # %%
 import json
 from dataclasses import dataclass
+from typing import Any
 
 # %%
 import matplotlib as mpl
@@ -69,9 +70,11 @@ class TaskConfig(CliConfig):
     min: int = 50
     # If set, save the figure to results/<write>/cindex_offset.png (repo root).
     write: None | str = None
-    # Drop cases whose case_time < reader's `<filter_after>_times(pid)`.
-    # E.g. "recruitment" on UKB, "first_biomarker" on AoU. None disables.
-    filter_after: None | str = None
+    # Restrict to cases occurring at/after a cutoff age (case_time >= cutoff).
+    # Either a reader-method NAME whose `<name>_times(pid)` gives a per-participant
+    # cutoff ("recruitment" on UKB, "first_biomarker" on AoU), OR a NUMBER read as a
+    # fixed cutoff age in years applied to everyone. None disables.
+    filter_after: Any = None
 
 
 args = TaskConfig.from_cli()
@@ -111,15 +114,21 @@ def get_reader():
 def apply_filter(df, name, label=""):
     if name is None:
         return df
-    reader = get_reader()
-    method = getattr(reader, f"{name}_times", None)
-    if method is None:
-        raise ValueError(
-            f"{type(reader).__name__} doesn't support filter_after={name!r}; "
-            f"expected method `{name}_times`"
-        )
     pids = df["participant_id"].unique()
-    cutoff = dict(zip(pids, method(pids)))
+    if isinstance(name, (int, float)):
+        # numeric: a fixed cutoff age in years, applied to every participant
+        cutoff_arr = np.full(len(pids), float(name) * 365.25, dtype=np.float32)
+    else:
+        # string: per-participant cutoff from the reader's `<name>_times` method
+        reader = get_reader()
+        method = getattr(reader, f"{name}_times", None)
+        if method is None:
+            raise ValueError(
+                f"{type(reader).__name__} doesn't support filter_after={name!r}; "
+                f"expected method `{name}_times`"
+            )
+        cutoff_arr = method(pids)
+    cutoff = dict(zip(pids, cutoff_arr))
     n_before = len(df)
     df = df.assign(cutoff=df["participant_id"].map(cutoff).astype("float32"))
     df = df.dropna(subset=["cutoff"])
