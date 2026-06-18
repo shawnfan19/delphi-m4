@@ -26,7 +26,6 @@
 # AUCs (a pooled AUC can't be recomputed from the aggregated logbook).
 
 # %%
-import json
 from dataclasses import dataclass
 
 # %%
@@ -40,7 +39,7 @@ from cloudpathlib import AnyPath
 from delphi.data.ukb import MultimodalUKBReader
 from delphi.env import DELPHI_CKPT_READ as DELPHI_CKPT_DIR
 from delphi.experiment import CliConfig
-from delphi.plot import plot_by_chapter
+from delphi.plot import load_logbook, per_disease_auc, plot_by_chapter
 
 mpl.rcParams["figure.dpi"] = 300
 
@@ -71,87 +70,11 @@ min_events = args.min  # drop diseases with fewer events in either checkpoint
 
 
 # %%
-def load_logbook(path):
-    with path.open("r") as f:
-        data = json.load(f)
-    # auc-fast-m4 now wraps output as {"config": ..., "logbook": ...}; older
-    # files are the flat logbook dict (icd -> ...). Support both.
-    return data["logbook"] if "logbook" in data else data
-
-
 logbook_a = load_logbook(ckpt_a_path)
 logbook_b = load_logbook(ckpt_b_path)
 
 
 # %%
-def per_disease_auc(logbook, sex_key, aggregate):
-    """Per-disease (n_events, auc) collapsing the age-stratified logbook.
-
-    For each disease, aggregate the per-age-bin AUCs into one number. "male" /
-    "female" use that sex's per-bin AUC; "either" is the dis_count-weighted mean
-    of the male and female AUCs within each bin (a sex-pooled AUC cannot be
-    recomputed from the aggregated logbook). Bins are then combined either as a
-    plain mean ("uniform") or weighted by case count ("weighted"). Diseases with
-    no valid AUC under the sex grouping are dropped.
-    """
-    icds, n_events, aucs = [], [], []
-    for disease, sexes in logbook.items():
-        age_bins = [k for k in sexes["female"] if k != "total"]
-
-        bin_aucs, bin_cnts = [], []
-        for ag in age_bins:
-            f_auc = sexes["female"][ag]["auc"]
-            f_cnt = sexes["female"][ag]["dis_count"] or 0
-            m_auc = sexes["male"][ag]["auc"]
-            m_cnt = sexes["male"][ag]["dis_count"] or 0
-
-            if sex_key == "female":
-                auc, cnt = f_auc, f_cnt
-            elif sex_key == "male":
-                auc, cnt = m_auc, m_cnt
-            else:  # "either": dis_count-weighted combine of the two sexes
-                total = f_cnt + m_cnt
-                if total == 0:
-                    auc, cnt = None, 0
-                elif f_auc is not None and m_auc is not None:
-                    auc, cnt = (f_auc * f_cnt + m_auc * m_cnt) / total, total
-                elif f_auc is not None:
-                    auc, cnt = f_auc, f_cnt
-                elif m_auc is not None:
-                    auc, cnt = m_auc, m_cnt
-                else:
-                    auc, cnt = None, 0
-
-            bin_aucs.append(np.nan if auc is None else auc)
-            bin_cnts.append(cnt)
-
-        bin_aucs = np.array(bin_aucs, dtype=float)
-        bin_cnts = np.array(bin_cnts, dtype=float)
-        valid = ~np.isnan(bin_aucs)
-        if not valid.any():
-            continue
-
-        if aggregate == "uniform":
-            auc = float(np.nanmean(bin_aucs))
-        elif aggregate == "weighted":
-            weights = bin_cnts[valid]
-            auc = (
-                float(np.average(bin_aucs[valid], weights=weights))
-                if weights.sum() > 0
-                else np.nan
-            )
-        else:
-            raise ValueError(f"Unknown aggregate method: {aggregate!r}")
-
-        icds.append(disease)
-        n_events.append(int(bin_cnts.sum()))
-        aucs.append(auc)
-
-    return pd.DataFrame(
-        {"n_events": n_events, "auc": aucs}, index=pd.Index(icds, name="icd")
-    )
-
-
 def build_df(logbook_a, logbook_b, sex_key, aggregate, min_events):
     a = per_disease_auc(logbook_a, sex_key, aggregate)
     b = per_disease_auc(logbook_b, sex_key, aggregate)
