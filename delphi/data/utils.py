@@ -117,7 +117,11 @@ def dissolve_clusters(
     t = np.concatenate((t, diag_t))
     x = np.concatenate((x, diag_x))
 
-    t, x = sort_by_time(t, x)
+    # sort by time; on a tie, whitelist tokens (covariates / no_event / dx anchor)
+    # sort after non-whitelist tokens, so a disease cluster closes before them.
+    is_whitelist = np.isin(x, whitelist)
+    order = np.lexsort((is_whitelist, t))
+    t, x = t[order], x[order]
 
     dt = np.diff(t)
     is_ignored = np.isin(x[1:], ignore_tokens)

@@ -98,3 +98,10 @@ def test_empty_input_is_noop():
     x, t = _dissolve([], [])
     assert x.size == 0 and t.size == 0
     assert x.dtype == np.uint32 and t.dtype == np.float32
+
+
+def test_whitelist_sorts_after_tied_tokens():
+    # no_event (whitelist=1) shares a timestamp with disease 10's dx anchor; the
+    # non-whitelist dx (99) must sort before the whitelist no_event at that tie.
+    x, _ = _dissolve([10, 1], [100.0, 100.0])
+    assert int(np.where(x == DX_TOKEN)[0][0]) < int(np.where(x == 1)[0][0])
