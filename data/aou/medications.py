@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import yaml
 from utils import DATA_BUCKET, WORKSPACE_CDR, Client, upload_yaml
+
 # -
 
 client = Client(dataset=WORKSPACE_CDR)
@@ -18,13 +19,15 @@ client.list_columns("concept_ancestor")
 
 client.list_rows("concept_ancestor")
 
-client.run("""
+client.run(
+    """
   SELECT concept_class_id, COUNT(*) AS n
   FROM `concept`
   WHERE vocabulary_id = 'ATC'
   GROUP BY concept_class_id
   ORDER BY concept_class_id
-  """)
+  """
+)
 
 query = """
 SELECT
@@ -66,25 +69,30 @@ try:
     _CORE_DIR = Path(__file__).resolve().parent
 except NameError:  # Jupyter cell execution
     _CORE_DIR = Path(os.getcwd())
-TOKENIZER_PATH = _CORE_DIR.parent / "ukb" / "dictionary" / "prescriptions_tokenizer.yaml"
+TOKENIZER_PATH = (
+    _CORE_DIR.parent / "ukb" / "dictionary" / "prescriptions_tokenizer.yaml"
+)
 
 with open(TOKENIZER_PATH) as f:
-  tokenizer = yaml.safe_load(f)
+    tokenizer = yaml.safe_load(f)
 
 # +
-# OMOP ATC codes are upper-case; normalise both sides defensively
-tokenizer = {k.upper(): v for k, v in tokenizer.items()}
+# UKB tokenizer keys are `{ATC4th}_{name}`; derive a {ATC-4th code -> token} lookup
+# from the leading prefix (same idiom as operations.py). OMOP ATC codes are upper-case.
+code2token = {key.split("_", 1)[0].upper(): tok for key, tok in tokenizer.items()}
 df["atc_code"] = df["atc_code"].str.upper()
 
 # log ATC-4th codes seen in AoU but absent from the UKB token space (cf. missing_icd_codes.yaml)
 seen = df[["atc_code", "atc_name"]].drop_duplicates()
-missing = dict(seen.loc[~seen["atc_code"].isin(tokenizer)].itertuples(index=False, name=None))
+missing = dict(
+    seen.loc[~seen["atc_code"].isin(code2token)].itertuples(index=False, name=None)
+)
 # -
 
 upload_yaml(missing, "aou_uk/expansion_packs/prescriptions/missing_atc_codes.yaml")
 
 # apply tokenizer, drop AoU-only codes (keep the shared UKB vocab), enforce age sanity
-df["token"] = df["atc_code"].map(tokenizer)
+df["token"] = df["atc_code"].map(code2token)
 df = df.dropna(subset=["token"])
 df["token"] = df["token"].astype(int)
 df = df[df["age_in_days"] >= 0]
@@ -93,8 +101,6 @@ df = df.sort_values(["person_id", "age_in_days"])
 
 out = f"gs://{DATA_BUCKET}/aou_uk/expansion_packs/prescriptions"
 df[["person_id", "age_in_days", "token"]].to_parquet(f"{out}/data.parquet", index=False)
-upload_yaml(tokenizer, "aou_uk/expansion_packs/prescriptions/tokenizer.yaml")  # AOUExpansionPack reads this
-
-
-
-
+upload_yaml(
+    tokenizer, "aou_uk/expansion_packs/prescriptions/tokenizer.yaml"
+)  # AOUExpansionPack reads this
