@@ -150,7 +150,12 @@ val_pids = ds.sort_by_length(descending=True)
 # +
 offset_days = args.offset * 365.25
 model_targets = model.targets.to(device)
-model_targets = model_targets[model_targets != 1]
+# model.targets is the loss-scored set, not the disease set: exclude augmentation
+# tokens (no_event, and the dx cluster anchor on tiebreak checkpoints) so they are
+# never scored/ranked as diseases (also keeps the logbook detok loop dx-free).
+model_targets = model_targets[
+    ~torch.isin(model_targets, model.augmentation_tokens.to(device))
+]
 
 # Age-bin edges in days; AgeStratRatesCollator makes len(edges) - 1 bins.
 age_group_edges = (

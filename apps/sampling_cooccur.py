@@ -53,7 +53,12 @@ lifestyle_tokens = [reader.tokenizer[k] for k in reader.lifestyle_keys]
 sex_tokens = [reader.tokenizer[k] for k in reader.sex_keys]
 dx_token = token_transform_args.get("dx_token") or 1
 break_clusters = token_transform_args.get("break_clusters", False)
-whitelist = np.array([0, 1, dx_token] + sex_tokens + lifestyle_tokens)
+# reuse the exact whitelist training stored so dissolve/pack stay symmetric;
+# fall back to reconstructing it for checkpoints that predate whitelist_tokens.
+whitelist = np.array(
+    token_transform_args.get("whitelist_tokens")
+    or [0, 1, dx_token] + sex_tokens + lifestyle_tokens
+)
 
 if dx_token != 1:
     model.config.self_terminate_except = list(

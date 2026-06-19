@@ -35,6 +35,7 @@ class TrainConfig(TrainBaseConfig):
     ignore_expansion_packs: bool = True
     biomarker_dropout: None | float = None
     exclude_smoking_and_alcohol: bool = False
+    tiebreak: bool = False
 
     def __post_init__(self):
         if self.panel:
@@ -76,6 +77,41 @@ def train(cfg: TrainConfig):
     reader = MultimodalUKBReader(
         biomarkers=cfg.biomarkers, expansion_packs=cfg.expansion_packs
     )
+
+    # vocab size + ignore_tokens are resolved up front: the tiebreak transform
+    # consumes the final ignore_tokens, so this must run before TokenTransform.
+    cfg.model.vocab_size = reader.vocab_size
+    if cfg.ignore_expansion_packs:
+        cfg.model.ignore_tokens = list(
+            set(cfg.model.ignore_tokens).union(reader.expansion_tokens)
+        )
+
+    tiebreak_kwargs: dict = {}
+    dx_token = None
+    if cfg.tiebreak:
+        # dx anchor takes the next free id; widen the vocab by one for it, and exempt
+        # it from self-termination so the model can re-emit it once per cluster.
+        dx_token = reader.vocab_size
+        cfg.model.vocab_size = dx_token + 1
+        cfg.model.self_terminate_except = list(
+            set(cfg.model.self_terminate_except).union({dx_token})
+        )
+        # dx is a valid target/generatable token but not a disease -> exclude it
+        # from disease eval via augmentation_tokens (default already holds no_event).
+        cfg.model.augmentation_tokens = list(
+            set(cfg.model.augmentation_tokens).union({dx_token})
+        )
+        whitelist_tokens = [0, 1, dx_token] + [
+            reader.tokenizer[k] for k in reader.sex_keys + reader.lifestyle_keys
+        ]
+        tiebreak_kwargs = dict(
+            break_clusters=True,
+            dx_token=dx_token,
+            whitelist_tokens=whitelist_tokens,
+            death_token=reader.tokenizer["death"],
+            ignore_tokens=cfg.model.ignore_tokens,
+        )
+
     if cfg.exclude_smoking_and_alcohol:
         blacklist_tokens = [
             reader.tokenizer[k] for k in reader.smoking_keys + reader.alcohol_keys
@@ -86,6 +122,7 @@ def train(cfg: TrainConfig):
         block_size=cfg.model.block_size,
         blacklist_tokens=blacklist_tokens,
         seed=cfg.seed,
+        **tiebreak_kwargs,
     )
 
     if cfg.biomarkers is not None:
@@ -126,11 +163,6 @@ def train(cfg: TrainConfig):
         biomarker_transform=val_biomarker_transform,
     )
 
-    cfg.model.vocab_size = reader.vocab_size
-    if cfg.ignore_expansion_packs:
-        cfg.model.ignore_tokens = list(
-            set(cfg.model.ignore_tokens).union(reader.expansion_tokens)
-        )
     if cfg.biomarkers is not None:
         for biomarker in cfg.biomarkers:
             projector = "linear"
@@ -163,7 +195,11 @@ def train(cfg: TrainConfig):
             "biomarkers": cfg.biomarkers,
             "expansion_packs": cfg.expansion_packs,
         },
-        "tokenizer": train_ds.tokenizer,
+        "tokenizer": (
+            {**train_ds.tokenizer, "dx": dx_token}
+            if cfg.tiebreak
+            else train_ds.tokenizer
+        ),
         **token_transform.to_ckpt(),
     }
     if train_biomarker_transform is not None:

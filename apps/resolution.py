@@ -31,7 +31,6 @@ from delphi.experiment import GenerateConfig, eval_iter, load_ckpt, move_batch_t
 from delphi.model.tpp import conditional_log_likelihood, tpp_dispatch
 from delphi.model.transformer import generate
 
-NO_EVENT_TOKEN = 1  # kept in the LL (real model output) but excluded from the metrics
 DEATH_TOKEN = 1269
 
 
@@ -63,6 +62,9 @@ assert model.config.loss == "homo_poisson", (
     f"got loss={model.config.loss!r}"
 )
 vocab_size = model.config.vocab_size
+# augmentation tokens (no_event + the dx anchor on tiebreak ckpts): real model
+# outputs kept in the LL but NOT diseases, so excluded from the comparison metrics.
+augmentation_tokens = model.augmentation_tokens.to(device)
 
 # ---- reader / transforms (mirror forecast-m4) ----
 reader_args = ckpt_dict["reader_args"]
@@ -179,9 +181,11 @@ for batch_idx in pbar:
     tll = conditional_log_likelihood(gt_tpp, X1, T1, keep=keep_gt, reduce="sum")
 
     # ---- comparison metrics: GT vs each of its K generations ----
-    # metrics compare real events only — drop no-event tokens (kept in the LL above)
-    mgen = keep_gen & (gen_idx != NO_EVENT_TOKEN)
-    mgt = keep_gt & (X1 != NO_EVENT_TOKEN)
+    # metrics compare real diseases only — drop augmentation tokens (no_event + dx;
+    # both kept in the LL above) so the dx anchor can't inflate overlap/seq-distance
+    # or the gt_n_real length stratifier.
+    mgen = keep_gen & ~torch.isin(gen_idx, augmentation_tokens)
+    mgt = keep_gt & ~torch.isin(X1, augmentation_tokens)
     gm, ga, gv = pack_non_prompt(gen_idx, gen_age, mgen)  # (b*K, .)
     tm, ta, tv = pack_non_prompt(X1, T1, mgt)  # (b, .)
     # per-prompt GT continuation event count (before the K repeat), kept so plots

@@ -291,6 +291,13 @@ class DelphiM4Config:
     biomarker2idx: dict[str, int] = field(default_factory=dict)
     modality_emb: bool = True
     self_terminate_except: list = field(default_factory=lambda: [1])
+    # valid model targets that are NOT meaningful diseases (synthetic/inserted
+    # tokens), so they are scored in the loss / generatable but excluded from
+    # disease evaluation. Default [1]=no_event; tiebreak training appends the dx
+    # anchor. Distinct axis from ignore_tokens (loss-excluded) and
+    # self_terminate_except (recurrence). See the DelphiM4.augmentation_tokens
+    # property for the call-site exclusion idiom.
+    augmentation_tokens: list = field(default_factory=lambda: [1])
     loss: str = "homo_poisson"
     time_unit: float = 365.25
     multitask: bool = False
@@ -393,6 +400,14 @@ class DelphiM4(torch.nn.Module):
         all = torch.arange(self.config.vocab_size)
         targets = all[~torch.isin(all, torch.tensor(self.config.ignore_tokens))]
         return targets
+
+    @property
+    def augmentation_tokens(self):
+        """Model targets that are NOT meaningful diseases (no_event / dx anchor),
+        as a tensor. Eval scripts exclude these from ``targets`` to get the disease
+        set, e.g. ``targets[~torch.isin(targets, model.augmentation_tokens)]`` —
+        kept explicit at the call site rather than hidden behind a property."""
+        return torch.tensor(self.config.augmentation_tokens or [])
 
     def loss(
         self,

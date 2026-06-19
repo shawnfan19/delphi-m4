@@ -220,6 +220,17 @@ event_timesteps = reader.event_times(pids=val_pids)
 exit_time = reader.exit_times(pids=val_pids)
 died = ~np.isnan(event_timesteps[:, 1269])
 
+# evaluate only meaningful diseases: drop augmentation tokens (no_event + the dx
+# anchor on tiebreak checkpoints) from the loss target set. dx also has no column
+# in the reader-derived event masks, so excluding it keeps the predictor and mask
+# widths aligned in the AUC below.
+disease_ids = model.targets.detach().cpu().numpy()
+disease_ids = disease_ids[~np.isin(disease_ids, model.config.augmentation_tokens)]
+# expansion-pack tokens (in targets when ignore_expansion_packs=False) have no
+# column in the reader-derived event masks; drop any id beyond the mask width so the
+# column selection below stays in-bounds.
+disease_ids = disease_ids[disease_ids < event_timesteps.shape[1]]
+
 logbook = defaultdict(dict)
 for horizon in predictor.keys():
 
@@ -237,17 +248,24 @@ for horizon in predictor.keys():
         ctl_mask = gender_col & ~positive & ~prevalent & ~incomplete[:, None]
         case_mask = gender_col & positive
 
+        # Select the disease columns from BOTH the predictor (vocab-wide, N+1 on
+        # tiebreak) and the masks (reader-vocab-wide, N) by token id. This aligns
+        # the widths without assuming augmentation tokens sit at any particular
+        # index, and drops them from scoring; auc is then indexed by position in
+        # disease_ids.
         n_ctl, n_case, auc = batched_mann_whitney_auc(
-            predictor[horizon], ctl_mask, case_mask
+            predictor[horizon][:, disease_ids],
+            ctl_mask[:, disease_ids],
+            case_mask[:, disease_ids],
         )
 
-        for dis_token in model.targets.detach().cpu().numpy():
-            logbook[horizon].setdefault(reader.detokenizer[dis_token], {})[
+        for pos, dis_token in enumerate(disease_ids):
+            logbook[horizon].setdefault(reader.detokenizer[int(dis_token)], {})[
                 gender_key
             ] = {
-                "auc": float(auc[dis_token]),
-                "ctl_count": int(n_ctl[dis_token]),
-                "dis_count": int(n_case[dis_token]),
+                "auc": float(auc[pos]),
+                "ctl_count": int(n_ctl[pos]),
+                "dis_count": int(n_case[pos]),
             }
 
 print(logbook[args.horizons[0]][reader.detokenizer[1269]])

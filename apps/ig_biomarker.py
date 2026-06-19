@@ -97,7 +97,11 @@ ds = MultimodalDataset(
 
 biomarker_features = {name: bm.features for name, bm in reader.biomarkers.items()}
 model_targets = model.targets.to(device)
-model_targets = model_targets[model_targets != 1]
+# exclude augmentation tokens (no_event + the dx anchor on tiebreak checkpoints) so
+# they aren't attributed as diseases.
+model_targets = model_targets[
+    ~torch.isin(model_targets, model.augmentation_tokens.to(device))
+]
 target_idx = model_targets.cpu().tolist()
 
 n_feat = reader.biomarkers[mod_name].n_features

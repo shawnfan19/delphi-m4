@@ -15,6 +15,7 @@ These pin down the contract the generation/eval round-trip relies on:
 import numpy as np
 import pytest
 
+from delphi.data.transform import TokenTransform
 from delphi.data.utils import dissolve_clusters, pack_clusters
 
 WHITELIST = np.array([0, 1])  # pad, no_event
@@ -105,3 +106,27 @@ def test_whitelist_sorts_after_tied_tokens():
     # non-whitelist dx (99) must sort before the whitelist no_event at that tie.
     x, _ = _dissolve([10, 1], [100.0, 100.0])
     assert int(np.where(x == DX_TOKEN)[0][0]) < int(np.where(x == 1)[0][0])
+
+
+def test_token_transform_break_clusters_roundtrip():
+    # the path the app-level `tiebreak` flag wires (break_clusters=True + params)
+    tt = TokenTransform(
+        no_event_interval=None,
+        break_clusters=True,
+        dx_token=DX_TOKEN,
+        whitelist_tokens=[0, 1, DX_TOKEN],
+        death_token=DEATH_TOKEN,
+        ignore_tokens=[0],
+    )
+    x = np.array([10, 11, DEATH_TOKEN], dtype=np.int64)
+    t = np.array([100.0, 200.0, 200.0], dtype=np.float64)
+    ox, otimes = tt(x, t)
+    assert len(ox) == len(otimes)
+    assert ox[-1] == DX_TOKEN  # ends on a dx delimiter
+    i_d = int(np.where(ox == DEATH_TOKEN)[0][0])
+    assert ox[i_d + 1] == DX_TOKEN  # death immediately before its dx
+
+    # break_clusters args round-trip through the checkpoint dict
+    c = TokenTransform.from_ckpt(tt.to_ckpt()).config
+    assert c["break_clusters"] and c["dx_token"] == DX_TOKEN
+    assert c["death_token"] == DEATH_TOKEN
