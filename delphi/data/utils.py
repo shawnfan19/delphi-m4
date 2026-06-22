@@ -1,4 +1,3 @@
-import warnings
 from typing import Literal
 
 import numpy as np
@@ -88,19 +87,12 @@ def dissolve_clusters(
     perturb_t = rng.uniform(size=len(dt))
     perturb_t *= dt
 
-    # Keep each dissolved token strictly inside (prev_event, T) by a margin. When the
-    # preceding gap is too small for an epsilon margin on both sides, compress to gap/2
-    # (and warn) instead of letting a_min > a_max invert np.clip, which would yield a
-    # negative perturbation that pushes the token forward past its own dx anchor.
-    half = np.minimum(epsilon, dt / 2.0)
-    tight = is_dis & (dt < 2.0 * epsilon)
-    if tight.any():
-        warnings.warn(
-            f"dissolve_clusters: {int(tight.sum())} dissolved token(s) sit in a gap "
-            f"< 2*epsilon ({epsilon}); spacing margin compressed to gap/2.",
-            stacklevel=2,
-        )
-    perturb_t = np.clip(perturb_t, a_min=half, a_max=dt - half)
+    # Keep each dissolved token strictly inside (prev_event, T) by an epsilon margin.
+    # When the preceding gap is too small to fit a margin on both sides (< 2*epsilon),
+    # leave the token at its real time (don't perturb) and let the post-sort re-spacing
+    # separate it. Common at the sequence start, where dt[0] = t[0] can be ~0.
+    perturb_t = np.clip(perturb_t, a_min=epsilon, a_max=dt - epsilon)
+    perturb_t[dt < 2.0 * epsilon] = 0.0
 
     # death is terminal: give it the smallest backward offset in its tied group so a
     # plain time-sort places it as the last cluster member, just before the dx anchor.

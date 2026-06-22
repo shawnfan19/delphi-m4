@@ -12,8 +12,9 @@ These pin down the contract the generation/eval round-trip relies on:
 `delphi.data.utils` imports only numpy, so this runs without any dataset backend.
 """
 
+import warnings
+
 import numpy as np
-import pytest
 
 from delphi.data.transform import TokenTransform
 from delphi.data.utils import dissolve_clusters, pack_clusters
@@ -85,14 +86,16 @@ def test_no_residual_ties_for_non_ignored_tokens():
     assert len(np.unique(t)) == len(t)
 
 
-def test_small_gap_warns_and_does_not_jump_forward():
-    # two distinct dissolved tokens < 2*epsilon apart triggers the compression path
-    with pytest.warns(UserWarning, match=r"2\*epsilon"):
+def test_small_gap_leaves_tight_token_unperturbed():
+    # two distinct dissolved tokens < 2*epsilon apart: the tight one is left at its
+    # real time (not perturbed) and re-spacing still yields valid output — no warning.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # any warning fails the test
         _, t = _dissolve([10, 11], [100.0, 100.005])
 
     assert np.all(np.isfinite(t))
-    # order preserved, no forward jump past the anchor
-    assert np.all(np.diff(t) >= 0)
+    # order preserved, strictly increasing after re-spacing, no forward jump
+    assert np.all(np.diff(t) > 0)
 
 
 def test_empty_input_is_noop():
