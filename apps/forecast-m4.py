@@ -40,6 +40,9 @@ class TaskConfig(GenerateConfig):
     method: str = "hazards"  # "hazards", "sampling_hazards", "nelson_aalen"
     prompt_age: int | str = "recruitment"  # fixed anchor age (years), or "recruitment"
     fname: None | str = None
+    # death censors -> cause-specific risk among survivors. False = "death is
+    # complete follow-up" (a death-without-event counts as a control).
+    death_as_censor: bool = True
 
     def __post_init__(self):
 
@@ -209,7 +212,7 @@ is_female = reader.is_female(pids=val_pids)
 event_timesteps = reader.event_times(pids=val_pids)
 exit_time = reader.exit_times(pids=val_pids)
 died = ~np.isnan(event_timesteps[:, 1269])
-censor = np.where(died, np.inf, exit_time)  # death = complete follow-up
+censor = exit_time if args.death_as_censor else np.where(died, np.inf, exit_time)
 
 # evaluate only meaningful diseases: drop augmentation tokens (no_event + the dx
 # anchor on tiebreak checkpoints) and any token beyond the reader-mask width

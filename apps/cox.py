@@ -43,6 +43,9 @@ class TaskConfig(CliConfig):
     alpha: float = 1.0
     ties: str = "efron"
     fname: str = "cox"
+    # death censors -> cause-specific risk among survivors. False = "death is
+    # complete follow-up" (a death-without-event counts as a control).
+    death_as_censor: bool = True
     merge: bool = (
         False  # if set: union the per-disease files into <fname>.json and exit
     )
@@ -112,7 +115,11 @@ risk = model.predict(Xev)  # (N_eval,) linear-predictor risk score
 
 # score on eval against absolute event/censor times, matching forecast-m4
 ev_anchor = ev["prompt_age"]
-ev_censor = np.where(ev["died"], np.inf, ev["exit_time"])  # death = complete follow-up
+ev_censor = (
+    ev["exit_time"]
+    if args.death_as_censor
+    else np.where(ev["died"], np.inf, ev["exit_time"])
+)
 ev_age_eval = ev["event_times"][:, col]
 
 logbook = defaultdict(dict)
