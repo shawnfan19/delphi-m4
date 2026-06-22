@@ -366,6 +366,32 @@ class MultimodalReader(abc.ABC):
             out[i] = (tr.tokens[start : start + length] == female_token).any()
         return out
 
+    def resolve_prompt_age(
+        self, pids: np.ndarray, prompt_age
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Resolve the forecasting anchor age (in days) per participant, dropping
+        those without a usable one.
+
+        ``prompt_age`` is ``"recruitment"`` (per-participant blood-draw age; needs
+        a reader providing ``recruitment_times``, i.e. UKB) or a fixed age in
+        years. A participant is dropped when its anchor is undefined (NaN
+        recruitment age) or has no follow-up past the anchor
+        (``exit_time <= prompt_age``) — there is then no future to forecast into.
+
+        Shared by the forecasting apps so they score the exact same participant
+        set. Returns the filtered ``(pids, prompt_age)``, ``prompt_age`` in days.
+        """
+        if prompt_age == "recruitment":
+            anchor = self.recruitment_times(pids)
+        else:
+            anchor = np.full(len(pids), int(prompt_age) * 365.25, dtype=np.float32)
+
+        keep = ~np.isnan(anchor) & (self.exit_times(pids) > anchor)
+        n = pids.size
+        pids, anchor = pids[keep], anchor[keep]
+        print(f"{pids.size} / {n} pids (valid anchor with follow-up)")
+        return pids, anchor
+
     def __getitem__(self, pid: int):
 
         x, t = self.token_reader[pid]
