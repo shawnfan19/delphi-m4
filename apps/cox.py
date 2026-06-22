@@ -7,17 +7,18 @@ score on the eval split, and grade it with the shared ``windowed_auc`` so the
 numbers are directly comparable to forecast-m4's baselines.
 
 One disease per run (parallelize over diseases with a SLURM array). Reads only the
-.npz bundles (no checkpoint / model). Each run writes ``<fname>.<target>.json``
-next to the eval bundle; afterwards a single ``merge=true`` run unions the
-per-disease files into ``<fname>.json``:
+.npz bundles (no checkpoint / model); train_npz and eval_npz are resolved relative
+to DELPHI_CKPT_DIR (where embed.py writes them). Each run writes
+``<fname>.<target>.json`` next to the eval bundle; afterwards a single
+``merge=true`` run unions the per-disease files into ``<fname>.json``:
 
     # fit one disease (per SLURM array task)
     python apps/cox.py \
-        train_npz=.../embed_train_recruitment.npz \
-        eval_npz=.../embed_val_recruitment.npz target=1269 alpha=1.0
+        train_npz=<run>/embed_train_recruitment.npz \
+        eval_npz=<run>/embed_val_recruitment.npz target=1269 alpha=1.0
 
     # merge the per-disease files once the array finishes
-    python apps/cox.py eval_npz=.../embed_val_recruitment.npz merge=true
+    python apps/cox.py eval_npz=<run>/embed_val_recruitment.npz merge=true
 """
 
 import json
@@ -27,6 +28,7 @@ from pathlib import Path
 
 import numpy as np
 
+from delphi.env import DELPHI_CKPT_DIR
 from delphi.eval.auc import windowed_auc
 from delphi.eval.cox import CoxRidge
 from delphi.experiment import CliConfig
@@ -59,7 +61,9 @@ class TaskConfig(CliConfig):
 
 args = TaskConfig.from_cli()
 args.print()
-out_dir = Path(args.eval_npz).parent
+ckpt_dir = Path(DELPHI_CKPT_DIR)
+eval_path = ckpt_dir / args.eval_npz
+out_dir = eval_path.parent
 
 if args.merge:
     shards = sorted(
@@ -80,8 +84,8 @@ if args.merge:
     raise SystemExit(0)
 
 
-train = np.load(args.train_npz, allow_pickle=True)
-ev = np.load(args.eval_npz, allow_pickle=True)
+train = np.load(ckpt_dir / args.train_npz, allow_pickle=True)
+ev = np.load(eval_path, allow_pickle=True)
 assert np.array_equal(
     train["target_tokens"], ev["target_tokens"]
 ), "train/eval bundles describe different disease columns"
