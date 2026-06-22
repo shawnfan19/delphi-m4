@@ -45,6 +45,31 @@ def batched_mann_whitney_auc(
     return n1, n2, auc
 
 
+def windowed_auc(predictor, event_times, censor_times, time_window):
+    """AUC of ``predictor`` separating cases from controls in a forecast window.
+
+    ``predictor`` and ``event_times`` are ``(N,)`` or ``(N, V)``; ``censor_times``
+    and the two entries of ``time_window = (t0, t1)`` are ``(N,)``. For the window
+    ``[t0, t1)``:
+
+    - *case*: first occurrence falls in the window (``t0 <= event_times < t1``),
+    - *control*: no event in or before the window, and followed through ``t1``,
+    - *prevalent* (event before ``t0``) and *incomplete* (censored before ``t1``)
+      are excluded.
+
+    Set ``censor_times = inf`` for the deceased so death counts as complete
+    follow-up. Returns ``(n_ctl, n_case, auc)`` — scalars, or ``(V,)`` for a 2-D
+    predictor.
+    """
+    t0, t1 = time_window
+    if event_times.ndim == 2:
+        t0, t1, censor_times = t0[:, None], t1[:, None], censor_times[:, None]
+    case = (event_times >= t0) & (event_times < t1)
+    prevalent = event_times < t0
+    control = ~case & ~prevalent & (censor_times >= t1)
+    return batched_mann_whitney_auc(predictor, control, case)
+
+
 class AgeStratRatesCollator:
 
     def __init__(self, age_groups: torch.Tensor):

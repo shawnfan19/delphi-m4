@@ -27,7 +27,7 @@ from delphi.data import MultimodalDataset
 from delphi.data.transform import BiomarkerTransform, MultimodalPrompt, TokenTransform
 from delphi.data.ukb import MultimodalUKBReader
 from delphi.env import DELPHI_CKPT_READ, DELPHI_CKPT_WRITE
-from delphi.eval.auc import batched_mann_whitney_auc
+from delphi.eval.auc import windowed_auc
 from delphi.eval.survival import NelsonAalenEstimator
 from delphi.experiment import GenerateConfig, eval_iter, load_ckpt, move_batch_to_device
 from delphi.model.tpp import tpp_dispatch
@@ -79,17 +79,7 @@ reader = MultimodalUKBReader(
 )
 
 val_pids = MultimodalUKBReader.participants("val")
-total_val = val_pids.size
-
-# anchor: recruitment age (when blood biomarkers were measured) or a fixed age.
-# recruitment_times yields NaN where undefined -> drop those participants.
-if args.prompt_age == "recruitment":
-    prompt_age = reader.recruitment_times(val_pids)
-else:
-    prompt_age = np.full(len(val_pids), int(args.prompt_age) * 365.25, dtype=np.float32)
-keep = ~np.isnan(prompt_age)
-val_pids, prompt_age = val_pids[keep], prompt_age[keep]
-print(f"{val_pids.size} / {total_val} val pids (valid anchor)")
+val_pids, prompt_age = reader.resolve_prompt_age(val_pids, args.prompt_age)
 token_transform = TokenTransform.from_ckpt(ckpt_dict)
 token_transform.describe()
 biomarker_transform = BiomarkerTransform.from_ckpt(ckpt_dict)
@@ -219,46 +209,25 @@ is_female = reader.is_female(pids=val_pids)
 event_timesteps = reader.event_times(pids=val_pids)
 exit_time = reader.exit_times(pids=val_pids)
 died = ~np.isnan(event_timesteps[:, 1269])
+censor = np.where(died, np.inf, exit_time)  # death = complete follow-up
 
 # evaluate only meaningful diseases: drop augmentation tokens (no_event + the dx
-# anchor on tiebreak checkpoints) from the loss target set. dx also has no column
-# in the reader-derived event masks, so excluding it keeps the predictor and mask
-# widths aligned in the AUC below.
+# anchor on tiebreak checkpoints) and any token beyond the reader-mask width
+# (expansion packs), so predictor and mask columns stay aligned.
 disease_ids = model.targets.detach().cpu().numpy()
 disease_ids = disease_ids[~np.isin(disease_ids, model.config.augmentation_tokens)]
-# expansion-pack tokens (in targets when ignore_expansion_packs=False) have no
-# column in the reader-derived event masks; drop any id beyond the mask width so the
-# column selection below stays in-bounds.
 disease_ids = disease_ids[disease_ids < event_timesteps.shape[1]]
 
 logbook = defaultdict(dict)
-for horizon in predictor.keys():
-
-    window_end = prompt_age + horizon * 365.25
-    incomplete = (exit_time < window_end) & ~died
-
-    positive = (event_timesteps >= prompt_age[:, None]) & (
-        event_timesteps < window_end[:, None]
-    )
-    prevalent = event_timesteps < prompt_age[:, None]
-
+for horizon, scores in predictor.items():
+    t1 = prompt_age + horizon * 365.25
     for gender_key, is_gender in {"female": is_female, "male": ~is_female}.items():
-
-        gender_col = is_gender[:, None]
-        ctl_mask = gender_col & ~positive & ~prevalent & ~incomplete[:, None]
-        case_mask = gender_col & positive
-
-        # Select the disease columns from BOTH the predictor (vocab-wide, N+1 on
-        # tiebreak) and the masks (reader-vocab-wide, N) by token id. This aligns
-        # the widths without assuming augmentation tokens sit at any particular
-        # index, and drops them from scoring; auc is then indexed by position in
-        # disease_ids.
-        n_ctl, n_case, auc = batched_mann_whitney_auc(
-            predictor[horizon][:, disease_ids],
-            ctl_mask[:, disease_ids],
-            case_mask[:, disease_ids],
+        n_ctl, n_case, auc = windowed_auc(
+            scores[is_gender][:, disease_ids],
+            event_timesteps[is_gender][:, disease_ids],
+            censor[is_gender],
+            (prompt_age[is_gender], t1[is_gender]),
         )
-
         for pos, dis_token in enumerate(disease_ids):
             logbook[horizon].setdefault(reader.detokenizer[int(dis_token)], {})[
                 gender_key
