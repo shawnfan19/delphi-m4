@@ -16,6 +16,7 @@ pyarrow
 pytest
 pyyaml
 scikit-learn
+scikit-survival
 scipy
 torchdiffeq
 typing_extensions
