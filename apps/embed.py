@@ -29,12 +29,12 @@ from delphi.experiment import GenerateConfig, eval_iter, load_ckpt, move_batch_t
 
 @dataclass(kw_only=True)
 class TaskConfig(GenerateConfig):
-    split: str = "val"  # train (fit Cox) / val / test (evaluate)
+    fold: str = "val"  # train (fit Cox) / val / test (evaluate)
     prompt_age: int | str = "recruitment"  # fixed anchor age (years), or "recruitment"
     fname: None | str = None
 
     def __post_init__(self):
-        assert self.split in {"train", "val", "test"}
+        assert self.fold in {"train", "val", "test"}
         if self.prompt_age != "recruitment":
             self.prompt_age = int(self.prompt_age)  # fixed anchor age in years
         if not self.fname:
@@ -43,7 +43,7 @@ class TaskConfig(GenerateConfig):
                 if self.prompt_age == "recruitment"
                 else f"age{self.prompt_age}"
             )
-            self.fname = f"embed_{self.split}_{tag}"
+            self.fname = f"embed_{self.fold}_{tag}"
 
 
 args = TaskConfig.from_cli()
@@ -64,7 +64,7 @@ reader = MultimodalUKBReader(
     expansion_packs=reader_args["expansion_packs"],
 )
 
-pids = MultimodalUKBReader.participants(args.split)
+pids = MultimodalUKBReader.participants(args.fold)
 pids, prompt_age = reader.resolve_prompt_age(pids, args.prompt_age)
 
 token_transform = TokenTransform.from_ckpt(ckpt_dict)
