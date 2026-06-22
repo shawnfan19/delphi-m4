@@ -1,0 +1,269 @@
+"""Instant (frozen-history) reliability curves, per sex and 5-year age bin.
+
+The calibration sibling of ``apps/auc-fast-m4.py`` — same single-pass, frozen-
+history scoring, but instead of a per-(sex, age-bin) AUC it emits the data for
+reliability (calibration) curves. Reproduces the legacy ``plot_calibration``
+(gerstung-lab/Delphi ``evaluate_delphi.ipynb``) in the current pipeline:
+
+- CASE score: the model's predicted rate at the input position immediately
+  before the disease event (``DiseaseRatesCollator``; ``offset`` rewinds it).
+- CONTROL score: one randomly-sampled position per 5-year age bin per
+  participant (``AgeStratRatesCollator``).
+- Rate -> probability over a window ``W = age_gap`` years (mirrors the legacy
+  ``x = 1 - exp(-rate * age_step)``). ``tpp.intensity`` already returns a
+  per-year rate (the TPP carries ``time_unit = 365.25``), so no extra scaling.
+- Within each (sex, age bin, disease), predicted probabilities are binned on a
+  fixed power-law grid; per bin we report the mean predicted probability,
+  the observed case fraction, and the count.
+
+Output is a bare JSON logbook consumed directly by ``plot/compare_calibration.py``
+(its outer key is generic — here it is the age bracket rather than a horizon):
+``logbook[age_bracket][token][sex] = {"pred": [...], "obs": [...], "counts": [...]}``.
+"""
+
+# +
+import json
+import math
+import pprint
+from dataclasses import asdict, dataclass
+
+import numpy as np
+import torch
+from cloudpathlib import AnyPath
+from tqdm import tqdm
+
+from delphi.data import MultimodalDataset
+from delphi.data.auto import multimodal_reader_cls
+from delphi.data.transform import BiomarkerTransform, TokenTransform
+from delphi.env import DELPHI_CKPT_READ, DELPHI_CKPT_WRITE
+from delphi.eval import AgeStratRatesCollator, DiseaseRatesCollator
+from delphi.experiment import CliConfig, eval_iter, load_ckpt, move_batch_to_device
+from delphi.model.tpp import tpp_dispatch
+from delphi.multimodal import parse_panel
+
+# Power-law predicted-probability bins (identical to the legacy plot_calibration
+# and the deleted apps/forecast.py calibration): 14 bins over (1e-6, ~31].
+PROB_BINS = 10.0 ** np.arange(-6.0, 1.5, 0.5)
+
+
+@dataclass(kw_only=True)
+class TaskConfig(CliConfig):
+    ckpt: str = "delphi-m4/delphi-m4/ckpt.pt"
+    batch_size: int = 64
+    offset: float = 0
+    panel: None | str = None
+    biomarkers: None | list = None
+    expansion_packs: None | list[str] = None
+    age_start: int = 40
+    age_end: int = 85
+    age_gap: int = 5  # also the probability window W (years), mirroring age_step
+    fname: None | str = None
+    panel_name: None | str = None
+    fold: str = "val"
+
+    def __post_init__(self):
+        if self.panel:
+            self.biomarkers, self.expansion_packs, self.panel_name = parse_panel(
+                self.panel
+            )
+        if self.fname is None:
+            self.fname = "instant_calibration"
+            if self.panel_name is not None:
+                self.fname += f"_{self.panel_name}"
+            else:
+                if self.biomarkers is not None:
+                    self.fname += f"-{'-'.join(self.biomarkers)}"
+                if self.expansion_packs is not None:
+                    self.fname += f"-{'-'.join(self.expansion_packs)}"
+            if self.offset != 0:
+                self.fname += f"_offset{self.offset}"
+
+
+args = TaskConfig.from_cli()
+print("args:")
+pprint.pp(args)
+
+
+# +
+ckpt = AnyPath(DELPHI_CKPT_READ) / args.ckpt
+model, ckpt_dict = load_ckpt(ckpt)
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+reader_args = ckpt_dict["reader_args"]
+
+ReaderCls = multimodal_reader_cls()
+val_pids = ReaderCls.participants(args.fold)
+# -
+
+ckpt_biomarkers = list(reader_args["biomarkers"] or [])
+ckpt_expansion_packs = list(reader_args["expansion_packs"] or [])
+
+# Default: inherit the ckpt's training set. Overrides are clamped to that set.
+if args.biomarkers is None:
+    biomarkers = ckpt_biomarkers
+else:
+    biomarkers = sorted(set(ckpt_biomarkers).intersection(args.biomarkers))
+    if not biomarkers:
+        print(
+            f"WARNING: biomarkers override {args.biomarkers} has no overlap "
+            f"with ckpt biomarkers {ckpt_biomarkers}; using empty set"
+        )
+
+if args.expansion_packs is None:
+    expansion_packs = ckpt_expansion_packs
+else:
+    expansion_packs = sorted(
+        set(ckpt_expansion_packs).intersection(args.expansion_packs)
+    )
+    if not expansion_packs:
+        print(
+            f"WARNING: expansion_packs override {args.expansion_packs} has no "
+            f"overlap with ckpt expansion_packs {ckpt_expansion_packs}; "
+            "using empty set"
+        )
+
+print(f"biomarkers: {biomarkers}")
+print(f"expansion_packs: {expansion_packs}")
+# pass dict (not list) so reader uses the checkpoint's index assignments
+biomarker2idx = {name: model.config.biomarker2idx[name] for name in biomarkers}
+reader = ReaderCls(biomarkers=biomarker2idx, expansion_packs=expansion_packs)
+reader.describe()
+
+token_transform = TokenTransform.from_ckpt(ckpt_dict)
+token_transform.describe()
+
+biomarker_transform = BiomarkerTransform.from_ckpt(ckpt_dict) if biomarkers else None
+if biomarker_transform is not None:
+    biomarker_transform = biomarker_transform.replace(dropout=None)
+    biomarker_transform.describe()
+
+ds = MultimodalDataset(
+    reader=reader,
+    pids=val_pids,
+    token_transform=token_transform,
+    biomarker_transform=biomarker_transform,
+)
+
+# Longest-first packing minimizes padding; rebind val_pids so is_female stays
+# aligned to the rate-matrix rows.
+val_pids = ds.sort_by_length(descending=True)
+
+# +
+offset_days = args.offset * 365.25
+model_targets = model.targets.to(device)
+model_targets = model_targets[model_targets != 1]
+
+# Age-bin edges in days; AgeStratRatesCollator makes len(edges) - 1 bins.
+age_group_edges = (
+    np.arange(args.age_start, args.age_end + args.age_gap, args.age_gap) * 365.25
+)
+n_bins = len(age_group_edges) - 1
+
+ctl_collator = AgeStratRatesCollator(
+    age_groups=torch.from_numpy(age_group_edges).float().to(device)
+)
+dis_collator = DiseaseRatesCollator(targets=model_targets)
+
+it = tqdm(
+    eval_iter(total_size=len(ds), batch_size=args.batch_size),
+    total=math.ceil(len(ds) / args.batch_size),
+    leave=False,
+)
+with torch.no_grad():
+    for batch_idx in it:
+        batch_input = ds.get_batch(batch_idx)
+        batch_input = move_batch_to_device(batch_input, device=device)
+        x0, t0, _, _, _, x1, t1 = batch_input
+
+        out_dict, _, _ = model(*batch_input[:5])
+        tpp = tpp_dispatch(model, out_dict)
+
+        # Intensity at the input position strictly before each target's
+        # (t1 - offset); nearest_t0 is that position's age. offset=0 -> the
+        # position immediately preceding the event (the "instant" anchor).
+        intensity, nearest_t0 = tpp.intensity(t1 - offset_days)
+        intensity = intensity.half()
+
+        ctl_collator.step(timesteps=nearest_t0, logits=intensity)
+        dis_collator.step(tokens=x1, timesteps=nearest_t0, logits=intensity)
+
+ctl_rates, _ = ctl_collator.finalize()  # (N, n_bins, V)
+dis_rates, dis_times = dis_collator.finalize()  # (N, V), (N, V)
+
+ctl_rates = ctl_rates.numpy().astype(np.float32)
+dis_rates = dis_rates.numpy().astype(np.float32)
+dis_times = dis_times.numpy()
+is_female = reader.is_female(val_pids)  # (N,) bool
+# -
+
+# +
+# Rate (per year) -> probability over a W = age_gap year window, assuming a
+# constant rate (mirrors legacy x = 1 - exp(-rate * age_step)). NaNs (non-case
+# entries / empty control bins) propagate and are excluded downstream.
+window = float(args.age_gap)
+with np.errstate(over="ignore", invalid="ignore"):
+    prob_dis = 1.0 - np.exp(-dis_rates * window)  # (N, V): case probabilities
+    prob_ctl = 1.0 - np.exp(-ctl_rates * window)  # (N, n_bins, V): control probs
+
+# Bin each case by the age of its prediction position, matching the control
+# binning. is_case marks (participant, token) pairs the participant developed.
+dis_time_bin = np.searchsorted(age_group_edges, dis_times, side="right") - 1  # (N, V)
+is_case = ~np.isnan(dis_rates)  # (N, V)
+
+age_group_keys = [
+    f"{int(start / 365.25)}-{int(end / 365.25)}"
+    for start, end in zip(age_group_edges[:-1], age_group_edges[1:])
+]
+
+
+def reliability(p_ctl, p_case):
+    """(pred, obs, counts) over PROB_BINS for one (disease, sex, age bin).
+
+    pred = mean predicted probability in bin; obs = observed case fraction
+    (#cases / #total) in bin; counts = #participants in bin. Empty bins are
+    NaN (pred/obs) / 0 (count). Bins are right-closed (bins[b-1], bins[b]],
+    matching the legacy ``(xa > bins[b-1]) & (xa <= bins[b])``.
+    """
+    p = np.concatenate([p_ctl, p_case])
+    y = np.concatenate([np.zeros(len(p_ctl)), np.ones(len(p_case))])
+    idx = np.digitize(p, PROB_BINS, right=True)
+    pred, obs, counts = [], [], []
+    for b in range(1, len(PROB_BINS)):
+        m = idx == b
+        c = int(m.sum())
+        counts.append(c)
+        pred.append(float(p[m].mean()) if c else float("nan"))
+        obs.append(float(y[m].mean()) if c else float("nan"))
+    return pred, obs, counts
+
+
+targets = model_targets.detach().cpu().numpy().tolist()
+logbook = {}
+for i, bracket in enumerate(tqdm(age_group_keys, desc="age bins")):
+    logbook[bracket] = {}
+    ctl_here = (~is_case) & ~np.isnan(ctl_rates[:, i, :])  # (N, V)
+    case_here = is_case & (dis_time_bin == i)  # (N, V)
+    prob_ctl_i = prob_ctl[:, i, :]  # (N, V)
+    for d in targets:
+        token = reader.detokenizer[int(d)]
+        entry = {}
+        for sex_label, is_g in [("female", is_female), ("male", ~is_female)]:
+            cmask = ctl_here[:, d] & is_g
+            kmask = case_here[:, d] & is_g
+            pred, obs, counts = reliability(prob_ctl_i[cmask, d], prob_dis[kmask, d])
+            entry[sex_label] = {"pred": pred, "obs": obs, "counts": counts}
+        logbook[bracket][token] = entry
+# -
+
+# Spot-check: death token (1269) in the first age bracket.
+pprint.pp(logbook[age_group_keys[0]].get(reader.detokenizer.get(1269), {}))
+print("config:", asdict(args))
+
+ckpt_write = AnyPath(str(ckpt).replace(DELPHI_CKPT_READ, DELPHI_CKPT_WRITE))
+ckpt_write.parent.mkdir(parents=True, exist_ok=True)
+out_path = ckpt_write.parent / f"{args.fname}.json"
+# Bare logbook (no config envelope) so plot/compare_calibration.py reads it
+# directly — it iterates the top-level keys as the series to overlay.
+with out_path.open("w") as f:
+    json.dump(logbook, f)
+print(f"Saved to {out_path}")
