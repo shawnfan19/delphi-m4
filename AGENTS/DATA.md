@@ -334,7 +334,7 @@ for name, bio_x in bio_x_dict.items():
     # if not keep.any(): omit this modality from the dict entirely
 ```
 
-The helpers `filter_biomarker_array` / `remove_after` / `dropout_biomarkers` in
+The helpers `filter_biomarker_array` / `dropout_biomarkers` in
 `delphi/data/utils.py` already maintain this invariant — prefer them over hand-rolled masking.
 
 ### Filtering participants by modality
@@ -399,7 +399,7 @@ batch = move_batch_to_device(batch, device=device)
 
 Handles **tensors** and **dicts of tensors** only. Raises `NotImplementedError` for any other type. The 7-tuple batch format satisfies this contract (all elements are tensors or `bio_x_dict` which is a dict).
 
-When constructing a sub-batch to pass directly to the model (e.g. after `remove_after`), move the full batch to device first, then manipulate — cloning device tensors is cheaper than moving CPU tensors after manipulation.
+When constructing a sub-batch to pass directly to the model, move the full batch to device first, then manipulate — cloning device tensors is cheaper than moving CPU tensors after manipulation.
 
 ---
 

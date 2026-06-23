@@ -318,23 +318,6 @@ def dropout_biomarkers(
     )
 
 
-def remove_after_np(x, t, bio_x_dict, bio_t, bio_m, cutoff_t, biomarker2idx):
-    """Remove tokens and biomarker measurements after cutoff_t.
-
-    Unbatched version for __getitem__ outputs: x, t are 1D numpy arrays;
-    bio_x_dict values are lists of numpy arrays; bio_t, bio_m are 1D numpy.
-    """
-    x_mask = t <= cutoff_t
-    x = x[x_mask]
-    t = t[x_mask]
-
-    bio_x_dict, bio_t, bio_m = filter_biomarker_array(
-        bio_x_dict, bio_t, bio_m, mask=bio_t <= cutoff_t, biomarker2idx=biomarker2idx
-    )
-
-    return x, t, bio_x_dict, bio_t, bio_m
-
-
 def sort_by_time(t: np.ndarray, *args: np.ndarray, stable: bool = False):
     s = np.argsort(t, kind="stable" if stable else "quicksort")
     t = t[s]
@@ -359,28 +342,6 @@ def exclude_tokens(x: np.ndarray, t: np.ndarray, blacklist: np.ndarray):
     x = x[~to_exclude]
     t = t[~to_exclude]
     return x, t
-
-
-def remove_after(x, t, bio_x_dict, bio_t, bio_m, cutoff_t, biomarker2idx):
-    """Remove tokens and biomarker measurements after cutoff_t.
-
-    Batched version: x, t are 2D tensors; bio_t, bio_m are 2D tensors.
-    bio_x_dict is keyed by lowercase biomarker name; biomarker2idx maps that
-    name to the integer used in bio_m.
-    """
-    x_mask = t.ravel() <= cutoff_t
-    x = x[:, x_mask].clone()
-    t = t[:, x_mask].clone()
-
-    bio_mask = bio_t.ravel() <= cutoff_t
-    bio_x_dict = {
-        mod: v[bio_mask[bio_m.ravel() == biomarker2idx[mod]]].clone()
-        for mod, v in bio_x_dict.items()
-    }
-    bio_t = bio_t[:, bio_mask].clone()
-    bio_m = bio_m[:, bio_mask].clone()
-
-    return x, t, bio_x_dict, bio_t, bio_m
 
 
 def update_tokenizer(base_tokenizer: dict, add_tokenizer: dict) -> tuple[dict, int]:
