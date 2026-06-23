@@ -140,11 +140,7 @@ def parse_weight_decay_groups(model: torch.nn.Module) -> list[dict]:
     # so let's manually remove 'lm_head.weight' from decay set. This will include
     # this tensor into optimization via transformer.wte.weight only, and not decayed.
     if getattr(model.config, "weight_tying", True):
-        if "gpt2.lm_head.weight" in decay:
-            # for hf transformers implementation
-            decay.remove("gpt2.lm_head.weight")
         if "lm_head.weight" in decay:
-            # for nano-gpt implementation
             decay.remove("lm_head.weight")
 
     # validate that we considered every parameter
