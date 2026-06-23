@@ -9,7 +9,7 @@ from collections import defaultdict
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Optional
+from typing import Any, ClassVar, Iterable, Iterator, Optional
 
 import numpy as np
 import torch
@@ -23,6 +23,7 @@ from delphi import distributed
 from delphi.env import DELPHI_CKPT_DIR
 from delphi.log import Checkpointer, Logger, _format_for_display
 from delphi.model.multimodal import DelphiM4, DelphiM4Config
+from delphi.multimodal import parse_panel
 from delphi.optim import (
     configure_optimizer,
     configure_scheduler,
@@ -135,6 +136,46 @@ class CliConfig:
 
     def print(self):
         pprint.pprint(_format_for_display(asdict(self)))
+
+
+@dataclass(kw_only=True)
+class EvalConfig(CliConfig):
+    """Shared CLI config for the frozen-history eval apps (auc-fast, c-index,
+    instant_calibration).
+
+    Subclasses set ``fname_prefix`` and add their task-specific fields; the
+    common ckpt/biomarker/fold flags and the fname-from-panel derivation live
+    here so the three apps can't drift apart.
+    """
+
+    fname_prefix: ClassVar[str] = "eval"
+
+    ckpt: str = "delphi-m4/delphi-m4/ckpt.pt"
+    batch_size: int = 64
+    offset: float = 0
+    panel: None | str = None
+    biomarkers: None | list = None
+    expansion_packs: None | list[str] = None
+    fname: None | str = None
+    panel_name: None | str = None
+    fold: str = "val"
+
+    def __post_init__(self):
+        if self.panel:
+            self.biomarkers, self.expansion_packs, self.panel_name = parse_panel(
+                self.panel
+            )
+        if self.fname is None:
+            self.fname = self.fname_prefix
+            if self.panel_name is not None:
+                self.fname += f"_{self.panel_name}"
+            else:
+                if self.biomarkers is not None:
+                    self.fname += f"-{'-'.join(self.biomarkers)}"
+                if self.expansion_packs is not None:
+                    self.fname += f"-{'-'.join(self.expansion_packs)}"
+            if self.offset != 0:
+                self.fname += f"_offset{self.offset}"
 
 
 @dataclass
@@ -640,6 +681,87 @@ def load_ckpt(ckpt_path):
     model = model.eval()
 
     return model, ckpt_dict
+
+
+def _clamp_to_ckpt(override, ckpt_value, label):
+    """Intersect a CLI biomarker/expansion override with the checkpoint's set.
+
+    ``override is None`` -> inherit the checkpoint's set unchanged. Otherwise
+    keep only names the checkpoint was trained on (sorted), warning on empty
+    overlap so a typo or unknown panel fails loud instead of silently scoring
+    against a set the model never saw.
+    """
+    ckpt_set = list(ckpt_value or [])
+    if override is None:
+        return ckpt_set
+    kept = sorted(set(ckpt_set).intersection(override))
+    if not kept:
+        print(
+            f"WARNING: {label} override {override} has no overlap with ckpt "
+            f"{label} {ckpt_set}; using empty set"
+        )
+    return kept
+
+
+def setup_eval_dataset(
+    ckpt_dict, *, fold, override_biomarkers=None, override_expansion_packs=None
+):
+    """Rebuild the frozen-history eval dataset from a checkpoint's saved config.
+
+    Shared front-end for the single-pass eval apps (auc-fast, c-index,
+    instant_calibration). Takes the dict returned by ``load_ckpt`` and inherits
+    the checkpoint's biomarker/expansion set, clamped to ``override_biomarkers``
+    / ``override_expansion_packs`` (each ``None`` -> inherit that set unchanged).
+    Returns ``(reader, ds, val_pids)`` with the dataset sorted longest-first and
+    ``val_pids`` reordered to match the row order.
+    """
+    from delphi.data import MultimodalDataset
+    from delphi.data.auto import multimodal_reader_cls
+    from delphi.data.transform import BiomarkerTransform, TokenTransform
+
+    reader_args = ckpt_dict["reader_args"]
+    ReaderCls = multimodal_reader_cls()
+    val_pids = ReaderCls.participants(fold)
+
+    biomarkers = _clamp_to_ckpt(
+        override_biomarkers, reader_args["biomarkers"], "biomarkers"
+    )
+    expansion_packs = _clamp_to_ckpt(
+        override_expansion_packs, reader_args["expansion_packs"], "expansion_packs"
+    )
+    print(f"biomarkers: {biomarkers}")
+    print(f"expansion_packs: {expansion_packs}")
+
+    # pass a dict (not a list) so the reader reuses the checkpoint's index
+    # assignments instead of re-deriving them from sorted order
+    ckpt_b2i = ckpt_dict["model_args"].get("biomarker2idx") or {}
+    reader = ReaderCls(
+        biomarkers={n: ckpt_b2i[n] for n in biomarkers},
+        expansion_packs=expansion_packs,
+    )
+    reader.describe()
+
+    token_transform = TokenTransform.from_ckpt(ckpt_dict)
+    token_transform.describe()
+
+    biomarker_transform = (
+        BiomarkerTransform.from_ckpt(ckpt_dict) if biomarkers else None
+    )
+    if biomarker_transform is not None:
+        biomarker_transform = biomarker_transform.replace(dropout=None)
+        biomarker_transform.describe()
+
+    ds = MultimodalDataset(
+        reader=reader,
+        pids=val_pids,
+        token_transform=token_transform,
+        biomarker_transform=biomarker_transform,
+    )
+    # Longest-first packing minimizes padding and surfaces OOM on batch 0; the
+    # sort is in place and returns the new order, so rebind val_pids to keep the
+    # per-participant arrays (is_female, ...) aligned to the dataset rows.
+    val_pids = ds.sort_by_length(descending=True)
+    return reader, ds, val_pids
 
 
 def flexi_list(panel):

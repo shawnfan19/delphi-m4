@@ -12,51 +12,28 @@ import torch
 from cloudpathlib import AnyPath
 from tqdm import tqdm
 
-from delphi.data import MultimodalDataset
-from delphi.data.auto import multimodal_reader_cls
-from delphi.data.transform import BiomarkerTransform, TokenTransform
 from delphi.env import DELPHI_CKPT_READ, DELPHI_CKPT_WRITE
 from delphi.eval import (
     ConcordanceCollator,
     DiseaseRatesCollator,
     EventTimeCollator,
 )
-from delphi.experiment import CliConfig, eval_iter, load_ckpt, move_batch_to_device
+from delphi.experiment import (
+    EvalConfig,
+    eval_iter,
+    load_ckpt,
+    move_batch_to_device,
+    setup_eval_dataset,
+)
 from delphi.model.tpp import tpp_dispatch
-from delphi.multimodal import parse_panel
 
 
 @dataclass(kw_only=True)
-class TaskConfig(CliConfig):
-    ckpt: str = "delphi-m4/delphi-m4/ckpt.pt"
-    batch_size: int = 64
+class TaskConfig(EvalConfig):
+    fname_prefix = "cindex"
     chunk_size: int = 8192
-    offset: float = 0
-    panel: None | str = None
-    biomarkers: None | list = None
-    expansion_packs: None | list[str] = None
     max_gap: float = 5
-    fname: None | str = None
-    panel_name: None | str = None
-    fold: str = "val"
     same_sex: bool = True
-
-    def __post_init__(self):
-        if self.panel:
-            self.biomarkers, self.expansion_packs, self.panel_name = parse_panel(
-                self.panel
-            )
-        if self.fname is None:
-            self.fname = "cindex"
-            if self.panel_name is not None:
-                self.fname += f"_{self.panel_name}"
-            else:
-                if self.biomarkers is not None:
-                    self.fname += f"-{'-'.join(self.biomarkers)}"
-                if self.expansion_packs is not None:
-                    self.fname += f"-{'-'.join(self.expansion_packs)}"
-            if self.offset != 0:
-                self.fname += f"_offset{self.offset}"
 
 
 args = TaskConfig.from_cli()
@@ -65,76 +42,15 @@ pprint.pp(args)
 
 
 # +
-ckpt = AnyPath(DELPHI_CKPT_READ) / args.ckpt
-model, ckpt_dict = load_ckpt(ckpt)
+model, ckpt_dict = load_ckpt(AnyPath(DELPHI_CKPT_READ) / args.ckpt)
 device = "cuda" if torch.cuda.is_available() else "cpu"
-
-reader_args = ckpt_dict["reader_args"]
-
-ReaderCls = multimodal_reader_cls()
-val_pids = ReaderCls.participants(args.fold)
-
-# -
-ckpt_biomarkers = list(reader_args["biomarkers"] or [])
-ckpt_expansion_packs = list(reader_args["expansion_packs"] or [])
-
-# Default: inherit the ckpt's training set. Overrides (panel / biomarkers /
-# expansion_packs flags) are clamped to that set so typos or panels the ckpt
-# doesn't know about don't silently sneak through.
-if args.biomarkers is None:
-    biomarkers = ckpt_biomarkers
-else:
-    biomarkers = sorted(set(ckpt_biomarkers).intersection(args.biomarkers))
-    if not biomarkers:
-        print(
-            f"WARNING: biomarkers override {args.biomarkers} has no overlap "
-            f"with ckpt biomarkers {ckpt_biomarkers}; using empty set"
-        )
-
-if args.expansion_packs is None:
-    expansion_packs = ckpt_expansion_packs
-else:
-    expansion_packs = sorted(
-        set(ckpt_expansion_packs).intersection(args.expansion_packs)
-    )
-    if not expansion_packs:
-        print(
-            f"WARNING: expansion_packs override {args.expansion_packs} has no "
-            f"overlap with ckpt expansion_packs {ckpt_expansion_packs}; "
-            "using empty set"
-        )
-
-print(f"biomarkers: {biomarkers}")
-print(f"expansion_packs: {expansion_packs}")
-# pass dict (not list) so reader uses the checkpoint's index assignments
-# instead of re-deriving them from sorted order
-biomarker2idx = {name: model.config.biomarker2idx[name] for name in biomarkers}
-reader = ReaderCls(biomarkers=biomarker2idx, expansion_packs=expansion_packs)
-reader.describe()
-
-token_transform = TokenTransform.from_ckpt(ckpt_dict)
-token_transform.describe()
-
-biomarker_transform = BiomarkerTransform.from_ckpt(ckpt_dict) if biomarkers else None
-if biomarker_transform is not None:
-    biomarker_transform = biomarker_transform.replace(dropout=None)
-    biomarker_transform.describe()
-
-ds = MultimodalDataset(
-    reader=reader,
-    pids=val_pids,
-    token_transform=token_transform,
-    biomarker_transform=biomarker_transform,
+reader, ds, val_pids = setup_eval_dataset(
+    ckpt_dict,
+    fold=args.fold,
+    override_biomarkers=args.biomarkers,
+    override_expansion_packs=args.expansion_packs,
 )
-
-# Token packing: order participants by sequence length, longest first, so each
-# batch pads to a similar width and the forward pass wastes less compute on
-# padding. Longest-first puts the peak-memory batch first, so an OOM from too
-# large a batch_size surfaces immediately instead of mid-run (and the allocator
-# reserves its high-water-mark pool up front). The method reorders the dataset in
-# place and returns the new order; rebind val_pids so the downstream
-# per-participant arrays (is_female, pids_np) stay aligned to the rows.
-val_pids = ds.sort_by_length(descending=True)
+# -
 
 # +
 offset_days = args.offset * 365.25
@@ -215,8 +131,8 @@ case_times = concordance_collator.case_times.cpu().numpy()
 case_participants = concordance_collator.case_participants.cpu().numpy()
 # -
 
-ckpt_write = AnyPath(str(ckpt).replace(DELPHI_CKPT_READ, DELPHI_CKPT_WRITE))
-ckpt_write.parent.mkdir(parents=True, exist_ok=True)
+out_dir = (AnyPath(DELPHI_CKPT_WRITE) / args.ckpt).parent
+out_dir.mkdir(parents=True, exist_ok=True)
 
 pids_np = np.array(val_pids)
 cindex_df = pd.DataFrame(
@@ -239,7 +155,7 @@ table = table.replace_schema_metadata(
         b"config": json.dumps(asdict(args), default=str).encode(),
     }
 )
-cindex_path = ckpt_write.parent / f"{args.fname}.parquet"
+cindex_path = out_dir / f"{args.fname}.parquet"
 with cindex_path.open("wb") as f:
     pq.write_table(table, f, compression="snappy")
 print(f"Saved c-index to {cindex_path}")
