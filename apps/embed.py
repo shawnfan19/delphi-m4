@@ -117,7 +117,12 @@ hidden = np.concatenate(hidden, axis=0)
 
 # survival labels, aligned row-for-row with `hidden` (same `pids`, same order)
 targets = model.targets.detach().cpu().numpy()
-all_event_times = reader.event_times(pids=pids)  # (N, full vocab)
+all_event_times = reader.event_times(pids=pids)  # (N, main-stream vocab width)
+# match forecast-m4's scored set: drop augmentation tokens (no_event / dx anchor)
+# and any token beyond the event-mask width (expansion packs) — else the slice
+# below is out-of-bounds and the disease set diverges from forecast-m4.
+targets = targets[~np.isin(targets, model.config.augmentation_tokens)]
+targets = targets[targets < all_event_times.shape[1]]
 event_times = all_event_times[:, targets]  # (N, n_targets) aligned to target_tokens
 died = ~np.isnan(all_event_times[:, 1269])  # 1269 = death token (matches forecast-m4)
 exit_time = reader.exit_times(pids=pids)

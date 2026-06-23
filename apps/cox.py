@@ -23,6 +23,7 @@ into ``<fname>.json``:
 """
 
 import json
+import os
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -73,13 +74,27 @@ if args.merge:
         raise SystemExit(f"no shards in {shard_dir}")
     merged = defaultdict(dict)
     for shard in shards:
-        with open(shard) as f:
-            logbook = json.load(f)
+        try:
+            with open(shard) as f:
+                logbook = json.load(f)
+        except json.JSONDecodeError:
+            print(f"[warn] skipping unparsable shard {shard.name}")
+            continue
         for horizon, diseases in logbook.items():
             merged[horizon].update(diseases)
     out = out_dir / f"{args.fname}.json"
     with open(out, "w") as f:
         json.dump(dict(merged), f)
+    # completeness check: which expected diseases have no shard (failed/unrun jobs)?
+    expected = {str(n) for n in np.load(eval_path, allow_pickle=True)["target_names"]}
+    found = {d for diseases in merged.values() for d in diseases}
+    missing = sorted(expected - found)
+    if missing:
+        shown = ", ".join(missing[:20]) + (" ..." if len(missing) > 20 else "")
+        print(
+            f"[warn] {len(missing)}/{len(expected)} diseases missing from "
+            f"{out.name} (failed/unrun jobs): {shown}"
+        )
     print(f"merged {len(shards)} shards -> {out}")
     raise SystemExit(0)
 
@@ -111,11 +126,14 @@ occ = np.maximum(ev_age[keep] - anchor[keep], EPS)  # NaN (no event) stays NaN
 cens = np.maximum(train["exit_time"][keep] - anchor[keep], EPS)
 n_event = int(np.isfinite(occ).sum())
 if n_event == 0:
-    print(f"no events after anchor for {args.target} ({name}) in train; skipping")
-    raise SystemExit(0)
-
-model = CoxRidge(alpha=args.alpha, ties=args.ties).fit(Xtr[keep], occ, cens)
-risk = model.predict(Xev)  # (N_eval,) linear-predictor risk score
+    # rare disease with no incident train cases: a Cox can't be fit. Still emit a
+    # shard (NaN AUC, real eval counts) so the disease set matches forecast-m4 and
+    # a *missing* shard unambiguously means a failed job, not a no-event skip.
+    print(f"no train events after anchor for {args.target} ({name}); NaN-AUC shard")
+    risk = None
+else:
+    model = CoxRidge(alpha=args.alpha, ties=args.ties).fit(Xtr[keep], occ, cens)
+    risk = model.predict(Xev)  # (N_eval,) linear-predictor risk score
 
 # score on eval against absolute event/censor times, matching forecast-m4
 ev_anchor = ev["prompt_age"]
@@ -125,6 +143,8 @@ ev_censor = (
     else np.where(ev["died"], np.inf, ev["exit_time"])
 )
 ev_age_eval = ev["event_times"][:, col]
+# zeros give the real ctl/case counts when unfit; the AUC itself is NaN then.
+score = np.zeros(len(ev_age_eval)) if risk is None else risk
 
 logbook = defaultdict(dict)
 for horizon in args.horizons:
@@ -134,19 +154,23 @@ for horizon in args.horizons:
         "male": ~ev["is_female"],
     }.items():
         n_ctl, n_case, auc = windowed_auc(
-            risk[is_gender],
+            score[is_gender],
             ev_age_eval[is_gender],
             ev_censor[is_gender],
             (ev_anchor[is_gender], t1[is_gender]),
         )
         logbook[horizon].setdefault(name, {})[gender_key] = {
-            "auc": float(auc),
+            "auc": float("nan") if risk is None else float(auc),
             "ctl_count": int(n_ctl),
             "dis_count": int(n_case),
         }
 
 shard_dir.mkdir(parents=True, exist_ok=True)
 path = shard_dir / f"{args.target}.json"
-with open(path, "w") as f:
+tmp = path.with_name(
+    path.name + ".tmp"
+)  # atomic write: a killed job leaves no half-shard
+with open(tmp, "w") as f:
     json.dump(dict(logbook), f)
+os.replace(tmp, path)
 print(f"{args.target} ({name}): {n_event} train events -> {path}")
