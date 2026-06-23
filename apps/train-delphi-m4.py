@@ -101,7 +101,9 @@ def train(cfg: TrainConfig):
         cfg.model.augmentation_tokens = list(
             set(cfg.model.augmentation_tokens).union({dx_token})
         )
-        whitelist_tokens = [0, 1, dx_token] + [
+        # whitelist = tokens NOT perturbed (pad, no_event, sex, lifestyle); dx is
+        # excluded — dissolve_clusters prioritizes the dx anchor in its sort directly.
+        whitelist_tokens = [0, 1] + [
             reader.tokenizer[k] for k in reader.sex_keys + reader.lifestyle_keys
         ]
         tiebreak_kwargs = dict(

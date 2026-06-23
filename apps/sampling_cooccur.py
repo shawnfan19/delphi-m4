@@ -57,7 +57,7 @@ break_clusters = token_transform_args.get("break_clusters", False)
 # fall back to reconstructing it for checkpoints that predate whitelist_tokens.
 whitelist = np.array(
     token_transform_args.get("whitelist_tokens")
-    or [0, 1, dx_token] + sex_tokens + lifestyle_tokens
+    or [0, 1] + sex_tokens + lifestyle_tokens
 )
 
 if dx_token != 1:
