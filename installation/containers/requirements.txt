@@ -4,9 +4,9 @@ matplotlib
 seaborn
 shap
 pandas
-umap-learn
 tqdm
 statsmodels
+patsy
 wandb
 tensorboard
 omegaconf

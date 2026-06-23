@@ -30,7 +30,9 @@ dependencies:
   - pip:
     - black==25.1.0
     - captum==0.8.0
+    - cloudpathlib==0.24.0
     - dacite==1.9.2
+    - dsub-submit==0.1.0
     - hydra-joblib-launcher==1.2.0
     - ipympl==0.10.0
     - ipywidgets==8.1.7
@@ -40,12 +42,15 @@ dependencies:
     - matplotlib==3.10.1
     - matplotlib-backend-kitty==2.1.2
     - mplcursors==0.7
-    - numpy==2.2.6
+    - numpy==1.26.4
     - omegaconf==2.3.0
     - pandas==2.2.3
+    - pdfminer.six==20260107
     - plotly==6.5.2
     - pre_commit==4.2.0
     - pynvim==0.5.2
+    - pypdf==6.12.2
+    - pyright==1.1.409
     - pytest==8.4.1
     - python-lsp-server==1.14.0
     - ranger-fm==1.9.4
@@ -56,6 +61,7 @@ dependencies:
     - shap==0.50.0
     - slurm-submit==0.1.0
     - statsmodels==0.14.6
+    - tensorboard==2.20.0
     - torch==2.3.0
     - torchdiffeq==0.2.5
     - tqdm==4.67.1
