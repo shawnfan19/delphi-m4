@@ -20,7 +20,6 @@ from delphi.eval.utils import (
     EventTimeCollator,
     SexCollator,
     correct_time_offset,
-    corrective_indices,
     sample_boolean_mask,
 )
 from delphi.multimodal import Modality
