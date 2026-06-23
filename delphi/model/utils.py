@@ -208,53 +208,6 @@ def self_terminate(
     return estimator.masked_fill(mask, fill_val), mask
 
 
-def exponential_nll(
-    delta_t: torch.Tensor,
-    log_lambda: torch.Tensor,
-    t_min: float,
-    n: None | torch.Tensor = None,
-):
-    """
-    when n > 1, return nll according to the erlang distribution
-    """
-    ldt = -torch.log(delta_t + t_min)
-    lse = -torch.log(torch.exp(-log_lambda) + t_min)
-    # when n == 1: nll = -(lse - torch.exp(lse - ldt))
-    if n is None:
-        n = torch.ones_like(delta_t)
-    nll = -(n * lse + (n - 1) * (-ldt) - torch.exp(lse - ldt) - torch.lgamma(n))
-    return nll
-
-
-def nll_homogeneous_poisson(
-    log_intensity: torch.Tensor,
-    targets: torch.Tensor,
-    idx: torch.Tensor,
-    targets_age: torch.Tensor,
-    age: torch.Tensor,
-    terminate: bool,
-    terminate_except: torch.Tensor,
-):
-
-    delta_t = targets_age - age
-    assert delta_t.min() >= 0
-
-    part1 = torch.gather(input=log_intensity, dim=-1, index=targets.unsqueeze(-1))
-
-    if terminate:
-        log_intensity, _ = self_terminate(
-            idx=idx,
-            estimator=log_intensity,
-            terminate_except=terminate_except,
-            fill_val=float("-inf"),
-        )
-
-    log_sum_intensity = torch.logsumexp(log_intensity, dim=-1, keepdim=True)
-    part2 = -torch.exp(log_sum_intensity) * delta_t.unsqueeze(-1)
-
-    return -(part1 + part2)
-
-
 def nll_homogeneous_cluster_poisson(
     log_intensity: torch.Tensor,
     log_aux_intensity: torch.Tensor,

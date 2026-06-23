@@ -23,8 +23,8 @@ zero-biomarker `DelphiM4`.
   `log_likelihood`) and the neural intensity heads (`NeuralIntensity`,
   `NeuralODEIntensity`).
 - **`delphi/model/utils.py`** — attention masks (`causal_attention_mask`,
-  `incremental_attention_mask`), `exponential_nll`, and the tie / cluster /
-  self-termination / sampler helpers (below).
+  `incremental_attention_mask`) and the tie / cluster / self-termination /
+  sampler helpers (below).
 
 ---
 
@@ -108,7 +108,7 @@ and the multitask machinery are evolving — read `multimodal.py` / `tpp.py` for
 current form. (`hawkes` and the old standalone `neural_tpp` head described in
 earlier revisions of this doc were removed.)
 
-Standalone NLL helpers live in `delphi/model/utils.py`: `nll_homogeneous_poisson`,
+A standalone NLL helper lives in `delphi/model/utils.py`:
 `nll_homogeneous_cluster_poisson`.
 
 ---
@@ -238,6 +238,6 @@ Key fields (see the dataclass for the full, current list):
 | Model + config | `delphi/model/multimodal.py` (`DelphiM4`, `DelphiM4Config`) |
 | Shared transformer + `generate()` | `delphi/model/transformer.py` |
 | TPP likelihood + neural heads (`tpp_dispatch`, `log_likelihood`, `NeuralIntensity`, `NeuralODEIntensity`) | `delphi/model/tpp.py` |
-| Attention masks, `exponential_nll`, tie / cluster / self-terminate / samplers / NLL helpers | `delphi/model/utils.py` |
+| Attention masks, tie / cluster / self-terminate / samplers / NLL helpers | `delphi/model/utils.py` |
 | `Modality` enum | `delphi/multimodal.py` |
 | Training | `apps/train-delphi-m4.py` |
