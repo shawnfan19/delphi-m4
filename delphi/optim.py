@@ -3,8 +3,6 @@ from functools import partial
 
 import torch
 
-from delphi.model.transformer import LayerNorm
-
 
 # learning rate decay scheduler (cosine with warmup)
 def get_cosine_lr(
@@ -112,7 +110,7 @@ def parse_weight_decay_groups(model: torch.nn.Module) -> list[dict]:
     # separate out all parameters to those that will and won't experience regularizing weight decay
     decay = set()
     no_decay = set()
-    blacklist_weight_modules = (torch.nn.LayerNorm, LayerNorm, torch.nn.Embedding)
+    blacklist_weight_modules = (torch.nn.LayerNorm, torch.nn.Embedding)
     for mn, m in model.named_modules():
         for pn, p in m.named_parameters(recurse=False):
 

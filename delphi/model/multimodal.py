@@ -17,7 +17,6 @@ from delphi.model.tpp import (
 from delphi.model.transformer import (
     AgeEncoding,
     Block,
-    LayerNorm,
     causal_attention_mask,
 )
 from delphi.model.utils import (
@@ -329,7 +328,7 @@ class DelphiM4(torch.nn.Module):
                 # embed=DelphiEmbedding(config),
                 drop=nn.Dropout(config.dropout),
                 h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
-                ln_f=LayerNorm(config.n_embd, bias=config.bias),
+                ln_f=nn.LayerNorm(config.n_embd, bias=config.bias),
             )
         )
 
