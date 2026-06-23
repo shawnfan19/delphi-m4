@@ -186,6 +186,8 @@ def train(cfg: TrainConfig):
         backend=backend,
         wandb_log=cfg.wandb_log,
         wandb_project=cfg.wandb_project,
+        tensorboard_log=cfg.tensorboard_log,
+        tensorboard_dir=cfg.tensorboard_dir,
         run_name=cfg.run_name,
         summary={"model_params": n_params},
     )

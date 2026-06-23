@@ -3,7 +3,6 @@ from datetime import datetime
 from pprint import pprint
 
 import torch
-import wandb
 from cloudpathlib import AnyPath
 
 from delphi import distributed
@@ -33,8 +32,63 @@ def _format_for_display(obj):
     return obj
 
 
+class WandbBackend:
+    """Sends scalar dicts to Weights & Biases (needs internet)."""
+
+    def __init__(self, project, run_name, config, summary):
+        import re
+
+        import wandb
+
+        self.wandb = wandb
+        project = re.sub(r"[^a-zA-Z0-9_\-.]", "_", project)
+        wandb.init(project=project, name=run_name, config=config)
+        wandb.define_metric("step")
+        for glob in ("lr", "val/*", "train/*", "grad_norm/*", "output/*", "param/*"):
+            wandb.define_metric(glob, step_metric="step")
+        if summary is not None:
+            for k, v in summary.items():
+                wandb.summary[k] = v
+
+    def log(self, metrics, step, commit):
+        self.wandb.log(metrics, commit=commit)
+
+    def finish(self):
+        self.wandb.finish()
+
+
+class TensorBoardBackend:
+    """Writes scalar dicts to local TensorBoard event files (works offline).
+
+    SummaryWriter uses plain file ops, so log_dir must be a LOCAL path -- not a
+    gs:// cloudpath like the Checkpointer accepts. On dsub point it at the
+    --output mount so the events get synced to GCS for viewing.
+    """
+
+    def __init__(self, log_dir):
+        from torch.utils.tensorboard import SummaryWriter
+
+        self.writer = SummaryWriter(log_dir=str(log_dir))
+
+    def log(self, metrics, step, commit):
+        for k, v in metrics.items():
+            if k != "step" and isinstance(v, (int, float)):
+                self.writer.add_scalar(k, v, step)
+
+    def finish(self):
+        self.writer.close()
+
+
 class Logger:
-    """Receives metric dicts and sends them to wandb / stdout."""
+    """Receives metric dicts and sends them to ONE backend (wandb OR
+    tensorboard) + stdout.
+
+    Exactly one backend at a time -- the shared master-process gating and
+    metric construction live here so the backends stay tiny. TensorBoard needs
+    an explicit global_step, so we track the latest "step" seen (logged before
+    the commit=False grad/param/output stats in BaseTrainer.train, so it is
+    current when those fire); wandb gets the step implicitly via step_metric.
+    """
 
     def __init__(
         self,
@@ -42,88 +96,89 @@ class Logger:
         backend: distributed.backend.DistributedBackend,
         wandb_log: bool = True,
         wandb_project: str = "delphi",
+        tensorboard_log: bool = False,
+        tensorboard_dir: None | str = None,
         run_name: None | str = None,
         summary: None | dict = None,
     ):
+        if wandb_log and tensorboard_log:
+            raise ValueError(
+                "enable only one logging backend (wandb_log or tensorboard_log)"
+            )
         if run_name is None:
             run_name = datetime.now().strftime("%Y-%m-%d-%H%M%S")
         self.run_name = run_name
         self.backend = backend
-        self.wandb = wandb_log
+        self._step = 0
+        self._impl = None  # set on the master process only
 
         if backend.is_master_process():
             print("=== config ===")
             pprint(_format_for_display(config), indent=2, width=60)
 
-            if self.wandb:
-                import re
+            if wandb_log:
+                self._impl = WandbBackend(wandb_project, run_name, config, summary)
+            elif tensorboard_log:
+                if tensorboard_dir is None:
+                    tensorboard_dir = os.path.join("tb", run_name)
+                self._impl = TensorBoardBackend(tensorboard_dir)
 
-                wandb_project = re.sub(r"[^a-zA-Z0-9_\-.]", "_", wandb_project)
-                wandb.init(
-                    project=wandb_project,
-                    name=run_name,
-                    config=config,
-                )
-                wandb.define_metric("step")
-                wandb.define_metric("lr", step_metric="step")
-                wandb.define_metric("val/*", step_metric="step")
-                wandb.define_metric("train/*", step_metric="step")
-                wandb.define_metric("grad_norm/*", step_metric="step")
-                wandb.define_metric("output/*", step_metric="step")
-                wandb.define_metric("param/*", step_metric="step")
-
-                if summary is not None:
-                    for k, v in summary.items():
-                        wandb.summary[k] = v
+    def _emit(self, metrics: dict, commit: bool = True):
+        if self._impl is None:  # non-master, or no backend enabled
+            return
+        if "step" in metrics:
+            self._step = metrics["step"]
+        self._impl.log(metrics, step=self._step, commit=commit)
 
     def log(self, metrics: dict):
-        if self.backend.is_master_process():
-            if self.wandb:
-                wandb.log(metrics)
+        self._emit(metrics, commit=True)
 
     def log_grad_norm(self, model: torch.nn.Module):
-        if self.backend.is_master_process():
-            if self.wandb:
-                for name, param in model.named_parameters():
-                    if param.grad is not None:
-                        wandb.log(
-                            {f"grad_norm/{name}": param.grad.norm().item()},
-                            commit=False,
-                        )
+        if self._impl is None:
+            return
+        for name, param in model.named_parameters():
+            if param.grad is not None:
+                self._emit(
+                    {f"grad_norm/{name}": param.grad.norm().item()}, commit=False
+                )
 
     def log_param_stats(self, model: torch.nn.Module):
-        if self.backend.is_master_process():
-            if self.wandb:
-                for name, param in model.named_parameters():
-                    tensor = param.detach().float()
-                    wandb.log(
-                        {
-                            f"param/{name}/mean": tensor.mean().item(),
-                            f"param/{name}/median": tensor.median().item(),
-                            f"param/{name}/max": tensor.max().item(),
-                            f"param/{name}/min": tensor.min().item(),
-                        },
-                        commit=False,
-                    )
+        if self._impl is None:
+            return
+        for name, param in model.named_parameters():
+            tensor = param.detach().float()
+            self._emit(
+                {
+                    f"param/{name}/mean": tensor.mean().item(),
+                    f"param/{name}/median": tensor.median().item(),
+                    f"param/{name}/max": tensor.max().item(),
+                    f"param/{name}/min": tensor.min().item(),
+                },
+                commit=False,
+            )
 
     def log_output(self, output: dict[str, torch.Tensor]):
-        if self.backend.is_master_process():
-            if self.wandb:
-                for name, tensor in output.items():
-                    if isinstance(tensor, dict):
-                        continue
-                    if not torch.is_floating_point(tensor):
-                        continue
-                    tensor = tensor.detach().float()
-                    wandb.log(
-                        {
-                            f"output/{name}/mean": tensor.mean().item(),
-                            f"output/{name}/median": tensor.median().item(),
-                            f"output/{name}/max": tensor.max().item(),
-                            f"output/{name}/min": tensor.min().item(),
-                        },
-                        commit=False,
-                    )
+        if self._impl is None:
+            return
+        for name, tensor in output.items():
+            if isinstance(tensor, dict):
+                continue
+            if not torch.is_floating_point(tensor):
+                continue
+            tensor = tensor.detach().float()
+            self._emit(
+                {
+                    f"output/{name}/mean": tensor.mean().item(),
+                    f"output/{name}/median": tensor.median().item(),
+                    f"output/{name}/max": tensor.max().item(),
+                    f"output/{name}/min": tensor.min().item(),
+                },
+                commit=False,
+            )
+
+    def finish(self):
+        if self._impl is not None:
+            self._impl.finish()
 
     def print(self, msg: str):
         if self.backend.is_master_process():

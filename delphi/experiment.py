@@ -178,6 +178,8 @@ class TrainBaseConfig:
 
     wandb_log: bool = True
     wandb_project: str = "delphi"
+    tensorboard_log: bool = False
+    tensorboard_dir: None | str = None  # local path; defaults to ./tb/<run_name>
     run_name: None | str = None
     ckpt_interval: None | int = None
     log_interval: int = 250
@@ -446,6 +448,8 @@ class BaseTrainer:
             # termination conditions
             if self.iter_num > self.cfg.max_iters:
                 break
+
+        self.logger.finish()
 
 
 @dataclass

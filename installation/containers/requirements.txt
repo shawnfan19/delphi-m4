@@ -8,6 +8,7 @@ umap-learn
 tqdm
 statsmodels
 wandb
+tensorboard
 omegaconf
 pre-commit  # CLI tool — not imported, drives .pre-commit-config.yaml
 plotly
