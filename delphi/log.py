@@ -53,8 +53,17 @@ class WandbBackend:
     def log(self, metrics, step, commit):
         self.wandb.log(metrics, commit=commit)
 
-    def flush_to_gcs(self, gcs_dir):
-        pass  # wandb's offline dir is uploaded by the dsub launcher on exit
+    def flush_to_gcs(self, base_dir):
+        # Mirror the offline run dir to <base_dir>/wandb on gs:// mid-run so the
+        # run is recoverable / `wandb sync`-able even if the offline, ephemeral
+        # job is killed before exit. No-op when online (data already streams to
+        # the wandb cloud) or for a local base_dir (the dir already persists).
+        if not isinstance(base_dir, CloudPath):
+            return
+        if os.environ.get("WANDB_MODE", "online") not in ("offline", "dryrun"):
+            return
+        run_dir = os.path.dirname(self.wandb.run.dir)
+        (base_dir / "wandb" / os.path.basename(run_dir)).upload_from(run_dir)
 
     def finish(self):
         self.wandb.finish()
@@ -79,13 +88,13 @@ class TensorBoardBackend:
             if k != "step" and isinstance(v, (int, float)):
                 self.writer.add_scalar(k, v, step)
 
-    def flush_to_gcs(self, gcs_dir):
-        # Push event files to gs:// mid-run so curves are visible before the
-        # (offline, ephemeral) job exits. No-op for a local target -- there the
-        # event dir already persists on disk, so there is nothing to upload.
+    def flush_to_gcs(self, base_dir):
+        # Push event files to <base_dir>/tb on gs:// mid-run so curves are
+        # visible before the (offline, ephemeral) job exits. No-op for a local
+        # base_dir -- there the event dir already persists on disk.
         self.writer.flush()
-        if isinstance(gcs_dir, CloudPath):
-            gcs_dir.upload_from(self.log_dir)
+        if isinstance(base_dir, CloudPath):
+            (base_dir / "tb").upload_from(self.log_dir)
 
     def finish(self):
         self.writer.close()
@@ -188,12 +197,13 @@ class Logger:
                 commit=False,
             )
 
-    def flush_to_gcs(self, gcs_dir):
-        """Push the active backend's local artifacts to gs:// mid-run (called at
-        the checkpoint cadence). No-op on non-master / when no backend is active.
+    def flush_to_gcs(self, base_dir):
+        """Push the active backend's local artifacts under base_dir on gs://
+        mid-run (called at the checkpoint cadence). The backend picks its own
+        subdir (tb/ or wandb/). No-op on non-master / when no backend is active.
         """
         if self._impl is not None:
-            self._impl.flush_to_gcs(gcs_dir)
+            self._impl.flush_to_gcs(base_dir)
 
     def finish(self):
         if self._impl is not None:

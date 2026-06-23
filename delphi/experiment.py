@@ -374,9 +374,10 @@ class BaseTrainer:
                     f"val loss {eval_loss['val/loss']:.4f}"
                 )
                 self._save_ckpt(self.iter_num, ckpt_fname="ckpt.pt")
-                # push TB events to gs:// at the checkpoint cadence so curves are
-                # visible mid-run (and survive a crash) on the ephemeral dsub VM
-                self.logger.flush_to_gcs(self.checkpointer.dump_dir / "tb")
+                # push logger artifacts (TB events / offline wandb dir) to gs:// at
+                # the checkpoint cadence so they're visible mid-run and survive a
+                # crash on the ephemeral dsub VM
+                self.logger.flush_to_gcs(self.checkpointer.dump_dir)
                 if eval_loss["val/loss"] < self.best_val_loss:
                     self._save_ckpt(self.iter_num, ckpt_fname="ckpt_best.pt")
                 self.best_val_loss = min(eval_loss["val/loss"], self.best_val_loss)
@@ -452,8 +453,8 @@ class BaseTrainer:
             if self.iter_num > self.cfg.max_iters:
                 break
 
-        # final push so the gs:// copy includes events logged after the last eval
-        self.logger.flush_to_gcs(self.checkpointer.dump_dir / "tb")
+        # final push so the gs:// copy includes everything logged after the last eval
+        self.logger.flush_to_gcs(self.checkpointer.dump_dir)
         self.logger.finish()
 
 
