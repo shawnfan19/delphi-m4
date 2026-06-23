@@ -146,16 +146,3 @@ class MultimodalUKBReader(MultimodalReader):
             if mask.any():
                 out[i] = t[mask].min()
         return out
-
-
-def first_modality_timestep(pids, biomarkers, expansion_packs):
-
-    cutoff = np.full(len(pids), np.nan, dtype=np.float32)
-    for mod_name in biomarkers or []:
-        first = Biomarker.first_occurrence_times(mod_name, pids)
-        cutoff = np.fmin(cutoff, first)
-    for pack_name in expansion_packs or []:
-        first = ExpansionPack.first_occurrence_times(pack_name, pids)
-        cutoff = np.fmin(cutoff, first)
-
-    return cutoff
