@@ -84,7 +84,7 @@ if biomarker_transform is not None:
 pids = ReaderCls.participants(args.fold)
 prompt_age_arg = args.prompt_age
 if prompt_age_arg == "recruitment":
-    cutoff_age = reader.recruitment_times(pids)
+    cutoff_age = reader.times_at(pids, "recruitment")
     valid = ~np.isnan(cutoff_age)
     pids, cutoff_age = pids[valid], cutoff_age[valid]
     print(f"{pids.size} participants with recruitment times")

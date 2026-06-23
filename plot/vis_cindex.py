@@ -56,7 +56,7 @@ with ckpt_path.open("rb") as f:
 if args.after_recruit:
     reader = MultimodalUKBReader()
     pids = df["participant_id"].unique()
-    recruit = dict(zip(pids, reader.recruitment_times(pids)))
+    recruit = dict(zip(pids, reader.times_at(pids, "recruitment")))
     df = df.assign(
         recruit_time=df["participant_id"].map(recruit).astype("float32"),
     )

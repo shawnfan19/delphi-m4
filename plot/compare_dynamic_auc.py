@@ -154,7 +154,7 @@ def saha_chaudhuri_heagerty(
 
 def reexpress_since_recruit(df: pd.DataFrame) -> pd.DataFrame:
     pids = df["participant_id"].unique()
-    recruit_days = reader.recruitment_times(pids)
+    recruit_days = reader.times_at(pids, "recruitment")
     pid_to_recruit = dict(zip(pids, recruit_days))
     df = df.assign(
         recruit_time=df["participant_id"].map(pid_to_recruit).astype("float32"),

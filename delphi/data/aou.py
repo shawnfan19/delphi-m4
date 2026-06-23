@@ -113,6 +113,7 @@ class MultimodalAOUReader(MultimodalReader):
     base_dir = AnyPath(DELPHI_DATA_DIR) / "aou_uk"
     biomarker_cls = Biomarker
     expansion_pack_cls = ExpansionPack
+    named_times = frozenset({"first_biomarker"})
 
     bmi_keys = ["bmi_low", "bmi_mid", "bmi_high"]
     lifestyle_keys = bmi_keys

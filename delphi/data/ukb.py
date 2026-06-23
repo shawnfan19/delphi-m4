@@ -98,6 +98,7 @@ class MultimodalUKBReader(MultimodalReader):
     base_dir = AnyPath(DELPHI_DATA_DIR) / "ukb_real_data"
     biomarker_cls = Biomarker
     expansion_pack_cls = ExpansionPack
+    named_times = frozenset({"recruitment"})
 
     bmi_keys = ["bmi_low", "bmi_mid", "bmi_high"]
     smoking_keys = ["smoking_low", "smoking_mid", "smoking_high"]

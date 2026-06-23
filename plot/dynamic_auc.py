@@ -77,7 +77,7 @@ if len(df) == 0:
 # Re-express case_time as days since each participant's recruitment, if requested.
 if args.age_since_recruit:
     pids = df["participant_id"].unique()
-    recruit_days = reader.recruitment_times(pids)
+    recruit_days = reader.times_at(pids, "recruitment")
     pid_to_recruit = dict(zip(pids, recruit_days))
     df = df.assign(
         recruit_time=df["participant_id"].map(pid_to_recruit).astype("float32"),

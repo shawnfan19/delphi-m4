@@ -366,25 +366,47 @@ class MultimodalReader(abc.ABC):
             out[i] = (tr.tokens[start : start + length] == female_token).any()
         return out
 
+    # public anchor names this reader provides; the implementing method is
+    # `<name>_times` by convention (e.g. "recruitment" -> recruitment_times)
+    named_times: ClassVar[frozenset[str]] = frozenset()
+
+    def times_at(self, pids: np.ndarray, name: str) -> np.ndarray:
+        """Per-participant timestamps for a named anchor. `name` is dataset-specific
+        (see each reader's `named_times`); raises KeyError if this dataset has no such
+        anchor -- by design, so a concept from the wrong dataset fails loudly. The
+        anchor is computed by the `<name>_times` method on this reader."""
+        if name not in self.named_times:
+            raise KeyError(
+                f"{type(self).__name__} has no named times {name!r}; "
+                f"available: {sorted(self.named_times)}"
+            )
+        return getattr(self, f"{name}_times")(pids)
+
     def resolve_prompt_age(
         self, pids: np.ndarray, prompt_age
     ) -> tuple[np.ndarray, np.ndarray]:
         """Resolve the forecasting anchor age (in days) per participant, dropping
         those without a usable one.
 
-        ``prompt_age`` is ``"recruitment"`` (per-participant blood-draw age; needs
-        a reader providing ``recruitment_times``, i.e. UKB) or a fixed age in
-        years. A participant is dropped when its anchor is undefined (NaN
-        recruitment age) or has no follow-up past the anchor
-        (``exit_time <= prompt_age``) — there is then no future to forecast into.
+        ``prompt_age`` is EITHER a named anchor (dataset-specific, e.g.
+        ``"recruitment"`` on UKB / ``"first_biomarker"`` on AoU) resolved via
+        ``times_at`` — failing cleanly if the anchor is not registered on this
+        dataset — OR a fixed age in years (int/float, including a numeric string).
+        A participant is dropped when its anchor is undefined (NaN) or has no
+        follow-up past the anchor (``exit_time <= prompt_age``) — there is then no
+        future to forecast into.
 
         Shared by the forecasting apps so they score the exact same participant
         set. Returns the filtered ``(pids, prompt_age)``, ``prompt_age`` in days.
         """
-        if prompt_age == "recruitment":
-            anchor = self.recruitment_times(pids)
+        try:
+            age_years = float(prompt_age)
+        except (TypeError, ValueError):
+            anchor = self.times_at(
+                pids, prompt_age
+            )  # named anchor; KeyError if absent here
         else:
-            anchor = np.full(len(pids), int(prompt_age) * 365.25, dtype=np.float32)
+            anchor = np.full(len(pids), age_years * 365.25, dtype=np.float32)
 
         keep = ~np.isnan(anchor) & (self.exit_times(pids) > anchor)
         n = pids.size

@@ -80,7 +80,7 @@ reader.describe()
 # participants with no recorded recruitment time).
 prompt_age_arg = args.prompt_age if args.prompt_age is not None else "recruitment"
 if prompt_age_arg == "recruitment":
-    rec = reader.recruitment_times(pids)
+    rec = reader.times_at(pids, "recruitment")
     has_rec = ~np.isnan(rec)
     pids = pids[has_rec]
     prompt_age = {int(p): float(a) for p, a in zip(pids, rec[has_rec])}
