@@ -16,6 +16,7 @@
 # %%
 import math
 import pprint
+from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -27,19 +28,31 @@ from delphi.data import MultimodalDataset
 from delphi.data.transform import MultimodalPrompt, TokenTransform
 from delphi.data.ukb import MultimodalUKBReader
 from delphi.data.utils import pack_clusters
-from delphi.env import DELPHI_CKPT_DIR
+from delphi.env import DELPHI_CKPT_DIR, DELPHI_CKPT_WRITE
 from delphi.eval import ClusterStatsTracker, CooccurrenceTracker
 from delphi.experiment import GenerateConfig, eval_iter, load_ckpt
 from delphi.model.transformer import generate
 
+
 # %%
-args = GenerateConfig.from_cli()
+@dataclass
+class TaskConfig(GenerateConfig):
+    # if set, save the figures under DELPHI_CKPT_WRITE/<ckpt dir>/<write>/
+    write: None | str = None
+
+
+args = TaskConfig.from_cli()
 print("args:")
 pprint.pp(args)
 
 # %%
 model, ckpt_dict = load_ckpt(Path(DELPHI_CKPT_DIR) / args.ckpt)
 device = "cuda" if torch.cuda.is_available() else "cpu"
+
+out_dir = None
+if args.write is not None:
+    out_dir = Path(DELPHI_CKPT_WRITE) / Path(args.ckpt).parent / args.write
+    out_dir.mkdir(parents=True, exist_ok=True)
 
 # %%
 reader = MultimodalUKBReader(biomarkers=None)
@@ -165,6 +178,11 @@ axs[1].set_xlabel("token index")
 axs[1].set_ylabel("token index")
 axs[1].set_title("model")
 
+if out_dir is not None:
+    with (out_dir / "cooccur_heatmap.png").open("wb") as f:
+        fig.savefig(f, format="png", dpi=300, bbox_inches="tight")
+plt.show()
+
 # %%
 (gt_heatmap == heatmap).all()
 
@@ -215,6 +233,11 @@ axs[1].hist(
 axs[1].set_xticks(bins, bins)
 axs[1].legend()
 axs[1].set_xlabel("size of disease clusters")
+
+if out_dir is not None:
+    with (out_dir / "cluster_hist.png").open("wb") as f:
+        fig.savefig(f, format="png", dpi=300, bbox_inches="tight")
+plt.show()
 
 # %%
 
