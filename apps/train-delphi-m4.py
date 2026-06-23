@@ -6,8 +6,8 @@ from omegaconf import OmegaConf
 
 from delphi import distributed
 from delphi.data import MultimodalDataset
+from delphi.data.auto import multimodal_reader_cls
 from delphi.data.transform import BiomarkerTransform, TokenTransform
-from delphi.data.ukb import Biomarker, MultimodalUKBReader
 from delphi.experiment import BaseTrainer, Logger, TrainBaseConfig, seed_everything
 from delphi.log import Checkpointer
 from delphi.model.multimodal import DelphiM4, DelphiM4Config
@@ -48,15 +48,20 @@ def train(cfg: TrainConfig):
 
     seed_everything(cfg.seed)
 
-    train_pids = MultimodalUKBReader.participants(cfg.train_fold)
-    val_pids = MultimodalUKBReader.participants(cfg.val_fold)
+    # dataset-aware: UKB on the cluster, AoU on the workbench. Honors
+    # DELPHI_DATASET (set in the dsub env), else auto-detects from the data dir.
+    ReaderCls = multimodal_reader_cls()
+    Biomarker = ReaderCls.biomarker_cls
+
+    train_pids = ReaderCls.participants(cfg.train_fold)
+    val_pids = ReaderCls.participants(cfg.val_fold)
     if cfg.must_have:
         print(f"keeping participants with any of: {cfg.biomarkers}")
         total_train, total_val = train_pids.size, val_pids.size
-        train_pids = MultimodalUKBReader.filter_participants_with_biomarkers(
+        train_pids = ReaderCls.filter_participants_with_biomarkers(
             train_pids, biomarkers=cfg.biomarkers, any=True
         )
-        val_pids = MultimodalUKBReader.filter_participants_with_biomarkers(
+        val_pids = ReaderCls.filter_participants_with_biomarkers(
             val_pids, biomarkers=cfg.biomarkers, any=True
         )
         print(f"{train_pids.size} / {total_train} train pids")
@@ -65,18 +70,16 @@ def train(cfg: TrainConfig):
     if cfg.must_have_expansion_packs:
         print(f"keeping participants with any of: {cfg.expansion_packs}")
         total_train, total_val = train_pids.size, val_pids.size
-        train_pids = MultimodalUKBReader.filter_participants_with_expansion_packs(
+        train_pids = ReaderCls.filter_participants_with_expansion_packs(
             train_pids, expansion_packs=cfg.expansion_packs, any=True
         )
-        val_pids = MultimodalUKBReader.filter_participants_with_expansion_packs(
+        val_pids = ReaderCls.filter_participants_with_expansion_packs(
             val_pids, expansion_packs=cfg.expansion_packs, any=True
         )
         print(f"{train_pids.size} / {total_train} train pids")
         print(f"{val_pids.size} / {total_val} val pids")
 
-    reader = MultimodalUKBReader(
-        biomarkers=cfg.biomarkers, expansion_packs=cfg.expansion_packs
-    )
+    reader = ReaderCls(biomarkers=cfg.biomarkers, expansion_packs=cfg.expansion_packs)
 
     # vocab size + ignore_tokens are resolved up front: the tiebreak transform
     # consumes the final ignore_tokens, so this must run before TokenTransform.
@@ -115,9 +118,14 @@ def train(cfg: TrainConfig):
         )
 
     if cfg.exclude_smoking_and_alcohol:
-        blacklist_tokens = [
-            reader.tokenizer[k] for k in reader.smoking_keys + reader.alcohol_keys
-        ]
+        # UKB-only: AoU has no smoking/alcohol lifestyle tokens.
+        smoking = getattr(reader, "smoking_keys", None)
+        alcohol = getattr(reader, "alcohol_keys", None)
+        if smoking is None or alcohol is None:
+            raise ValueError(
+                "exclude_smoking_and_alcohol is UKB-only; unset it for this dataset"
+            )
+        blacklist_tokens = [reader.tokenizer[k] for k in smoking + alcohol]
     else:
         blacklist_tokens = None
     token_transform = TokenTransform(

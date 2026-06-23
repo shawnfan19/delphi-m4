@@ -7,8 +7,8 @@ from omegaconf import OmegaConf
 
 from delphi import distributed
 from delphi.data import MultimodalDataset
+from delphi.data.auto import multimodal_reader_cls
 from delphi.data.transform import BiomarkerTransform, TokenTransform
-from delphi.data.ukb import Biomarker, MultimodalUKBReader
 from delphi.env import DELPHI_CKPT_READ as DELPHI_CKPT_DIR
 from delphi.experiment import BaseTrainer, Logger, TrainBaseConfig, seed_everything
 from delphi.log import Checkpointer
@@ -51,6 +51,11 @@ def finetune(cfg: FinetuneConfig):
 
     seed_everything(cfg.seed)
 
+    # dataset-aware: UKB on the cluster, AoU on the workbench. Honors
+    # DELPHI_DATASET (set in the dsub env), else auto-detects from the data dir.
+    ReaderCls = multimodal_reader_cls()
+    Biomarker = ReaderCls.biomarker_cls
+
     # Load pre-trained checkpoint
     assert cfg.pretrain_ckpt, "pretrained_ckpt must be specified"
     ckpt_dict = torch.load(
@@ -76,20 +81,20 @@ def finetune(cfg: FinetuneConfig):
     else:
         all_biomarkers = pretrain_biomarkers
 
-    train_pids = MultimodalUKBReader.participants("train")
-    val_pids = MultimodalUKBReader.participants("val")
+    train_pids = ReaderCls.participants("train")
+    val_pids = ReaderCls.participants("val")
     print(f"keeping participants with any of: {cfg.biomarkers}")
     total_train, total_val = train_pids.size, val_pids.size
-    train_pids = MultimodalUKBReader.filter_participants_with_biomarkers(
+    train_pids = ReaderCls.filter_participants_with_biomarkers(
         train_pids, biomarkers=cfg.biomarkers, any=True
     )
-    val_pids = MultimodalUKBReader.filter_participants_with_biomarkers(
+    val_pids = ReaderCls.filter_participants_with_biomarkers(
         val_pids, biomarkers=cfg.biomarkers, any=True
     )
     print(f"{train_pids.size} / {total_train} train pids")
     print(f"{val_pids.size} / {total_val} val pids")
 
-    reader = MultimodalUKBReader(
+    reader = ReaderCls(
         biomarkers=all_biomarkers, expansion_packs=pretrain_cfg["expansion_packs"]
     )
 
