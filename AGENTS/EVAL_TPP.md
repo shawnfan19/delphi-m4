@@ -14,8 +14,6 @@ The `mask_ties` config field controls how simultaneous events (same timestamp cl
 
 Early `weibull`/`hawkes` models were mistakenly trained with `mask_ties=False`, exposing them to Δt=0 positions during training (which corrupts the Weibull NLL since PDF(0)=0). Models trained under different `mask_ties` settings **cannot be fairly compared**.
 
-The script respects the training setting automatically: it applies `untie()` inside the loop if and only if `model.config.mask_ties` is True.
-
 ---
 
 ## Motivation

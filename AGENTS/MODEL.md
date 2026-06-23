@@ -115,29 +115,6 @@ A standalone NLL helper lives in `delphi/model/utils.py`:
 
 ## Tie & Sampling Helpers (`delphi/model/utils.py`)
 
-### `untie_idx` / `untie` — tied (same-timestamp) events
-
-Multiple events can share a timestamp (several diagnoses at one visit), giving
-`delta_t = 0`, which breaks intensity readout (logits from an earlier position in
-the cluster) and parametric densities (log 0). `untie_idx(age, targets_age)` returns
-a `(B, L)` remap sending each tied position back to the first position of its tie
-group (via `cummax`); `untie(outputs, age, targets_age)` applies it to the outputs
-dict + age so every clustered event is evaluated against predictions made *before*
-any of them were observed (`delta_t > 0`).
-
-Implicit assumptions: sequences are **time-sorted**; padding sentinel is exactly
-`-1e4`; every cluster is preceded by a non-tied position; `outputs` tensors are
-≤ 3-D; `targets_age` is the immediately-following event's time.
-
-**`config.mask_ties`** (`DelphiM4Config`, default `True`) controls whether `loss()`
-applies `untie` before the NLL. Models trained with different `mask_ties` are **not
-comparable**. When computing likelihoods outside `loss()` (eval scripts), mirror it:
-
-```python
-if model.config.mask_ties:
-    outputs, t0 = untie(outputs, t0, t1)
-```
-
 ### `multi_hot` — cluster encoding
 
 `multi_hot(targets, targets_age, vocab_size) -> (hot_targets (B,L,V), cooccur (B,L))`

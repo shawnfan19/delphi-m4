@@ -68,33 +68,6 @@ def incremental_attention_mask(
     return attn_mask.unsqueeze(1)  # (B, 1, T_new, T_cached + T_new)
 
 
-def untie_idx(age: torch.Tensor, targets_age: torch.Tensor):
-    dt = targets_age - age
-    is_tie = dt == 0
-    is_tie[age == -1e4] = False
-    corr_idx = torch.where(is_tie, 0, torch.arange(age.shape[1], device=age.device))
-    corr_idx = torch.cummax(corr_idx, dim=1)[0]
-    return corr_idx
-
-
-def untie(
-    outputs: dict[str, torch.Tensor], age: torch.Tensor, targets_age: torch.Tensor
-):
-    corr_idx = untie_idx(age, targets_age)
-    age = torch.take_along_dim(input=age, indices=corr_idx, dim=1)
-    batch_size = corr_idx.shape[0]
-    for key, tensor in outputs.items():
-        if tensor.dim() <= 1 or tensor.shape[0] != batch_size:
-            continue
-
-        if tensor.dim() > 2:
-            indices = corr_idx.unsqueeze(-1)
-        else:
-            indices = corr_idx
-        outputs[key] = torch.take_along_dim(input=outputs[key], indices=indices, dim=1)
-    return outputs, age
-
-
 def nearest_input_pos(age, targets_age, include_ties: bool = False):
     """
     For each target, find the position of the nearest input earlier than it;
