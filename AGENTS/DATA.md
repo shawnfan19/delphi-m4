@@ -405,7 +405,7 @@ When constructing a sub-batch to pass directly to the model (e.g. after `remove_
 
 ## Modality (`delphi/multimodal.py`)
 
-`Modality` is a **model-side** `Enum` (with `module_name(Modality.PRS) -> "prs"`,
+`Modality` is a **model-side** `Enum` (with `Modality.PRS.name.lower() -> "prs"`,
 used for the model's per-modality `nn.ModuleDict` keys). It is **not** how the data
 layer assigns `bio_M` ids — those come from `reader.biomarker2idx` (see
 [Biomarker indexing](#biomarker-indexing--readerbiomarker2idx)). Because the

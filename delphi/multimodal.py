@@ -34,13 +34,6 @@ class Modality(Enum):
     PROTEOMICS = 27
 
 
-def module_name(modality: Modality) -> str:
-
-    module_name = str(modality).split(".")[-1].lower()
-
-    return module_name
-
-
 def parse_panel(path):
     with open(path) as f:
         panel = yaml.safe_load(f)

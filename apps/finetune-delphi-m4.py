@@ -13,7 +13,7 @@ from delphi.env import DELPHI_CKPT_READ as DELPHI_CKPT_DIR
 from delphi.experiment import BaseTrainer, Logger, TrainBaseConfig, seed_everything
 from delphi.log import Checkpointer
 from delphi.model.multimodal import DelphiM4, DelphiM4Config
-from delphi.multimodal import Modality, module_name
+from delphi.multimodal import Modality
 from delphi.optim import (
     configure_optimizer,
     merge_param_groups,
@@ -203,7 +203,7 @@ def finetune(cfg: FinetuneConfig):
 
         model.transformer.eval()
         for biomarker in cfg.biomarkers:
-            bm_key = module_name(Modality[biomarker.upper()])
+            bm_key = Modality[biomarker.upper()].name.lower()
             model.transformer.embed.biomarker_embed[bm_key].train()
 
         optimizer = None
