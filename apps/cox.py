@@ -8,9 +8,10 @@ numbers are directly comparable to forecast-m4's baselines.
 
 One disease per run (parallelize over diseases with a SLURM array). Reads only the
 .npz bundles (no checkpoint / model); train_npz and eval_npz are resolved relative
-to DELPHI_CKPT_DIR (where embed.py writes them). Each run writes
-``<fname>.<target>.json`` next to the eval bundle; afterwards a single
-``merge=true`` run unions the per-disease files into ``<fname>.json``:
+to DELPHI_CKPT_DIR (where embed.py writes them). Each run writes its shard to a
+``<fname>/<target>.json`` subdirectory next to the eval bundle (keeping thousands
+of shards off the top level); afterwards a single ``merge=true`` run unions them
+into ``<fname>.json``:
 
     # fit one disease (per SLURM array task)
     python apps/cox.py \
@@ -64,13 +65,12 @@ args.print()
 ckpt_dir = Path(DELPHI_CKPT_DIR)
 eval_path = ckpt_dir / args.eval_npz
 out_dir = eval_path.parent
+shard_dir = out_dir / args.fname  # per-disease shards live here, off the top level
 
 if args.merge:
-    shards = sorted(
-        out_dir.glob(f"{args.fname}.*.json")
-    )  # excludes merged <fname>.json
+    shards = sorted(shard_dir.glob("*.json"))
     if not shards:
-        raise SystemExit(f"no shards matching {args.fname}.*.json in {out_dir}")
+        raise SystemExit(f"no shards in {shard_dir}")
     merged = defaultdict(dict)
     for shard in shards:
         with open(shard) as f:
@@ -145,7 +145,8 @@ for horizon in args.horizons:
             "dis_count": int(n_case),
         }
 
-path = out_dir / f"{args.fname}.{args.target}.json"
+shard_dir.mkdir(parents=True, exist_ok=True)
+path = shard_dir / f"{args.target}.json"
 with open(path, "w") as f:
     json.dump(dict(logbook), f)
 print(f"{args.target} ({name}): {n_event} train events -> {path}")
