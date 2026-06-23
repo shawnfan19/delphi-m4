@@ -244,7 +244,7 @@ def move_to_last(x: np.ndarray, t: np.ndarray, token: int):
     if n > 0:
         idx = np.zeros_like(x)
         idx[x == token] = 1
-        move_last = np.argsort(x, stable=True)
+        move_last = np.argsort(x, kind="stable")
         x = x[move_last]
         t = t[move_last]
 
@@ -338,7 +338,7 @@ def remove_after_np(x, t, bio_x_dict, bio_t, bio_m, cutoff_t, biomarker2idx):
 
 
 def sort_by_time(t: np.ndarray, *args: np.ndarray, stable: bool = False):
-    s = np.argsort(t, stable=stable)
+    s = np.argsort(t, kind="stable" if stable else "quicksort")
     t = t[s]
     return t, *[arg[s] for arg in args]
 
