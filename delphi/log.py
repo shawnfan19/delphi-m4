@@ -54,10 +54,12 @@ class WandbBackend:
         self.wandb.log(metrics, commit=commit)
 
     def flush_to_gcs(self, base_dir):
-        # Mirror the offline run dir to <base_dir>/wandb on gs:// mid-run so the
-        # run is recoverable / `wandb sync`-able even if the offline, ephemeral
-        # job is killed before exit. No-op when online (data already streams to
-        # the wandb cloud) or for a local base_dir (the dir already persists).
+        # Mirror the offline run dir so the run is recoverable / `wandb sync`-able
+        # even if the offline, ephemeral job is killed. All runs go under ONE
+        # root-level dir, $DELPHI_CKPT_DIR/wandb/<offline-run>: wandb groups by
+        # project/name in its UI, so the on-disk location is just for bulk sync.
+        # base_dir (the run dir) is used only to detect gs:// mode. No-op when
+        # online (data already streams to the cloud) or for a local base_dir.
         if not isinstance(base_dir, CloudPath):
             return
         if os.environ.get("WANDB_MODE", "online") not in ("offline", "dryrun"):
@@ -66,7 +68,7 @@ class WandbBackend:
         # force overwrite: we own this path and re-upload it every flush; without
         # it cloudpathlib refuses static files (e.g. requirements.txt) whose cloud
         # copy from a prior flush is newer than the unchanged local copy.
-        (base_dir / "wandb" / os.path.basename(run_dir)).upload_from(
+        (AnyPath(DELPHI_CKPT_DIR) / "wandb" / os.path.basename(run_dir)).upload_from(
             run_dir, force_overwrite_to_cloud=True
         )
 
@@ -94,13 +96,16 @@ class TensorBoardBackend:
                 self.writer.add_scalar(k, v, step)
 
     def flush_to_gcs(self, base_dir):
-        # Push event files to <base_dir>/tb on gs:// mid-run so curves are
-        # visible before the (offline, ephemeral) job exits. No-op for a local
-        # base_dir -- there the event dir already persists on disk.
+        # base_dir is the run dir <root>/<group>/<run>; put TB at the GROUP level
+        # as <group>/tb/<run> (.parent = group, .name = run) so a single
+        # `tensorboard --logdir <group>/tb` shows every run in the group as its
+        # own series. No-op for a local base_dir -- the events persist on disk.
         self.writer.flush()
         if isinstance(base_dir, CloudPath):
             # force overwrite: re-uploaded each flush (see WandbBackend.flush_to_gcs)
-            (base_dir / "tb").upload_from(self.log_dir, force_overwrite_to_cloud=True)
+            (base_dir.parent / "tb" / base_dir.name).upload_from(
+                self.log_dir, force_overwrite_to_cloud=True
+            )
 
     def finish(self):
         self.writer.close()
