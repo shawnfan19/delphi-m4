@@ -4,63 +4,6 @@ import torch
 from delphi.model.tpp import HomoPoissonTPP
 
 
-class PopulationKaplanMeierEstimator:
-
-    def __init__(self, timestep: np.ndarray, tokens: np.ndarray, vocab_size: int):
-
-        assert timestep.shape == tokens.shape
-        n_subjects = tokens.shape[0]
-
-        # surv_time[i, j] -> exit time for event i in subject j
-        # note that exit time can be
-        # – time of event (for first occurrence data)
-        # – time of death
-        # – time at last follow-up
-        surv_time = timestep.max(axis=1)[:, None]
-        surv_time = np.repeat(surv_time, vocab_size, axis=1)
-        np.put_along_axis(arr=surv_time, indices=tokens, values=timestep, axis=1)
-        surv_time = surv_time.transpose(1, 0)
-
-        # occur[i, j] -> 1 if subject j experiences event i else 0
-        occur = np.zeros((n_subjects, 1))
-        occur = np.repeat(occur, vocab_size, axis=1)
-        np.put_along_axis(arr=occur, indices=tokens, values=1, axis=1)
-        occur = occur.transpose(1, 0)
-
-        sort_surv_time = np.argsort(surv_time, axis=1)
-        surv_time = np.take_along_axis(surv_time, indices=sort_surv_time, axis=1)
-        occur = np.take_along_axis(occur, indices=sort_surv_time, axis=1)
-
-        surv_percent = list()
-        surv_timestep = list()
-        for i in range(vocab_size):
-            uniq_time, inverse_indices, n_exit = np.unique(
-                surv_time[i, :], return_inverse=True, return_counts=True
-            )
-            n_exit = np.concatenate(([0], n_exit[:-1]))
-            n_occur = np.bincount(inverse_indices, weights=occur[i, :])
-            n_surv = n_subjects - np.cumsum(n_exit)
-            surv_percent.append(np.cumprod(1 - n_occur / n_surv))
-            surv_timestep.append(uniq_time)
-
-        self.surv_percent = surv_percent
-        self.surv_time = surv_timestep
-
-    def incidence(self, start_age: float, end_age: float) -> np.ndarray:
-
-        incidence = list()
-        for token in range(len(self.surv_percent)):
-            start_mask = self.surv_time[token] <= start_age
-            end_mask = self.surv_time[token] <= end_age
-            if (start_mask.sum() == 0) or (end_mask.sum() == 0):
-                incidence.append(np.nan)
-            else:
-                start_surv = self.surv_percent[token][start_mask].min()
-                end_surv = self.surv_percent[token][end_mask].min()
-                incidence.append((start_surv - end_surv) / start_surv)
-        return np.array(incidence)
-
-
 class KaplanMeierEstimator:
 
     def __init__(self, surv_timesteps: np.ndarray, occur: np.ndarray):
