@@ -31,11 +31,10 @@ import yaml
 from cloudpathlib import AnyPath
 
 from delphi.data.auto import multimodal_reader_cls
-from delphi.data.ukb import MultimodalUKBReader
 from delphi.env import DELPHI_CKPT_READ as DELPHI_CKPT_DIR
 from delphi.env import DELPHI_RESULTS_DIR
 from delphi.experiment import CliConfig
-from delphi.plot import plot_by_chapter
+from delphi.plot import barh_diff, label_diseases, plot_by_chapter
 
 mpl.rcParams["figure.dpi"] = 300
 
@@ -238,36 +237,11 @@ plt.show()
 # %%
 # Top-k improved diseases — horizontal bar plot
 
-_labels_df = MultimodalUKBReader.labels()
-_labels_df["icd"] = _labels_df["name"].str.split().str[0].str.upper()
-_icd_meta = (
-    _labels_df.drop_duplicates("icd")
-    .set_index("icd")[["name", "color"]]
-    .rename(columns={"name": "disease_name"})
+# largest at top for barh
+_topk = label_diseases(df_either.nlargest(k, "diff")).sort_values(
+    "diff", ascending=True
 )
-
-_topk = df_either.nlargest(k, "diff").copy()
-_topk["icd"] = _topk["key"].map(lambda k: k.split("_")[0].upper())
-_topk = _topk.join(_icd_meta, on="icd")
-_topk["disease_name"] = _topk["disease_name"].fillna(_topk["key"])
-_topk["color"] = _topk["color"].fillna("#888888")
-_topk = _topk.sort_values("diff", ascending=True)  # largest at top for barh
-
-fig, ax = plt.subplots(figsize=(8, 5))
-ax.barh(
-    _topk["disease_name"],
-    _topk["diff"],
-    color=_topk["color"],
-    edgecolor="white",
-    linewidth=0.5,
-)
-for y, val in enumerate(_topk["diff"]):
-    ax.text(val + 0.001, y, f"{val:+.3f}", va="center", fontsize=8)
-ax.set_xlabel(f"Δ concordance")
-ax.set_title(f"Top {k} improved diseases")
-ax.spines["top"].set_visible(False)
-ax.spines["right"].set_visible(False)
-fig.tight_layout()
+fig, ax = barh_diff(_topk, xlabel="Δ concordance", title=f"Top {k} improved diseases")
 save_fig(fig, "topk.png")
 plt.show()
 

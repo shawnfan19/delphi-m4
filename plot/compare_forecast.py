@@ -9,10 +9,9 @@ import pandas as pd
 from cloudpathlib import AnyPath
 from matplotlib.patches import Patch
 
-from delphi.data.ukb import MultimodalUKBReader
 from delphi.env import DELPHI_CKPT_READ as DELPHI_CKPT_DIR
 from delphi.experiment import CliConfig, flexi_list
-from delphi.plot import plot_by_chapter
+from delphi.plot import barh_diff, label_diseases, plot_by_chapter
 
 plt.rcParams["figure.dpi"] = 150
 # -
@@ -182,42 +181,20 @@ for h in horizons:
 # Per-horizon ΔAUC bar plot for the requested --events ("either" sex), colored
 # by ICD-10 chapter (mirrors plot/compare_cindex.py). Skipped when no events.
 if args.events is not None:
-    _labels_df = MultimodalUKBReader.labels()
-    _labels_df["icd"] = _labels_df["name"].str.split().str[0].str.upper()
-    _icd_meta = (
-        _labels_df.drop_duplicates("icd")
-        .set_index("icd")[["name", "color"]]
-        .rename(columns={"name": "disease_name"})
-    )
-
     for h in horizons:
         bars = diff_frame(results_df, bl_results_df, h, "either")
-        bars = bars[bars["key"].isin(args.events)].dropna(subset=["diff"]).copy()
-        bars["icd"] = bars["key"].map(lambda k: k.split("_")[0].upper())
-        bars = bars.join(_icd_meta, on="icd")
-        bars["disease_name"] = bars["disease_name"].fillna(bars["key"])
-        bars["color"] = bars["color"].fillna("#888888")
-        # plot in --events order; barh draws row 0 at the bottom, so invert the
-        # y-axis to put the first listed event at the top.
+        bars = bars[bars["key"].isin(args.events)].dropna(subset=["diff"])
+        bars = label_diseases(bars)
+        # plot in --events order; barh_diff(invert=True) puts the first listed
+        # event at the top (barh otherwise draws row 0 at the bottom).
         order = {e: i for i, e in enumerate(args.events)}
         bars = bars.sort_values("key", key=lambda s: s.map(order))
-
-        fig, ax = plt.subplots(figsize=(8, 5))
-        ax.barh(
-            bars["disease_name"],
-            bars["diff"],
-            color=bars["color"],
-            edgecolor="white",
-            linewidth=0.5,
+        fig, ax = barh_diff(
+            bars,
+            xlabel="Δ AUC (candidate − baseline)",
+            title=f"Δ AUC for selected events — horizon={h}y",
+            invert=True,
         )
-        ax.invert_yaxis()
-        for y, val in enumerate(bars["diff"]):
-            ax.text(val + 0.001, y, f"{val:+.3f}", va="center", fontsize=8)
-        ax.set_xlabel("Δ AUC (candidate − baseline)")
-        ax.set_title(f"Δ AUC for selected events — horizon={h}y")
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-        fig.tight_layout()
 
 plt.show()
 # -

@@ -36,10 +36,15 @@ import pandas as pd
 import yaml
 from cloudpathlib import AnyPath
 
-from delphi.data.ukb import MultimodalUKBReader
 from delphi.env import DELPHI_CKPT_READ as DELPHI_CKPT_DIR
 from delphi.experiment import CliConfig
-from delphi.plot import load_logbook, per_disease_auc, plot_by_chapter
+from delphi.plot import (
+    barh_diff,
+    label_diseases,
+    load_logbook,
+    per_disease_auc,
+    plot_by_chapter,
+)
 
 mpl.rcParams["figure.dpi"] = 300
 
@@ -173,36 +178,15 @@ plt.show()
 # %%
 # Top improved diseases — horizontal bar plot
 
-_labels_df = MultimodalUKBReader.labels()
-_labels_df["icd"] = _labels_df["name"].str.split().str[0].str.upper()
-_icd_meta = (
-    _labels_df.drop_duplicates("icd")
-    .set_index("icd")[["name", "color"]]
-    .rename(columns={"name": "disease_name"})
+# largest at top for barh
+_top10 = label_diseases(df_either.nlargest(20, "diff")).sort_values(
+    "diff", ascending=True
 )
-
-_top10 = df_either.nlargest(20, "diff").copy()
-_top10["icd"] = _top10["key"].map(lambda k: k.split("_")[0].upper())
-_top10 = _top10.join(_icd_meta, on="icd")
-_top10["disease_name"] = _top10["disease_name"].fillna(_top10["key"])
-_top10["color"] = _top10["color"].fillna("#888888")
-_top10 = _top10.sort_values("diff", ascending=True)  # largest at top for barh
-
-fig, ax = plt.subplots(figsize=(8, 5))
-ax.barh(
-    _top10["disease_name"],
-    _top10["diff"],
-    color=_top10["color"],
-    edgecolor="white",
-    linewidth=0.5,
+fig, ax = barh_diff(
+    _top10,
+    xlabel=f"Δ AUC ({label_b} − {label_a})",
+    title="Top improved diseases",
 )
-for y, val in enumerate(_top10["diff"]):
-    ax.text(val + 0.001, y, f"{val:+.3f}", va="center", fontsize=8)
-ax.set_xlabel(f"Δ AUC ({label_b} − {label_a})")
-ax.set_title("Top improved diseases")
-ax.spines["top"].set_visible(False)
-ax.spines["right"].set_visible(False)
-fig.tight_layout()
 plt.show()
 
 # %%

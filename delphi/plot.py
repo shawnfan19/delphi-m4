@@ -58,6 +58,56 @@ def _icd_from_key(key: str) -> str:
     return key.split("_")[0].upper()
 
 
+def label_diseases(df, key_col="key"):
+    """Add ``disease_name`` and ``color`` columns from the UKB label table.
+
+    Joins on the ICD code parsed from ``key_col`` (e.g. ``'e11_(…)' -> 'E11'``);
+    unknown codes fall back to the raw key (name) and grey (color). Returns a
+    copy with all original columns preserved.
+    """
+    labels_df = MultimodalUKBReader.labels()
+    labels_df["icd"] = labels_df["name"].str.split().str[0].str.upper()
+    icd_meta = (
+        labels_df.drop_duplicates("icd")
+        .set_index("icd")[["name", "color"]]
+        .rename(columns={"name": "disease_name"})
+    )
+    df = df.copy()
+    df["icd"] = df[key_col].map(_icd_from_key)
+    df = df.join(icd_meta, on="icd")
+    df["disease_name"] = df["disease_name"].fillna(df[key_col])
+    df["color"] = df["color"].fillna("#888888")
+    return df
+
+
+def barh_diff(df, *, xlabel, title, value_col="diff", invert=False, figsize=(8, 5)):
+    """Horizontal bar plot of a signed per-disease metric, colored by disease.
+
+    ``df`` must have ``disease_name``, ``color`` and ``value_col`` columns (see
+    :func:`label_diseases`) and already be in the intended row order. Bars are
+    drawn bottom-up; pass ``invert=True`` to put the first row at the top. Each
+    bar is annotated with its signed value. Returns ``(fig, ax)``.
+    """
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.barh(
+        df["disease_name"],
+        df[value_col],
+        color=df["color"],
+        edgecolor="white",
+        linewidth=0.5,
+    )
+    if invert:
+        ax.invert_yaxis()
+    for y, val in enumerate(df[value_col]):
+        ax.text(val + 0.001, y, f"{val:+.3f}", va="center", fontsize=8)
+    ax.set_xlabel(xlabel)
+    ax.set_title(title)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    fig.tight_layout()
+    return fig, ax
+
+
 def plot_by_chapter(
     df,
     value_col: str,
