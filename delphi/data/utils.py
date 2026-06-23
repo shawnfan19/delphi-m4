@@ -265,24 +265,22 @@ def _crop_slice(mode, max_len, block_size, rng):
 
 def crop_contiguous(
     x: np.ndarray,
-    *args: np.ndarray,
+    t: np.ndarray,
+    *,
     block_size: int,
     rng: np.random.Generator,
     mode: Literal["left", "right", "random"] = "left",
 ):
-    """
-    input sequences should be sorted according to time
-    """
+    """Crop the parallel (x, t) sequences to a contiguous block_size window.
 
+    Input sequences should be sorted according to time. No-op if already within
+    block_size.
+    """
     L = x.shape[0]
     if L <= block_size:
-        return (x, *args) if args else x
-    else:
-        cut = _crop_slice(mode, L, block_size, rng)
-        if args:
-            return x[cut], *[arr[cut] for arr in args]
-        else:
-            return x[cut]
+        return x, t
+    cut = _crop_slice(mode, L, block_size, rng)
+    return x[cut], t[cut]
 
 
 def filter_biomarker_array(
