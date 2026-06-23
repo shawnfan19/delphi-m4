@@ -51,6 +51,7 @@ import numpy as np
 from cloudpathlib import AnyPath
 
 from delphi.env import DELPHI_CKPT_READ as DELPHI_CKPT_DIR
+from delphi.env import DELPHI_RESULTS_DIR
 from delphi.experiment import CliConfig
 from delphi.plot import load_auc_json, per_disease_auc
 
@@ -81,7 +82,7 @@ ckpt_dir = AnyPath(DELPHI_CKPT_DIR) / args.ckpt_dir
 
 OUT_DIR = None
 if args.write is not None:
-    OUT_DIR = AnyPath(__file__).resolve().parents[1] / "results" / args.write
+    OUT_DIR = AnyPath(DELPHI_RESULTS_DIR) / args.write
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 

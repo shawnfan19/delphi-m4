@@ -41,7 +41,7 @@ import pandas as pd
 import patsy
 from cloudpathlib import AnyPath
 
-from delphi.env import DELPHI_CKPT_DIR
+from delphi.env import DELPHI_CKPT_DIR, DELPHI_RESULTS_DIR
 from delphi.experiment import CliConfig, flexi_list
 
 
@@ -51,7 +51,7 @@ class TaskConfig(CliConfig):
     # directory (relative to DELPHI_CKPT_DIR) holding the saliency-<panel>.npz files
     ckpt: str = "cross-cohort/blood+urine"
     # diseases to scan: a token, an inline list, or a .yaml path (flexi_list)
-    diseases: Any = "results/blood/improved.yaml"
+    diseases: Any = f"{DELPHI_RESULTS_DIR}/blood/improved.yaml"
     # biomarker panels (npz stems): a name/list/.yaml; None = all panels in the dir
     biomarkers: Any = None
     df: int = 5  # natural-cubic-spline df for the value control
@@ -232,7 +232,7 @@ print(
 
 # %%
 if args.write is not None:
-    out_dir = AnyPath(__file__).resolve().parents[1] / "results" / args.write
+    out_dir = AnyPath(DELPHI_RESULTS_DIR) / args.write
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "modulation_scan.csv"
     with out_path.open("w") as fh:

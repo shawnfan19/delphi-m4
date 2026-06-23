@@ -33,6 +33,7 @@ from cloudpathlib import AnyPath
 from delphi.data.auto import multimodal_reader_cls
 from delphi.data.ukb import MultimodalUKBReader
 from delphi.env import DELPHI_CKPT_READ as DELPHI_CKPT_DIR
+from delphi.env import DELPHI_RESULTS_DIR
 from delphi.experiment import CliConfig
 from delphi.plot import plot_by_chapter
 
@@ -68,7 +69,7 @@ min_events = args.min  # drop diseases with fewer events in either checkpoint
 # If --write is set, persist figures to results/<write>/ (repo root).
 OUT_DIR = None
 if args.write is not None:
-    OUT_DIR = AnyPath(__file__).resolve().parents[1] / "results" / args.write
+    OUT_DIR = AnyPath(DELPHI_RESULTS_DIR) / args.write
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 

@@ -1,6 +1,9 @@
 import os
 from pathlib import Path
 
+# assumes this file lives at <repo_root>/delphi/env.py
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
 
 def load_env_file() -> None:
     """Load KEY=VALUE pairs from <repo_root>/.env into os.environ.
@@ -8,7 +11,7 @@ def load_env_file() -> None:
     os.environ wins on conflict (explicit env vars override the file).
     Tolerates `export KEY=VALUE` and `KEY=VALUE`, comments, and quoted values.
     """
-    env_path = Path(__file__).resolve().parent.parent / ".env"
+    env_path = _REPO_ROOT / ".env"
     if not env_path.is_file():
         return
     for raw in env_path.read_text().splitlines():
@@ -42,3 +45,5 @@ _ckpt_dir = os.environ.get("DELPHI_CKPT_DIR")
 DELPHI_CKPT_READ = os.environ.get("DELPHI_CKPT_READ", _ckpt_dir or "/mnt/project/ckpt")
 DELPHI_CKPT_WRITE = os.environ.get("DELPHI_CKPT_WRITE", _ckpt_dir or "/tmp/ckpt")
 DELPHI_CKPT_DIR = _ckpt_dir or DELPHI_CKPT_WRITE
+
+DELPHI_RESULTS_DIR = os.environ.get("DELPHI_RESULTS_DIR", str(_REPO_ROOT / "results"))

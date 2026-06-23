@@ -5,14 +5,15 @@ Dataset-agnostic — loads the UKB or AoU reader via delphi.data.auto.
 
 import os
 from dataclasses import dataclass
-from pathlib import Path
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
+from cloudpathlib import AnyPath
 from tqdm import tqdm
 
 from delphi.data.auto import detect_dataset, multimodal_reader_cls
+from delphi.env import DELPHI_RESULTS_DIR
 from delphi.eval.cluster import ClusterStatsTracker, CooccurrenceTracker
 from delphi.experiment import CliConfig
 
@@ -21,7 +22,7 @@ mpl.rcParams["figure.dpi"] = 300
 
 @dataclass(kw_only=True)
 class TaskConfig(CliConfig):
-    write: str = "results"
+    write: str = ""  # optional subdir under DELPHI_RESULTS_DIR
 
 
 args = TaskConfig.from_cli()
@@ -30,7 +31,7 @@ args.print()
 mm_cls = multimodal_reader_cls()
 reader = mm_cls()
 dataset_name = os.environ.get("DELPHI_DATASET") or detect_dataset()
-OUT_DIR = Path(args.write) / dataset_name
+OUT_DIR = AnyPath(DELPHI_RESULTS_DIR) / args.write / dataset_name
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 pids = mm_cls.participants("all")

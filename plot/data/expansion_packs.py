@@ -6,14 +6,15 @@ delphi.data.auto.
 
 import os
 from dataclasses import dataclass, field
-from pathlib import Path
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
+from cloudpathlib import AnyPath
 from tqdm import tqdm
 
 from delphi.data.auto import detect_dataset, multimodal_reader_cls
+from delphi.env import DELPHI_RESULTS_DIR
 from delphi.eval.cluster import CooccurrenceTracker
 from delphi.experiment import CliConfig
 
@@ -23,14 +24,14 @@ mpl.rcParams["figure.dpi"] = 300
 @dataclass(kw_only=True)
 class TaskConfig(CliConfig):
     packs: list[str] = field(default_factory=list)
-    write: str = "results/expansion_packs"
+    write: str = "expansion_packs"
 
 
 args = TaskConfig.from_cli()
 args.print()
 
 dataset_name = os.environ.get("DELPHI_DATASET") or detect_dataset()
-OUT_DIR = Path(args.write) / dataset_name
+OUT_DIR = AnyPath(DELPHI_RESULTS_DIR) / args.write / dataset_name
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 mm_cls = multimodal_reader_cls()

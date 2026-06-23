@@ -16,13 +16,14 @@ Dataset-agnostic via delphi.data.auto.
 
 import os
 from dataclasses import dataclass
-from pathlib import Path
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
+from cloudpathlib import AnyPath
 
 from delphi.data.auto import detect_dataset, multimodal_reader_cls
+from delphi.env import DELPHI_RESULTS_DIR
 from delphi.experiment import CliConfig
 
 mpl.rcParams["figure.dpi"] = 300
@@ -32,7 +33,7 @@ mpl.rcParams["figure.dpi"] = 300
 class TaskConfig(CliConfig):
     disease: str  # token name, e.g. e78_(disorders_of_lipoprotein_metabolism_...)
     feature: str  # shared feature name, e.g. cholesterol, glycated_haemoglobin
-    write: str = "results/biomarker_disease"
+    write: str = "biomarker_disease"
 
 
 args = TaskConfig.from_cli()
@@ -40,7 +41,7 @@ args.print()
 
 mm_cls = multimodal_reader_cls()
 dataset_name = os.environ.get("DELPHI_DATASET") or detect_dataset()
-OUT_DIR = Path(args.write) / dataset_name
+OUT_DIR = AnyPath(DELPHI_RESULTS_DIR) / args.write / dataset_name
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Resolve which biomarker directory contains the requested feature.

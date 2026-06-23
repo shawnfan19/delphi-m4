@@ -39,7 +39,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from cloudpathlib import AnyPath
 
-from delphi.env import DELPHI_CKPT_DIR
+from delphi.env import DELPHI_CKPT_DIR, DELPHI_RESULTS_DIR
 from delphi.experiment import CliConfig, flexi_list
 
 
@@ -50,7 +50,7 @@ class TaskConfig(CliConfig):
     ckpt: str = "cross-cohort/blood+urine"
     # diseases (heatmap columns): a single token, an inline list, or a .yaml path
     # (normalized via flexi_list). Order is preserved.
-    diseases: Any = "results/blood/improved.yaml"
+    diseases: Any = f"{DELPHI_RESULTS_DIR}/blood/improved.yaml"
     # biomarker panels (npz stems, e.g. ["renal_panel", "cbc"]): a single name, an
     # inline list, or a .yaml path. None = every saliency-*.npz in the ckpt dir.
     # Rows are all features within the selected panels, in panel order.
@@ -149,7 +149,7 @@ ax.set_title(
 fig.tight_layout()
 
 if args.write is not None:
-    out_dir = AnyPath(__file__).resolve().parents[1] / "results" / args.write
+    out_dir = AnyPath(DELPHI_RESULTS_DIR) / args.write
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "saliency_heatmap.png"
     with out_path.open("wb") as f:
