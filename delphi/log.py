@@ -3,7 +3,7 @@ from datetime import datetime
 from pprint import pprint
 
 import torch
-from cloudpathlib import AnyPath
+from cloudpathlib import AnyPath, CloudPath
 
 from delphi import distributed
 from delphi.env import DELPHI_CKPT_DIR
@@ -53,6 +53,9 @@ class WandbBackend:
     def log(self, metrics, step, commit):
         self.wandb.log(metrics, commit=commit)
 
+    def flush_to_gcs(self, gcs_dir):
+        pass  # wandb's offline dir is uploaded by the dsub launcher on exit
+
     def finish(self):
         self.wandb.finish()
 
@@ -68,12 +71,21 @@ class TensorBoardBackend:
     def __init__(self, log_dir):
         from torch.utils.tensorboard import SummaryWriter
 
-        self.writer = SummaryWriter(log_dir=str(log_dir))
+        self.log_dir = str(log_dir)
+        self.writer = SummaryWriter(log_dir=self.log_dir)
 
     def log(self, metrics, step, commit):
         for k, v in metrics.items():
             if k != "step" and isinstance(v, (int, float)):
                 self.writer.add_scalar(k, v, step)
+
+    def flush_to_gcs(self, gcs_dir):
+        # Push event files to gs:// mid-run so curves are visible before the
+        # (offline, ephemeral) job exits. No-op for a local target -- there the
+        # event dir already persists on disk, so there is nothing to upload.
+        self.writer.flush()
+        if isinstance(gcs_dir, CloudPath):
+            gcs_dir.upload_from(self.log_dir)
 
     def finish(self):
         self.writer.close()
@@ -175,6 +187,13 @@ class Logger:
                 },
                 commit=False,
             )
+
+    def flush_to_gcs(self, gcs_dir):
+        """Push the active backend's local artifacts to gs:// mid-run (called at
+        the checkpoint cadence). No-op on non-master / when no backend is active.
+        """
+        if self._impl is not None:
+            self._impl.flush_to_gcs(gcs_dir)
 
     def finish(self):
         if self._impl is not None:
