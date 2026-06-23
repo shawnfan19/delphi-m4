@@ -144,9 +144,16 @@ class MultimodalAOUReader(MultimodalReader):
         pids = np.sort(pids)
         if fold == "all":
             return pids
+        if fold == "train":
+            # train = everyone NOT in the held-out "val" stride (i.e. the union
+            # of the other folds). The val_* CV folds stay individual strides;
+            # train is the complement of "val", so train and val never overlap.
+            mask = np.ones(len(pids), dtype=bool)
+            mask[cls.FOLDS.index("val") :: len(cls.FOLDS)] = False
+            return pids[mask]
         if fold not in cls.FOLDS:
             raise ValueError(
-                f"Unsupported fold {fold!r}; expected 'all' or one of {cls.FOLDS}"
+                f"Unsupported fold {fold!r}; expected 'all', 'train', or one of {cls.FOLDS}"
             )
         return pids[cls.FOLDS.index(fold) :: len(cls.FOLDS)]
 
