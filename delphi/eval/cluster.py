@@ -2,29 +2,35 @@ import numpy as np
 from scipy import sparse
 
 
+def _flatten_events(tokens: np.ndarray, timesteps: np.ndarray):
+    """Flatten a padded ``(N, K)`` batch to its non-padding events.
+
+    Drops padding (token 0), then returns, for each surviving token, its batch
+    row index, token id, and timestep, plus the ``(row, time)`` column-stack
+    used to group tokens into events (an event = a unique ``(row, time)`` pair).
+    Returns ``None`` if the batch is all padding, so callers can skip it.
+    """
+    mask = tokens != 0
+    if not np.any(mask):
+        return None
+    flat_tokens = tokens[mask]
+    flat_times = timesteps[mask]
+    N, K = tokens.shape
+    flat_rows = np.arange(N).repeat(K).reshape(N, K)[mask]
+    event_keys = np.column_stack((flat_rows, flat_times))
+    return flat_rows, flat_tokens, flat_times, event_keys
+
+
 class ClusterStatsTracker:
     def __init__(self):
         self.n_clusters_per_sub = list()
         self.cluster_size = list()
 
     def step(self, tokens: np.ndarray, timesteps: np.ndarray):
-
-        # 1. Mask Padding
-        # Filter out 0 (padding) tokens
-        mask = tokens != 0
-        if not np.any(mask):
+        flat = _flatten_events(tokens, timesteps)
+        if flat is None:
             return  # Skip empty batches
-        flat_tokens = tokens[mask]
-        flat_times = timesteps[mask]
-
-        # Get row indices (0 to N-1) for every valid token
-        N, K = tokens.shape
-        row_indices = np.arange(N).repeat(K).reshape(N, K)
-        flat_rows = row_indices[mask]
-        # 2. Identify Unique Events
-        # An event is a unique combination of (Batch_Row_Index, Timestep)
-        # We stack them to create unique keys for grouping
-        event_keys = np.column_stack((flat_rows, flat_times))
+        flat_rows, _, _, event_keys = flat
 
         # np.unique maps every (row, time) pair to a unique integer ID (0 to Num_Events-1)
         _, event_ids, cluster_size = np.unique(
@@ -68,22 +74,10 @@ class CooccurrenceTracker:
         - tokens: (N, K) numpy array of integers.
         - timesteps: (N, K) numpy array of discrete days.
         """
-        # 1. Mask Padding
-        # Filter out 0 (padding) tokens
-        mask = tokens != 0
-        if not np.any(mask):
+        flat = _flatten_events(tokens, timesteps)
+        if flat is None:
             return  # Skip empty batches
-        flat_tokens = tokens[mask]
-        flat_times = timesteps[mask]
-
-        # Get row indices (0 to N-1) for every valid token
-        N, K = tokens.shape
-        row_indices = np.arange(N).repeat(K).reshape(N, K)
-        flat_rows = row_indices[mask]
-        # 2. Identify Unique Events
-        # An event is a unique combination of (Batch_Row_Index, Timestep)
-        # We stack them to create unique keys for grouping
-        event_keys = np.column_stack((flat_rows, flat_times))
+        _, flat_tokens, _, event_keys = flat
 
         # np.unique maps every (row, time) pair to a unique integer ID (0 to Num_Events-1)
         _, event_ids = np.unique(event_keys, axis=0, return_inverse=True)
