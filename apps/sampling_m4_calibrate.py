@@ -9,8 +9,8 @@ import torch
 from tqdm import tqdm
 
 from delphi.data import MultimodalDataset
+from delphi.data.auto import multimodal_reader_cls
 from delphi.data.transform import BiomarkerTransform, MultimodalPrompt, TokenTransform
-from delphi.data.ukb import MultimodalUKBReader
 from delphi.data.utils import collate_batches
 from delphi.env import DELPHI_CKPT_DIR
 from delphi.eval import KaplanMeierEstimator
@@ -29,12 +29,16 @@ model, ckpt_dict = load_ckpt(Path(DELPHI_CKPT_DIR) / args.ckpt)
 data_args = ckpt_dict["data_args"]
 pprint.pp(data_args)
 
-reader = MultimodalUKBReader(
+# dataset-aware: UKB on the cluster, AoU on the workbench. Honors
+# DELPHI_DATASET (set in the dsub env), else auto-detects from the data dir.
+ReaderCls = multimodal_reader_cls()
+
+reader = ReaderCls(
     biomarkers=ckpt_dict["config"]["biomarkers"],
     expansion_packs=ckpt_dict["config"]["expansion_packs"],
 )
 
-pids = MultimodalUKBReader.participants("val")
+pids = ReaderCls.participants("val")
 
 biomarkers = ckpt_dict["config"]["biomarkers"]
 pmt_bio_m = np.array([m.value if hasattr(m, "value") else m for m in biomarkers])

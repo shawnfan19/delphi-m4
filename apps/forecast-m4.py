@@ -24,8 +24,8 @@ import torch
 from tqdm import tqdm
 
 from delphi.data import MultimodalDataset
+from delphi.data.auto import multimodal_reader_cls
 from delphi.data.transform import BiomarkerTransform, MultimodalPrompt, TokenTransform
-from delphi.data.ukb import MultimodalUKBReader
 from delphi.env import DELPHI_CKPT_READ, DELPHI_CKPT_WRITE
 from delphi.eval.auc import windowed_auc
 from delphi.eval.survival import NelsonAalenEstimator
@@ -74,14 +74,18 @@ pprint.pp(
     }
 )
 
+# dataset-aware: UKB on the cluster, AoU on the workbench. Honors
+# DELPHI_DATASET (set in the dsub env), else auto-detects from the data dir.
+ReaderCls = multimodal_reader_cls()
+
 # pass dict (not list) so reader uses the checkpoint's index assignments
 # instead of re-deriving them from sorted order
-reader = MultimodalUKBReader(
+reader = ReaderCls(
     biomarkers=model.config.biomarker2idx or None,
     expansion_packs=reader_args["expansion_packs"],
 )
 
-val_pids = MultimodalUKBReader.participants("val")
+val_pids = ReaderCls.participants("val")
 val_pids, prompt_age = reader.resolve_prompt_age(val_pids, args.prompt_age)
 token_transform = TokenTransform.from_ckpt(ckpt_dict)
 token_transform.describe()

@@ -23,8 +23,8 @@ import torch
 from tqdm import tqdm
 
 from delphi.data import MultimodalDataset
+from delphi.data.auto import multimodal_reader_cls
 from delphi.data.transform import BiomarkerTransform, MultimodalPrompt, TokenTransform
-from delphi.data.ukb import MultimodalUKBReader
 from delphi.env import DELPHI_CKPT_READ, DELPHI_CKPT_WRITE
 from delphi.eval.trajectory import mark_overlap, pack_non_prompt, sequence_distance
 from delphi.experiment import GenerateConfig, eval_iter, load_ckpt, move_batch_to_device
@@ -67,8 +67,11 @@ vocab_size = model.config.vocab_size
 augmentation_tokens = model.augmentation_tokens.to(device)
 
 # ---- reader / transforms (mirror forecast-m4) ----
+# dataset-aware: UKB on the cluster, AoU on the workbench. Honors DELPHI_DATASET
+# (set in the dsub env), else auto-detects from the data dir.
+ReaderCls = multimodal_reader_cls()
 reader_args = ckpt_dict["reader_args"]
-reader = MultimodalUKBReader(
+reader = ReaderCls(
     biomarkers=model.config.biomarker2idx or None,
     expansion_packs=reader_args["expansion_packs"],
 )
@@ -78,7 +81,7 @@ if biomarker_transform is not None:
     biomarker_transform = biomarker_transform.replace(dropout=None)
 
 # ---- cohort + prompt cutoff ----
-pids = MultimodalUKBReader.participants(args.fold)
+pids = ReaderCls.participants(args.fold)
 prompt_age_arg = args.prompt_age
 if prompt_age_arg == "recruitment":
     cutoff_age = reader.recruitment_times(pids)

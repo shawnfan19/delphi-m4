@@ -16,8 +16,8 @@ from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
 from delphi.data import MultimodalDataset
+from delphi.data.auto import multimodal_reader_cls
 from delphi.data.transform import BiomarkerTransform, MultimodalPrompt, TokenTransform
-from delphi.data.ukb import Biomarker, MultimodalUKBReader
 from delphi.env import DELPHI_CKPT_DIR
 from delphi.eval import BiomarkerCollator, EventTimeCollator
 from delphi.experiment import CliConfig, load_ckpt, move_batch_to_device
@@ -58,8 +58,13 @@ assert (
 reader_args = ckpt_dict["reader_args"]
 pprint.pp(reader_args)
 
+# dataset-aware: UKB on the cluster, AoU on the workbench. Honors DELPHI_DATASET
+# (set in the dsub env), else auto-detects from the data dir.
+ReaderCls = multimodal_reader_cls()
+Biomarker = ReaderCls.biomarker_cls
+
 # pass dict (not list) so reader uses the ckpt's index assignments
-reader = MultimodalUKBReader(
+reader = ReaderCls(
     biomarkers=biomarker2idx or None,
     expansion_packs=reader_args["expansion_packs"],
 )
@@ -72,9 +77,9 @@ if biomarker_transform is not None:
     )
     biomarker_transform.describe()
 
-val_pids = MultimodalUKBReader.participants("val")
+val_pids = ReaderCls.participants("val")
 total_val = val_pids.size
-val_pids = MultimodalUKBReader.filter_participants_with_biomarkers(
+val_pids = ReaderCls.filter_participants_with_biomarkers(
     val_pids, biomarkers=[mod_name], any=True
 )
 print(f"{val_pids.size} / {total_val} val pids (has {mod_name})")

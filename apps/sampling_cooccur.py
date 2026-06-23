@@ -25,8 +25,8 @@ import torch
 from tqdm import tqdm
 
 from delphi.data import MultimodalDataset
+from delphi.data.auto import multimodal_reader_cls
 from delphi.data.transform import MultimodalPrompt, TokenTransform
-from delphi.data.ukb import MultimodalUKBReader
 from delphi.data.utils import pack_clusters
 from delphi.env import DELPHI_CKPT_DIR, DELPHI_CKPT_WRITE
 from delphi.eval import ClusterStatsTracker, CooccurrenceTracker
@@ -55,8 +55,11 @@ if args.write is not None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
 # %%
-reader = MultimodalUKBReader(biomarkers=None)
-pids = MultimodalUKBReader.participants("val")
+# dataset-aware: UKB on the cluster, AoU on the workbench. Honors
+# DELPHI_DATASET (set in the dsub env), else auto-detects from the data dir.
+ReaderCls = multimodal_reader_cls()
+reader = ReaderCls(biomarkers=None)
+pids = ReaderCls.participants("val")
 
 token_transform_args = ckpt_dict["token_transform_args"]
 token_transform = TokenTransform(**token_transform_args)

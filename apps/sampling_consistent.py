@@ -8,8 +8,8 @@ import torch
 from tqdm import tqdm
 
 from delphi.data import MultimodalDataset
+from delphi.data.auto import multimodal_reader_cls
 from delphi.data.transform import MultimodalPrompt, TokenTransform
-from delphi.data.ukb import MultimodalUKBReader
 from delphi.data.utils import collate_batches
 from delphi.env import DELPHI_CKPT_DIR
 from delphi.eval import (
@@ -35,8 +35,9 @@ pprint.pp(args)
 model, ckpt_dict = load_ckpt(Path(DELPHI_CKPT_DIR) / args.ckpt)
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-reader = MultimodalUKBReader(biomarkers=None)
-pids = MultimodalUKBReader.participants("val")
+ReaderCls = multimodal_reader_cls()
+reader = ReaderCls(biomarkers=None)
+pids = ReaderCls.participants("val")
 
 token_transform = TokenTransform(block_size=None)
 if args.prompt_age is not None:
@@ -119,7 +120,7 @@ calc = kaplan_meier_incidence(
 syn = syn_estimator.incidence(start_age * 365.25, end_age * 365.25)
 
 
-labels = MultimodalUKBReader.labels()
+labels = ReaderCls.labels()
 
 plt.figure()
 plt.scatter(calc[13:], syn[13:], marker=".", c=labels["color"][13:])

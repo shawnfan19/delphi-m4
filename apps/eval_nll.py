@@ -12,8 +12,9 @@ import torch
 from tqdm.autonotebook import tqdm
 
 from delphi.data import MultimodalDataset
+from delphi.data.auto import multimodal_reader_cls
 from delphi.data.transform import TokenTransform
-from delphi.data.ukb import NO_EVENT_TOKEN, MultimodalUKBReader
+from delphi.data.ukb import NO_EVENT_TOKEN
 from delphi.env import DELPHI_CKPT_DIR
 from delphi.experiment import eval_iter, load_ckpt, move_batch_to_device
 
@@ -177,10 +178,14 @@ model, ckpt_dict = load_ckpt(ckpt_path)
 device = next(model.parameters()).device
 
 token_transform_args = ckpt_dict["token_transform_args"]
-val_pids = MultimodalUKBReader.participants("val")
+
+# dataset-aware: UKB on the cluster, AoU on the workbench. Honors
+# DELPHI_DATASET (set in the dsub env), else auto-detects from the data dir.
+ReaderCls = multimodal_reader_cls()
+val_pids = ReaderCls.participants("val")
 
 # unimodal eval: multimodal reader with no biomarkers loaded
-reader = MultimodalUKBReader(biomarkers=None)
+reader = ReaderCls(biomarkers=None)
 token_transform = TokenTransform(**token_transform_args)
 token_transform.describe()
 
