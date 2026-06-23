@@ -2,8 +2,6 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from omegaconf import OmegaConf
-
 from delphi import distributed
 from delphi.data import MultimodalDataset
 from delphi.data.auto import multimodal_reader_cls
@@ -236,20 +234,7 @@ def train(cfg: TrainConfig):
 
 
 def main():
-
-    default_cfg = OmegaConf.structured(TrainConfig())
-    cli_args = OmegaConf.from_cli()
-
-    if hasattr(cli_args, "config"):
-        file_cfg = OmegaConf.load(cli_args.config)
-        del cli_args.config
-    else:
-        file_cfg = default_cfg
-
-    cfg = OmegaConf.merge(default_cfg, file_cfg, cli_args)
-    cfg = OmegaConf.to_object(cfg)
-
-    train(cfg)  # type: ignore
+    train(TrainConfig.from_cli())
 
 
 if __name__ == "__main__":

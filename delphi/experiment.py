@@ -179,7 +179,7 @@ class EvalConfig(CliConfig):
 
 
 @dataclass
-class TrainBaseConfig:
+class TrainBaseConfig(CliConfig):
     ckpt_dir: str = "debug"
     eval_interval: int = 2000
     eval_iters: int = 200

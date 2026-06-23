@@ -3,7 +3,6 @@ from dataclasses import fields as dc_fields
 from pathlib import Path
 
 import torch
-from omegaconf import OmegaConf
 
 from delphi import distributed
 from delphi.data import MultimodalDataset
@@ -280,20 +279,7 @@ def finetune(cfg: FinetuneConfig):
 
 
 def main():
-
-    default_cfg = OmegaConf.structured(FinetuneConfig())
-    cli_args = OmegaConf.from_cli()
-
-    if hasattr(cli_args, "config"):
-        file_cfg = OmegaConf.load(cli_args.config)
-        del cli_args.config
-    else:
-        file_cfg = default_cfg
-
-    cfg = OmegaConf.merge(default_cfg, file_cfg, cli_args)
-    cfg = OmegaConf.to_object(cfg)
-
-    finetune(cfg)
+    finetune(FinetuneConfig.from_cli())
 
 
 if __name__ == "__main__":
