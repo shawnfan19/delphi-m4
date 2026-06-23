@@ -63,7 +63,12 @@ class WandbBackend:
         if os.environ.get("WANDB_MODE", "online") not in ("offline", "dryrun"):
             return
         run_dir = os.path.dirname(self.wandb.run.dir)
-        (base_dir / "wandb" / os.path.basename(run_dir)).upload_from(run_dir)
+        # force overwrite: we own this path and re-upload it every flush; without
+        # it cloudpathlib refuses static files (e.g. requirements.txt) whose cloud
+        # copy from a prior flush is newer than the unchanged local copy.
+        (base_dir / "wandb" / os.path.basename(run_dir)).upload_from(
+            run_dir, force_overwrite_to_cloud=True
+        )
 
     def finish(self):
         self.wandb.finish()
@@ -94,7 +99,8 @@ class TensorBoardBackend:
         # base_dir -- there the event dir already persists on disk.
         self.writer.flush()
         if isinstance(base_dir, CloudPath):
-            (base_dir / "tb").upload_from(self.log_dir)
+            # force overwrite: re-uploaded each flush (see WandbBackend.flush_to_gcs)
+            (base_dir / "tb").upload_from(self.log_dir, force_overwrite_to_cloud=True)
 
     def finish(self):
         self.writer.close()
