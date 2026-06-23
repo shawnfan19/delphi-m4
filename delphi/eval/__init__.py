@@ -6,7 +6,6 @@ from delphi.eval.auc import (
     ConcordanceCollator,
     DiseaseRatesCollator,
     batched_mann_whitney_auc,
-    mann_whitney_auc,
 )
 from delphi.eval.cluster import ClusterStatsTracker, CooccurrenceTracker
 from delphi.eval.survival import (

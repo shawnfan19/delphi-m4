@@ -5,22 +5,6 @@ from scipy.stats import rankdata
 from delphi.eval.utils import sample_boolean_mask
 
 
-def mann_whitney_auc(x1: np.ndarray, x2: np.ndarray) -> float:
-
-    x1 = x1[~np.isnan(x1)]
-    x2 = x2[~np.isnan(x2)]
-    n1 = len(x1)
-    n2 = len(x2)
-    x12 = np.concatenate([x1, x2])
-    ranks = rankdata(x12, method="average")
-
-    R1 = ranks[:n1].sum()
-    U1 = n1 * n2 + 0.5 * n1 * (n1 + 1) - R1
-    if n1 == 0 or n2 == 0:
-        return np.nan
-    return U1 / n1 / n2
-
-
 def batched_mann_whitney_auc(
     scores: np.ndarray, ctl: np.ndarray, case: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
