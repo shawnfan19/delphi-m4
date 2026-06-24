@@ -127,7 +127,8 @@ is_female = reader.is_female(val_pids)  # (N,) bool
 window = float(args.age_gap)
 with np.errstate(over="ignore", invalid="ignore"):
     prob_dis = 1.0 - np.exp(-dis_rates * window)  # (N, V): case probabilities
-    prob_ctl = 1.0 - np.exp(-ctl_rates * window)  # (N, n_bins, V): control probs
+# ponytail: control probs computed per age-bin in the loop below, not as one
+# (N, n_bins, V) array upfront — that duplicate OOMs on large (e.g. AoU) val.
 
 # Bin each case by the age of its prediction position, matching the control
 # binning. is_case marks (participant, token) pairs the participant developed.
@@ -167,7 +168,8 @@ for i, bracket in enumerate(tqdm(age_group_keys, desc="age bins")):
     logbook[bracket] = {}
     ctl_here = (~is_case) & ~np.isnan(ctl_rates[:, i, :])  # (N, V)
     case_here = is_case & (dis_time_bin == i)  # (N, V)
-    prob_ctl_i = prob_ctl[:, i, :]  # (N, V)
+    with np.errstate(invalid="ignore"):
+        prob_ctl_i = 1.0 - np.exp(-ctl_rates[:, i, :] * window)  # (N, V)
     for d in targets:
         token = reader.detokenizer[int(d)]
         entry = {}
