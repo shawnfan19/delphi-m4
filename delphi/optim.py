@@ -33,18 +33,7 @@ def get_wsd_lr(
     decay_type="linear",
     init_div_factor=100,
 ):
-    """Warmup, hold, and decay schedule.
-    Args:
-        n_iterations: total number of iterations
-        final_lr_factor: factor by which to reduce max_lr at the end
-        warmup_fract: fraction of iterations used for warmup
-        init_div_factor: initial division factor for warmup
-        fract_decay: fraction of iterations used for decay
-    Returns:
-        schedule: a function that takes the current iteration and
-        returns the multiplicative factor for the learning rate
-    """
-    # decay_iters = int(fract_decay * max_iters)
+    """Warmup -> hold -> decay LR-multiplier schedule; returns a step -> factor fn."""
     n_hold = max_iters - decay_iters
 
     def schedule(step):
