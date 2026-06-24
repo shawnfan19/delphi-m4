@@ -169,6 +169,44 @@ for sex in ["either", "female", "male"]:
     ax.set_title(sex)
 
 
+# C-index distribution across diseases — Harrell's vs Uno's C as two violin columns,
+# candidate (C0) overlaid with baseline (C1). Pools both sexes; drops diseases with
+# < args.min events (noisy c-index). Absent/empty "summary" sections are skipped.
+def cindex_columns(results: dict) -> list[np.ndarray]:
+    rows = [
+        {
+            "harrell": s["cindex_harrell"],
+            "uno": s["cindex_uno"],
+            "n_event": s["n_event"],
+        }
+        for per_sex in results.get("summary", {}).values()
+        for s in per_sex.values()
+    ]
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return [np.array([]), np.array([])]
+    df = df[df["n_event"] >= args.min]
+    return [df["harrell"].dropna().to_numpy(), df["uno"].dropna().to_numpy()]
+
+
+fig, ax = plt.subplots()
+handles = []
+for res, color, label in [(results, "C0", "blood"), (bl_results, "C1", "baseline")]:
+    cols = cindex_columns(res)
+    if all(len(c) >= 2 for c in cols):  # need a distribution to draw a violin
+        v = ax.violinplot(cols)
+        for b in v["bodies"]:
+            b.set_facecolor(color)
+            b.set_edgecolor(color)
+        handles.append(Patch(facecolor=color, label=label))
+ax.axhline(0.5, color="gray", lw=0.8, ls="--")  # chance
+ax.set_xticks([1, 2], ["Harrell's C", "Uno's C"])
+ax.set_ylabel("C-index")
+ax.set_title(f"C-index across diseases (≥{args.min} events)")
+if handles:
+    ax.legend(handles=handles)
+
+
 for h in horizons:
     for sex in ["either", "female", "male"]:
         plot_by_chapter(
