@@ -9,7 +9,7 @@ import numpy as np
 import yaml
 from cloudpathlib import AnyPath
 
-from delphi.env import DELPHI_CKPT_READ
+from delphi.env import DELPHI_CKPT_READ, DELPHI_RESULTS_DIR
 from delphi.experiment import CliConfig
 
 
@@ -32,6 +32,8 @@ class TaskConfig(CliConfig):
     panel: Any
     # Columns in the disease-grid overview figure (rows are derived).
     ncols: int = 5
+    # If set, also save figures under DELPHI_RESULTS_DIR/<write>/.
+    write: None | str = None
 
     def __post_init__(self):
         self.panel = parse_panel(self.panel)
@@ -42,6 +44,20 @@ args.print()
 
 with (AnyPath(DELPHI_CKPT_READ) / args.logbook).open("r") as f:
     logbook = json.load(f)
+
+OUT_DIR = None
+if args.write is not None:
+    OUT_DIR = AnyPath(DELPHI_RESULTS_DIR) / args.write
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def save_fig(fig, name):
+    if OUT_DIR is None:
+        return
+    out_path = OUT_DIR / name
+    with out_path.open("wb") as f:
+        fig.savefig(f, format="png", bbox_inches="tight")
+    print(f"Saved {out_path}")
 
 
 def either_calibration(entry):
@@ -101,6 +117,7 @@ for _, token in enumerate(args.panel):
     fig.supxlabel("predicted rates")
     fig.supylabel("observed rates", x=0.08)
     fig.suptitle(token, fontsize=8)
+    save_fig(fig, f"calibration_{token.replace('/', '_')}.png")
     plt.show()
 
 
@@ -138,4 +155,5 @@ fig.tight_layout(rect=(0, 0, 0.88, 0.96))
 fig.legend(
     handles=handles, title="horizon", loc="center right", bbox_to_anchor=(1.0, 0.5)
 )
+save_fig(fig, "calibration_overview.png")
 plt.show()
