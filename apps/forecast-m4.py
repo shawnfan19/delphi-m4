@@ -27,7 +27,7 @@ from delphi.data import MultimodalDataset
 from delphi.data.auto import multimodal_reader_cls
 from delphi.data.transform import BiomarkerTransform, MultimodalPrompt, TokenTransform
 from delphi.env import DELPHI_CKPT_READ, DELPHI_CKPT_WRITE
-from delphi.eval.auc import windowed_auc
+from delphi.eval.auc import cindex_censored, windowed_auc
 from delphi.eval.survival import NelsonAalenEstimator
 from delphi.experiment import GenerateConfig, eval_iter, load_ckpt, move_batch_to_device
 from delphi.model.tpp import tpp_dispatch
@@ -243,6 +243,23 @@ for horizon, scores in predictor.items():
                 "ctl_count": int(n_ctl[pos]),
                 "dis_count": int(n_case[pos]),
             }
+
+# horizon-free summary: Harrell's + Uno's C-index. Ranker = the longest-horizon
+# predictor (for `hazards` that's the time-invariant logit; for the sampling
+# methods it's the cumulative risk to tau). Cause-specific -> censor at exit_time.
+tau = max(args.horizons) * 365.25
+ref = predictor[max(args.horizons)][:, disease_ids]
+for pos, dis_token in enumerate(disease_ids):
+    for gender_key, is_gender in {"female": is_female, "male": ~is_female}.items():
+        logbook["summary"].setdefault(reader.detokenizer[int(dis_token)], {})[
+            gender_key
+        ] = cindex_censored(
+            ref[is_gender][:, pos],
+            event_timesteps[is_gender][:, dis_token],
+            exit_time[is_gender],
+            prompt_age[is_gender],
+            tau,
+        )
 
 print(logbook[args.horizons[0]][reader.detokenizer[1269]])
 

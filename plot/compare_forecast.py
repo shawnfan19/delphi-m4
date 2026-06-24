@@ -49,6 +49,8 @@ with ckpt_b_json.open("r") as f:
 def to_dataframe(results: dict) -> pd.DataFrame:
     rows = []
     for horizon, per_disease in results.items():
+        if not horizon.isdigit():  # skip the non-horizon "summary" (C-index) block
+            continue
         for disease, per_sex in per_disease.items():
             for sex, stats in per_sex.items():
                 rows.append(

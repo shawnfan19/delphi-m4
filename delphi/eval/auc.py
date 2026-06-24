@@ -54,6 +54,51 @@ def windowed_auc(predictor, event_times, censor_times, time_window):
     return batched_mann_whitney_auc(predictor, control, case)
 
 
+def cindex_censored(estimate, event_times, censor_times, anchor, tau):
+    """Harrell's and Uno's C-index for a forecasting anchor (horizon-free).
+
+    ``estimate`` (risk score, higher = earlier event), ``event_times`` (absolute
+    first-occurrence age, NaN if none), ``censor_times`` (absolute last-seen age),
+    and ``anchor`` (t0) are all ``(N,)``. The clock is re-zeroed at the anchor and
+    prevalent participants (event before t0) are dropped. The c-index is
+    cause-specific: death censors at its observed time, so pass a *finite*
+    ``censor_times`` (exit age), not the windowed-AUC inf-for-death sentinel.
+
+    Harrell's C uses the full follow-up; Uno's IPCW C truncates at ``tau`` days,
+    estimating the censoring KM from these same eval subjects. Returns
+    ``{"cindex_harrell", "cindex_uno", "n_event"}`` (NaN where undefined).
+    """
+    # optional heavy dep: imported lazily so `import delphi.eval` doesn't need sksurv
+    from sksurv.metrics import concordance_index_censored, concordance_index_ipcw
+    from sksurv.util import Surv
+
+    occ = event_times
+    keep = ~(~np.isnan(occ) & (occ < anchor))  # drop prevalent (event before t0)
+    event = ~np.isnan(occ[keep]) & (occ[keep] >= anchor[keep])
+    time = np.where(event, occ[keep], censor_times[keep]) - anchor[keep]
+    time = np.maximum(time, 1e-3)  # sksurv requires strictly positive times
+    est = estimate[keep]
+
+    out = {
+        "cindex_harrell": float("nan"),
+        "cindex_uno": float("nan"),
+        "n_event": int(event.sum()),
+    }
+    if out["n_event"] == 0:
+        return out  # no cases -> concordance undefined
+    # NaN-on-failure (not crash): a degenerate disease shouldn't kill a batch job.
+    try:
+        out["cindex_harrell"] = float(concordance_index_censored(event, time, est)[0])
+    except Exception:  # e.g. no comparable pairs
+        pass
+    try:
+        y = Surv.from_arrays(event=event, time=time)
+        out["cindex_uno"] = float(concordance_index_ipcw(y, y, est, tau=tau)[0])
+    except Exception:  # IPCW is finicky (tau beyond censoring support, etc.)
+        pass
+    return out
+
+
 class AgeStratRatesCollator:
 
     def __init__(self, age_groups: torch.Tensor):

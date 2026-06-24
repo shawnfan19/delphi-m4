@@ -31,7 +31,7 @@ from pathlib import Path
 import numpy as np
 
 from delphi.env import DELPHI_CKPT_DIR
-from delphi.eval.auc import windowed_auc
+from delphi.eval.auc import cindex_censored, windowed_auc
 from delphi.eval.cox import CoxRidge
 from delphi.experiment import CliConfig
 
@@ -164,6 +164,29 @@ for horizon in args.horizons:
             "ctl_count": int(n_ctl),
             "dis_count": int(n_case),
         }
+
+# horizon-free summary: Harrell's + Uno's C (cause-specific -> censor at exit_time,
+# not ev_censor). NaN when the model couldn't be fit, mirroring the AUC entries.
+tau = max(args.horizons) * 365.25
+for gender_key, is_gender in {
+    "female": ev["is_female"],
+    "male": ~ev["is_female"],
+}.items():
+    if risk is None:
+        entry = {
+            "cindex_harrell": float("nan"),
+            "cindex_uno": float("nan"),
+            "n_event": 0,
+        }
+    else:
+        entry = cindex_censored(
+            risk[is_gender],
+            ev_age_eval[is_gender],
+            ev["exit_time"][is_gender],
+            ev_anchor[is_gender],
+            tau,
+        )
+    logbook["summary"].setdefault(name, {})[gender_key] = entry
 
 shard_dir.mkdir(parents=True, exist_ok=True)
 path = shard_dir / f"{args.target}.json"
