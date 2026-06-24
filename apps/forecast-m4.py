@@ -249,7 +249,7 @@ for horizon, scores in predictor.items():
 # methods it's the cumulative risk to tau). Cause-specific -> censor at exit_time.
 tau = max(args.horizons) * 365.25
 ref = predictor[max(args.horizons)][:, disease_ids]
-for pos, dis_token in enumerate(disease_ids):
+for pos, dis_token in enumerate(tqdm(disease_ids, desc="c-index")):
     for gender_key, is_gender in {"female": is_female, "male": ~is_female}.items():
         logbook["summary"].setdefault(reader.detokenizer[int(dis_token)], {})[
             gender_key
