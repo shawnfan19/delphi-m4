@@ -48,7 +48,7 @@ class FinetuneConfig(TrainBaseConfig):
 
 def finetune(cfg: FinetuneConfig):
 
-    seed_everything(cfg.seed)
+    seed_everything(cfg.seed, deterministic=cfg.deterministic)
 
     # dataset-aware: UKB on the cluster, AoU on the workbench. Honors
     # DELPHI_DATASET (set in the dsub env), else auto-detects from the data dir.
