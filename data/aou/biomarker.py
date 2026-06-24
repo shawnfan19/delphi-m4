@@ -16,8 +16,7 @@ from sqlalchemy import (
     or_,
     select,
 )
-from sqlalchemy.orm import declarative_base
-from utils import DATA_BUCKET, PROJECT_ID, WORKSPACE_CDR, Client, upload_yaml
+from utils import DATA_BUCKET, WORKSPACE_CDR, Client, upload_yaml
 
 # -
 
