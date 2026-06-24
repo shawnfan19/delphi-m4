@@ -9,6 +9,7 @@ from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 from typing_extensions import Required
 
 from delphi.model.tpp import (
+    DPPSetHead,
     NeuralIntensity,
     NeuralODEIntensity,
     tpp_dispatch,
@@ -344,6 +345,10 @@ class DelphiM4(torch.nn.Module):
                 self.transformer.wte.weight = self.lm_head.weight
         elif config.loss == "neural_ode":
             self.neural_head = NeuralODEIntensity(
+                n_embd=config.n_embd, vocab_size=config.vocab_size
+            )
+        elif config.loss == "dynamic_dpp":
+            self.dpp_head = DPPSetHead(
                 n_embd=config.n_embd, vocab_size=config.vocab_size
             )
         else:

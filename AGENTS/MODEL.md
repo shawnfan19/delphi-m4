@@ -101,6 +101,7 @@ The active variant is set by **`config.loss`**:
 | `homo_poisson` *(default)* | `lm_head` (log-intensities) | cross-entropy + exponential-NLL decomposition; weights `ce_beta` / `dt_beta` |
 | `neural_tpp` | `NeuralIntensity` | neural intensity; **experimental** |
 | `neural_ode` | `NeuralODEIntensity` | ODE intensity; **experimental** |
+| `dynamic_dpp` | `DPPSetHead` | set-valued marked TPP (Chang et al., AISTATS 2024): scalar ground intensity λ* + a history-dependent **DPP** over co-occurring marks (same-age clusters via `multi_hot`); mark term `log det L_S − log det(L+I)`. **experimental**. NLL is **per-set**, not per-token — not directly comparable to the other losses. Train + NLL only; no sampler yet. See `delphi/test/test_dynamic_dpp.py`. |
 
 A `multitask` flag adds a biomarker-reconstruction decoder (+ optional EMA encoder)
 whose loss is appended (`mse_beta`, `multitask_beta`). The non-`homo_poisson` paths
