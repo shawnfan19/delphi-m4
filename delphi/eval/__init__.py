@@ -22,4 +22,3 @@ from delphi.eval.utils import (
     correct_time_offset,
     sample_boolean_mask,
 )
-from delphi.multimodal import Modality
