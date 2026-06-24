@@ -176,44 +176,69 @@ for sex in ["either", "female", "male"]:
 
 
 # C-index distribution across diseases — Harrell's vs Uno's C as two violin columns,
-# candidate (C0) overlaid with baseline (C1). Pools both sexes; drops diseases with
-# < args.min events (noisy c-index). Absent/empty "summary" sections are skipped.
-def cindex_columns(results: dict) -> list[np.ndarray]:
-    rows = [
-        {
-            "harrell": s["cindex_harrell"],
-            "uno": s["cindex_uno"],
-            "n_event": s["n_event"],
-        }
-        for per_sex in results.get("summary", {}).values()
-        for s in per_sex.values()
-    ]
-    df = pd.DataFrame(rows)
+# candidate (C0) overlaid with baseline (C1), one figure per sex (either/female/male).
+# "either" is the n_event-weighted mean of the two sexes' C-indices (mirrors the AUC
+# "either"; approximate, since a true pooled-sex C-index needs the raw scores).
+def cindex_dataframe(results: dict) -> pd.DataFrame:
+    rows = []
+    for disease, per_sex in results.get("summary", {}).items():
+        for sex, s in per_sex.items():
+            rows.append(
+                {
+                    "disease": disease,
+                    "sex": sex,
+                    "harrell": s["cindex_harrell"],
+                    "uno": s["cindex_uno"],
+                    "n_event": s["n_event"],
+                }
+            )
+        f, m = per_sex.get("female", {}), per_sex.get("male", {})
+        f_n, m_n = f.get("n_event", 0) or 0, m.get("n_event", 0) or 0
+        either = {"disease": disease, "sex": "either", "n_event": f_n + m_n}
+        for metric in ("harrell", "uno"):
+            fv, mv = f.get(f"cindex_{metric}"), m.get(f"cindex_{metric}")
+            fv = None if fv is None or np.isnan(fv) else fv
+            mv = None if mv is None or np.isnan(mv) else mv
+            if f_n + m_n == 0 or (fv is None and mv is None):
+                either[metric] = float("nan")
+            elif fv is not None and mv is not None:
+                either[metric] = (fv * f_n + mv * m_n) / (f_n + m_n)
+            else:
+                either[metric] = fv if fv is not None else mv
+        rows.append(either)
+    return pd.DataFrame(rows)
+
+
+def cindex_columns(df: pd.DataFrame, sex: str) -> list[np.ndarray]:
     if df.empty:
         return [np.array([]), np.array([])]
-    df = df[df["n_event"] >= args.min]
-    return [df["harrell"].dropna().to_numpy(), df["uno"].dropna().to_numpy()]
+    d = df[(df["sex"] == sex) & (df["n_event"] >= args.min)]
+    return [d["harrell"].dropna().to_numpy(), d["uno"].dropna().to_numpy()]
 
 
-fig, ax = plt.subplots()
-handles = []
-for res, color, label in [
-    (results, "C0", candidate_label),
-    (bl_results, "C1", baseline_label),
-]:
-    cols = cindex_columns(res)
-    if all(len(c) >= 2 for c in cols):  # need a distribution to draw a violin
-        v = ax.violinplot(cols)
-        for b in v["bodies"]:
-            b.set_facecolor(color)
-            b.set_edgecolor(color)
-        handles.append(Patch(facecolor=color, label=label))
-ax.axhline(0.5, color="gray", lw=0.8, ls="--")  # chance
-ax.set_xticks([1, 2], ["Harrell's C", "Uno's C"])
-ax.set_ylabel("C-index")
-ax.set_title(f"C-index across diseases (≥{args.min} events)")
-if handles:
-    ax.legend(handles=handles)
+results_cidx = cindex_dataframe(results)
+bl_results_cidx = cindex_dataframe(bl_results)
+if not (results_cidx.empty and bl_results_cidx.empty):
+    for sex in ["either", "female", "male"]:
+        fig, ax = plt.subplots()
+        handles = []
+        for df_cidx, color, label in [
+            (results_cidx, "C0", candidate_label),
+            (bl_results_cidx, "C1", baseline_label),
+        ]:
+            cols = cindex_columns(df_cidx, sex)
+            if all(len(c) >= 2 for c in cols):  # need a distribution to draw a violin
+                v = ax.violinplot(cols)
+                for b in v["bodies"]:
+                    b.set_facecolor(color)
+                    b.set_edgecolor(color)
+                handles.append(Patch(facecolor=color, label=label))
+        ax.axhline(0.5, color="gray", lw=0.8, ls="--")  # chance
+        ax.set_xticks([1, 2], ["Harrell's C", "Uno's C"])
+        ax.set_ylabel("C-index")
+        ax.set_title(f"C-index across diseases ({sex}, ≥{args.min} events)")
+        if handles:
+            ax.legend(handles=handles)
 
 
 for h in horizons:
