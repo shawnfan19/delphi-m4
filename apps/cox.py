@@ -9,6 +9,10 @@ numbers are directly comparable to forecast-m4's baselines.
 Set ``age_sex_baseline=true`` to fit on [anchor age, sex] instead of the hidden
 states (a demographic baseline; output auto-suffixed to ``cox_age_sex``).
 
+Set ``cv_folds=3`` to tune the ridge ``alpha`` by stratified k-fold CV on train
+(c-index scored, parallelized over ``$SLURM_CPUS_PER_TASK``); the chosen alpha is
+recorded in each ``summary`` entry, falling back to fixed ``alpha`` for rare diseases.
+
 One disease per run (parallelize over diseases with a SLURM array). Reads only the
 .npz bundles (no checkpoint / model); train_npz and eval_npz are resolved relative
 to DELPHI_CKPT_DIR (where embed.py writes them). Each run writes its shard to a
@@ -47,7 +51,12 @@ class TaskConfig(CliConfig):
     eval_npz: str = ""
     target: int = -1  # disease token to fit (one per run; the SLURM array fans out)
     horizons: list = field(default_factory=lambda: [1, 3, 5, 10])
-    alpha: float = 1.0
+    alpha: float = 1.0  # fixed ridge penalty (cv_folds=0, or the rare-disease fallback)
+    # tune alpha by k-fold CV on train (0 = off). Folds stratified on the event
+    # indicator; falls back to `alpha` when events < 2*cv_folds.
+    cv_folds: int = 0
+    alphas: list = field(default_factory=lambda: [0.01, 0.1, 1.0, 10.0, 100.0, 1000.0])
+    n_jobs: int = 0  # GridSearchCV workers; 0 = $SLURM_CPUS_PER_TASK (else 1)
     ties: str = "efron"
     fname: str = "cox"
     # fit on [age, sex] instead of the hidden states (demographic baseline). Sex is
@@ -149,10 +158,26 @@ if n_event == 0:
     # shard (NaN AUC, real eval counts) so the disease set matches forecast-m4 and
     # a *missing* shard unambiguously means a failed job, not a no-event skip.
     print(f"no train events after anchor for {args.target} ({name}); NaN-AUC shard")
-    risk = None
+    risk, chosen_alpha = None, float("nan")
+elif args.cv_folds and n_event >= 2 * args.cv_folds:
+    # tune alpha by stratified k-fold CV on train (needs enough events for stable folds)
+    n_jobs = args.n_jobs or int(os.environ.get("SLURM_CPUS_PER_TASK", 1))
+    model, chosen_alpha = CoxRidge.tuned(
+        Xtr[keep],
+        occ,
+        cens,
+        alphas=args.alphas,
+        cv_folds=args.cv_folds,
+        ties=args.ties,
+        n_jobs=n_jobs,
+    )
+    risk = model.predict(Xev)
+    print(f"{args.target} ({name}): CV-tuned alpha={chosen_alpha}")
 else:
+    # CV off, or too few events for stable CV -> fixed alpha
     model = CoxRidge(alpha=args.alpha, ties=args.ties).fit(Xtr[keep], occ, cens)
     risk = model.predict(Xev)  # (N_eval,) linear-predictor risk score
+    chosen_alpha = args.alpha
 
 # score on eval against absolute event/censor times, matching forecast-m4
 ev_anchor = ev["prompt_age"]
@@ -205,6 +230,7 @@ for gender_key, is_gender in {
             ev_anchor[is_gender],
             tau,
         )
+    entry["alpha"] = chosen_alpha  # the alpha used (CV-tuned, fallback, or fixed)
     logbook["summary"].setdefault(name, {})[gender_key] = entry
 
 shard_dir.mkdir(parents=True, exist_ok=True)

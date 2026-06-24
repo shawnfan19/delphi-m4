@@ -69,6 +69,42 @@ class CoxRidge:
         self.model.fit(X, y)
         return self
 
+    @classmethod
+    def tuned(
+        cls,
+        X: np.ndarray,
+        occurrence_times: np.ndarray,
+        censorship_times: np.ndarray,
+        *,
+        alphas,
+        cv_folds: int,
+        ties: str = "efron",
+        n_jobs: int = 1,
+    ) -> tuple["CoxRidge", float]:
+        """Fit with ``alpha`` chosen by stratified k-fold CV on the training data.
+
+        CV scores by Harrell's c-index (sksurv's default scorer), folds stratified
+        on the event indicator so each has events, then refits on all of ``X`` with
+        the best ``alpha``. Returns the fitted ``CoxRidge`` and the chosen ``alpha``.
+        """
+        from sklearn.model_selection import GridSearchCV, StratifiedKFold
+
+        X = np.asarray(X, dtype=float)
+        y = to_surv(occurrence_times, censorship_times)
+        event = ~np.isnan(np.asarray(occurrence_times, dtype=float))
+        splits = list(
+            StratifiedKFold(cv_folds, shuffle=True, random_state=0).split(X, event)
+        )
+        search = GridSearchCV(
+            CoxPHSurvivalAnalysis(ties=ties),
+            {"alpha": list(alphas)},
+            cv=splits,
+            n_jobs=n_jobs,
+        ).fit(X, y)
+        best = cls(ties=ties)
+        best.model = search.best_estimator_  # already refit on all of X
+        return best, float(search.best_params_["alpha"])
+
     def predict(self, X: np.ndarray) -> np.ndarray:
         """Risk score (linear predictor ``beta^T x``); higher => earlier event."""
         return self.model.predict(np.asarray(X, dtype=float))
