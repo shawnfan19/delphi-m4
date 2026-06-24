@@ -1,6 +1,4 @@
-import os
-import pprint
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -13,7 +11,7 @@ from delphi.data.transform import TokenTransform
 from delphi.data.ukb import MultimodalUKBReader
 from delphi.env import DELPHI_CKPT_READ
 from delphi.experiment import CliConfig, load_ckpt, move_batch_to_device
-from delphi.model.tpp import HomoPoissonTPP, NeuralTPP, tpp_dispatch
+from delphi.model.tpp import tpp_dispatch
 
 
 @dataclass(kw_only=True)
