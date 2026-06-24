@@ -7,8 +7,6 @@ import pandas as pd
 import pyspark.sql.functions as F
 import yaml
 
-from delphi.env import DELPHI_DATA_DIR
-
 project = os.getenv("DX_PROJECT_CONTEXT_ID")
 assert project is not None
 record = (
