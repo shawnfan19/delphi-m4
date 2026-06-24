@@ -22,6 +22,10 @@ class TaskConfig(CliConfig):
     json: str
     baseline_json: str
     min: int = 50
+    # Legend labels [candidate, baseline]; default to the json / baseline_json
+    # paths. (OmegaConf has no real tuple type — it coerces tuples to lists — so
+    # this is a list.)
+    labels: None | list = None
     # Subset of time horizons (years) to visualize, e.g. horizons=[1,5].
     # None = all horizons present in both checkpoints.
     horizons: None | list = None
@@ -33,17 +37,19 @@ class TaskConfig(CliConfig):
     def __post_init__(self):
         if self.events is not None:
             self.events = flexi_list(self.events)
+        if self.labels is None:
+            self.labels = [self.json, self.baseline_json]
+        assert len(self.labels) == 2, "labels must be [candidate, baseline]"
 
 
 args = TaskConfig.from_cli()
-ckpt_a_json = AnyPath(DELPHI_CKPT_DIR) / args.json
-ckpt_b_json = AnyPath(DELPHI_CKPT_DIR) / args.baseline_json
+candidate_label, baseline_label = args.labels
 
-with ckpt_a_json.open("r") as f:
-    bl_results = json.load(f)  # ckpt_a = args.baseline_json (reference)
+with (AnyPath(DELPHI_CKPT_DIR) / args.json).open("r") as f:
+    results = json.load(f)  # args.json = candidate / model under study (C0)
 
-with ckpt_b_json.open("r") as f:
-    results = json.load(f)  # ckpt_b = args.json (model under study)
+with (AnyPath(DELPHI_CKPT_DIR) / args.baseline_json).open("r") as f:
+    bl_results = json.load(f)  # args.baseline_json = baseline / reference (C1)
 
 
 def to_dataframe(results: dict) -> pd.DataFrame:
@@ -159,8 +165,8 @@ for sex in ["either", "female", "male"]:
         b.set_edgecolor("C1")
     ax.legend(
         handles=[
-            Patch(facecolor="C0", label="blood"),
-            Patch(facecolor="C1", label="baseline"),
+            Patch(facecolor="C0", label=candidate_label),
+            Patch(facecolor="C1", label=baseline_label),
         ]
     )
     ax.set_xticks(np.arange(len(horizons)) + 1, [str(h) for h in horizons])
@@ -191,7 +197,10 @@ def cindex_columns(results: dict) -> list[np.ndarray]:
 
 fig, ax = plt.subplots()
 handles = []
-for res, color, label in [(results, "C0", "blood"), (bl_results, "C1", "baseline")]:
+for res, color, label in [
+    (results, "C0", candidate_label),
+    (bl_results, "C1", baseline_label),
+]:
     cols = cindex_columns(res)
     if all(len(c) >= 2 for c in cols):  # need a distribution to draw a violin
         v = ax.violinplot(cols)
