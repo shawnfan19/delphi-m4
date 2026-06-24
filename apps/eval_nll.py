@@ -197,11 +197,6 @@ print(f"has_no_event: {has_no_event}")
 # build reverse tokenizer
 idx_to_event = {v: k for k, v in reader.tokenizer.items()}
 
-# determine which tokens are ignored (matching the model's training logic)
-ignored_tokens = {0}
-if model.config.ignore_tokens is not None:
-    ignored_tokens.update(model.config.ignore_tokens)
-
 
 # +
 # instantiate collators
