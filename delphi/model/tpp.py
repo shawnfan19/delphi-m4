@@ -601,7 +601,6 @@ class NeuralODETPP:
             rtol=1e-3,
             atol=1e-4,
         )
-        print(f"\rBatch NFE: {self.ode.nfe}", end="", flush=True)
 
         h1 = latents[-1]
         cumulative_intensity = cumulative_intensity[-1]
