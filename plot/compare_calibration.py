@@ -100,7 +100,6 @@ for _, token in enumerate(args.panel):
     axs[-1].set_xlim(1e-5, 1)
     fig.supxlabel("predicted rates")
     fig.supylabel("observed rates", x=0.08)
-    # fig.legend(handles=legend_lines)
     fig.suptitle(token, fontsize=8)
     plt.show()
 
@@ -140,9 +139,3 @@ fig.legend(
     handles=handles, title="horizon", loc="center right", bbox_to_anchor=(1.0, 0.5)
 )
 plt.show()
-
-
-# legend_lines = list()
-# for j, horizon in enumerate(time_horizon):
-#     line = mlines.Line2D([], [], color=colors[j], label=f"{horizon / 365.25} years")
-#     legend_lines.append(line)
