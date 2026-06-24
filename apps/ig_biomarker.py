@@ -100,7 +100,6 @@ ds = MultimodalDataset(
     prompt_transform=prompt_transform,
 )
 
-biomarker_features = {name: bm.features for name, bm in reader.biomarkers.items()}
 model_targets = model.targets.to(device)
 # exclude augmentation tokens (no_event + the dx anchor on tiebreak checkpoints) so
 # they aren't attributed as diseases.
