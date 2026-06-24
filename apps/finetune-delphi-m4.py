@@ -27,7 +27,7 @@ class FinetuneConfig(TrainBaseConfig):
     baseline_only: bool = False
     batch_size: int = 128
     seed: int = 42
-    deterministic: bool = True
+    deterministic: bool = False
     model: DelphiM4Config = field(
         default_factory=lambda: DelphiM4Config(block_size=None)
     )
