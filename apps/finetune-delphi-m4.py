@@ -234,7 +234,6 @@ def finetune(cfg: FinetuneConfig):
     backend = distributed.make_backend_from_args(cfg)
     cfg.wandb_project = cfg.ckpt_dir
 
-    n_params = sum(p.numel() for p in model.parameters())
     logger = Logger(
         config=asdict(cfg),
         backend=backend,
@@ -243,7 +242,7 @@ def finetune(cfg: FinetuneConfig):
         tensorboard_log=cfg.tensorboard_log,
         tensorboard_dir=cfg.tensorboard_dir,
         run_name=cfg.run_name,
-        summary={"model_params": n_params},
+        summary={"model_params": n_total},
     )
 
     metadata = {
