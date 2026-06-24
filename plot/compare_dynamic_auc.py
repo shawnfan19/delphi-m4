@@ -188,17 +188,10 @@ labels = args.labels or [p.parent.stem for p in paths]
 _tab10 = list(mpl.colormaps["tab10"].colors)
 colors = ["black"] + _tab10[: len(dfs) - 1]
 linewidths = [1.8] + [1.2] * (len(dfs) - 1)
-mode_str = (
-    f"k={args.n_neighbors} events"
-    if args.n_neighbors is not None
-    else f"h={args.bandwidth:.0f} days"
-)
-mode_str = f"{args.kernel} kernel, {mode_str}"
 
 out_dir = AnyPath(DELPHI_CKPT_WRITE) / args.out_dir
 out_dir.mkdir(parents=True, exist_ok=True)
 
-suffix = "_since_recruit" if args.age_since_recruit else ""
 xlabel = "Years since recruitment" if args.age_since_recruit else "Age at event (years)"
 
 
