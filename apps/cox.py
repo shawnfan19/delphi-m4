@@ -6,6 +6,9 @@ clock re-zeroed at the anchor and prevalent participants dropped), predict a ris
 score on the eval split, and grade it with the shared ``windowed_auc`` so the
 numbers are directly comparable to forecast-m4's baselines.
 
+Set ``age_sex_baseline=true`` to fit on [anchor age, sex] instead of the hidden
+states (a demographic baseline; output auto-suffixed to ``cox_age_sex``).
+
 One disease per run (parallelize over diseases with a SLURM array). Reads only the
 .npz bundles (no checkpoint / model); train_npz and eval_npz are resolved relative
 to DELPHI_CKPT_DIR (where embed.py writes them). Each run writes its shard to a
@@ -47,6 +50,9 @@ class TaskConfig(CliConfig):
     alpha: float = 1.0
     ties: str = "efron"
     fname: str = "cox"
+    # fit on [age, sex] instead of the hidden states (demographic baseline). Sex is
+    # inert under the per-gender eval, so this is effectively an age-within-sex baseline.
+    age_sex_baseline: bool = False
     # death censors -> cause-specific risk among survivors. False = "death is
     # complete follow-up" (a death-without-event counts as a control).
     death_as_censor: bool = True
@@ -56,6 +62,8 @@ class TaskConfig(CliConfig):
 
     def __post_init__(self):
         assert self.eval_npz, "eval_npz is required (it locates the output directory)"
+        if self.age_sex_baseline and self.fname == "cox":
+            self.fname = "cox_age_sex"  # don't clobber the hidden-state run
         if not self.merge:
             assert self.train_npz, "train_npz is required for fitting"
             assert self.target >= 0, "target (a disease token) is required for fitting"
@@ -110,12 +118,23 @@ if not (target_tokens == args.target).any():
 col = int(np.where(target_tokens == args.target)[0][0])
 name = str(ev["target_names"][col])
 
-# standardize hidden states: scaler fit on train, applied to train + eval
-mu = train["h"].mean(axis=0)
-sd = train["h"].std(axis=0)
+
+# design matrix: hidden states, or the [age, sex] demographic baseline. Standardized
+# (scaler fit on train) — ridge is scale-sensitive and age-in-days vs 0/1 sex differ.
+def design(bundle):
+    if args.age_sex_baseline:
+        return np.column_stack(
+            [bundle["prompt_age"], bundle["is_female"].astype(float)]
+        )
+    return bundle["h"]
+
+
+Xtr_raw, Xev_raw = design(train), design(ev)
+mu = Xtr_raw.mean(axis=0)
+sd = Xtr_raw.std(axis=0)
 sd[sd == 0] = 1.0
-Xtr = (train["h"] - mu) / sd
-Xev = (ev["h"] - mu) / sd
+Xtr = (Xtr_raw - mu) / sd
+Xev = (Xev_raw - mu) / sd
 
 # train labels, clock re-zeroed at the anchor (sksurv has no delayed entry);
 # drop prevalent participants (diseased before the anchor).
