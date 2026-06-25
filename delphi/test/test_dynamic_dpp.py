@@ -212,6 +212,45 @@ def test_intensity_at_matches_intensity_gather():
     assert (nt[~valid] == -1e4).all()  # invalid query -> -1e4 nearest_t
 
 
+def test_intensity_gathers_per_position_kernel():
+    """With multiple history events, a query uses the kernel of the event just
+    before it (correct occurred-set) via the precompute + gather; also exercises
+    the position-chunk loop (_POS_BLOCK forced to 1)."""
+    torch.manual_seed(6)
+    V, d = 7, 6  # marks 1..6 (token 0 kept here -- history tokens are 1,2,3)
+    qbase = torch.rand(V, dtype=DT) + 0.5
+    E = torch.randn(V, d, dtype=DT)
+    head = _fixed_head(V, d, qbase)  # quality = qbase at every position
+    with torch.no_grad():
+        head.total_intensity.weight.zero_()
+        head.total_intensity.bias.fill_(math.log(math.e - 1.0))  # lambda* = 1
+    tpp = DynamicDPPTPP(
+        hidden_states=torch.randn(1, 3, d, dtype=DT),  # irrelevant: head ignores h
+        head=head,
+        embedding=E,
+        timesteps=torch.tensor([[1.0, 2.0, 3.0]], dtype=DT),
+        tokens=torch.tensor([[1, 2, 3]]),  # events token1@1, token2@2, token3@3
+        exclude=torch.tensor([], dtype=torch.long),
+        terminate_except=torch.tensor([0]),
+        time_unit=1.0,
+    )
+    tpp._POS_BLOCK = 1  # force the position-chunk loop (3 single-position blocks)
+
+    # queries between events -> prediction positions 0, 1, 2
+    t = torch.tensor([[1.5, 2.5, 3.5]], dtype=DT)
+    inten, _ = tpp.intensity(t)  # (1, 3, V); lambda* == 1 so == K diagonal
+
+    # occurred set just before each query is the cumulative history tokens
+    for j, occ in enumerate([{1}, {1, 2}, {1, 2, 3}]):
+        qe = qbase.clone()
+        for k in occ:
+            qe[k] = 0.0  # self-terminated -> dropped from the kernel
+        L = _L_from(qe, E)
+        eye = torch.eye(V, dtype=DT)
+        K = eye - torch.linalg.inv(L + eye)
+        assert torch.allclose(inten[0, j], torch.diagonal(K), atol=1e-6), j
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

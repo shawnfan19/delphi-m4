@@ -67,6 +67,9 @@ class DynamicDPPTPP:
     # its true ~0 probability — impossible in practice (n_embd=120 >> any
     # same-day disease cluster), so the jitter is just a NaN guard.
     _JITTER = 1e-6
+    # positions per block when precomputing the per-event inclusion kernel;
+    # bounds the transient (block, d, d) inverse to ~block * d^2
+    _POS_BLOCK = 16384
 
     def __init__(
         self,
@@ -99,6 +102,10 @@ class DynamicDPPTPP:
         self.occurred_mask = have_occurred(
             history_x=tokens, terminate_except=terminate_except, vocab_size=V
         )
+        # per-event marginal-inclusion kernel, built lazily on first intensity
+        # query and reused across queries (eval only); see _ensure_kernel
+        self._k_pos = None  # (B, L, V) once built
+        self._lam_pos = None  # (B, L)
 
     @property
     def shape(self):
@@ -191,22 +198,55 @@ class DynamicDPPTPP:
         _, h_p, delta_t, drop = self._predict(t1)
         return self._time(delta_t, h_p).masked_fill(drop, torch.nan)
 
+    def _ensure_kernel(self):
+        """Precompute (once per batch) the per-event marginal-inclusion kernel.
+
+        ``a_inv = (I_d + Phi^T Phi)^{-1}`` depends only on the prediction
+        *position* (its hidden state and occurred-set), not on the query time or
+        token -- so recomputing it per query (as a naive ``intensity`` would)
+        repeats the same d x d inverse across every query that lands on the same
+        event. Instead we compute, for every input position, the marginal
+        inclusion ``K_pos[b, p, m] = q_m^2 * e_m^T a_inv[b, p] e_m`` for all
+        marks (the diagonal of the marginal kernel ``K = I - (L + I)^{-1}``) plus
+        the ground intensity ``lam_pos``. :meth:`intensity` / :meth:`intensity_at`
+        then just gather from these -- no per-query inverse, no ``(B, *Q, d, d)``
+        tensor -- so cost scales with events (B*L), not queries. The transient
+        ``(block, d, d)`` inverse is chunked over positions; the cached
+        ``K_pos`` is only ``(B, L, V)``.
+        """
+        if self._k_pos is not None:
+            return
+        B, L, _ = self.h.shape
+        V, d = self.E.shape
+
+        ql = self.head.quality(self.h)  # (B, L, V)
+        masked = self.occurred_mask | (~self.keep_token).view(1, 1, V)
+        ql = ql.clamp(max=self._LOGIT_CLAMP).masked_fill(masked, float("-inf"))
+        q = ql.exp()
+        qsq = (q * q).reshape(B * L, V)  # (B*L, V); 0 at excluded / occurred marks
+        self._lam_pos = F.softplus(self.head.total_intensity(self.h)).squeeze(-1)
+
+        eye_d = torch.eye(d, device=self.E.device, dtype=self.E.dtype)
+        outer = (self.E.unsqueeze(2) * self.E.unsqueeze(1)).reshape(V, d * d)
+        k = torch.empty_like(qsq)
+        for s in range(0, B * L, self._POS_BLOCK):
+            qb = qsq[s : s + self._POS_BLOCK]  # (blk, V)
+            a_inv = torch.linalg.inv(eye_d + (qb @ outer).reshape(-1, d, d))
+            quad = (a_inv.reshape(-1, d * d) @ outer.t()).clamp(min=0)  # (blk, V)
+            k[s : s + self._POS_BLOCK] = qb * quad  # K_mm = q_m^2 * e_m^T A e_m
+        self._k_pos = k.reshape(B, L, V)
+
     def intensity(self, t: torch.Tensor):
         """Per-mark intensity ``lambda_m(t) = lambda*(t) * P(m in X | t)``.
 
-        For the set-valued process the intensity of mark ``m`` is the rate of
-        *any* set containing ``m``; summing the set distribution over all such
-        sets is the DPP marginal inclusion probability, available in closed form
-        as the diagonal of the marginal kernel ``K = I - (L + I)^{-1}``,
-
-            K_mm = q_m^2 * e_m^T (I_d + Phi^T Phi)^{-1} e_m
-
-        (Woodbury -> only the d x d inverse, no sum over the 2^V sets). Mirrors
-        :meth:`HomoPoissonTPP.intensity`: returns ``(intensity (B, *Q, V),
-        nearest_t (B, *Q))``; marks dropped from the set (excluded / already
-        occurred) get 0 intensity, queries with no strict-before history NaN.
+        The intensity of mark ``m`` is the rate of *any* set containing ``m`` --
+        the DPP marginal inclusion ``K_mm`` (precomputed per position by
+        :meth:`_ensure_kernel`). Mirrors :meth:`HomoPoissonTPP.intensity`:
+        returns ``(intensity (B, *Q, V), nearest_t (B, *Q))``; marks dropped from
+        the set (excluded / occurred) get 0 intensity, no-history queries NaN.
         """
         assert t.shape[0] == self.timesteps.shape[0]
+        self._ensure_kernel()
         idx = nearest_input_pos(age=self.timesteps, targets_age=t)
         invalid = idx == -1
         idx = idx.clamp(min=0)
@@ -214,21 +254,11 @@ class DynamicDPPTPP:
         invalid = invalid | (nearest_t == -1e4)
         nearest_t = nearest_t.masked_fill(invalid, -1e4)
 
-        h_p = torch.take_along_dim(self.h, idx.unsqueeze(-1), dim=1)
-        q = self._quality(idx, h_p)  # (B, *Q, V); 0 at excluded / occurred marks
-        qsq = q * q
-
-        # marginal inclusion K_mm = q_m^2 * e_m^T (I_d + Phi^T Phi)^{-1} e_m
-        M, outer = self._gram_dd(qsq)  # (..., d, d), (V, d*d)
-        d = self.E.shape[1]
-        eye_d = torch.eye(d, device=M.device, dtype=M.dtype)
-        a_inv = torch.linalg.inv(eye_d + M)  # (..., d, d)
-        quad = (a_inv.reshape(-1, d * d) @ outer.t()).reshape(qsq.shape)
-        k_diag = (qsq * quad).clamp(min=0)  # K_mm in [0, 1]; clamp guards fp noise
-
-        lam = F.softplus(self.head.total_intensity(h_p)).squeeze(-1)  # (B, *Q)
-        intensity = lam.unsqueeze(-1) * k_diag
-        intensity = intensity.masked_fill(invalid.unsqueeze(-1), torch.nan)
+        k = torch.take_along_dim(self._k_pos, idx.unsqueeze(-1), dim=1)  # (B,*Q,V)
+        lam = torch.take_along_dim(self._lam_pos, idx, dim=1)  # (B, *Q)
+        intensity = (lam.unsqueeze(-1) * k).masked_fill(
+            invalid.unsqueeze(-1), torch.nan
+        )
         return intensity, nearest_t
 
     def intensity_at(self, t: torch.Tensor, tokens: torch.Tensor, **kwargs):
@@ -236,16 +266,14 @@ class DynamicDPPTPP:
 
         ``t``: (B, *Q) query times; ``tokens``: broadcastable to (B, *Q) mark
         ids. Returns ``(intensity (B, *Q), nearest_t (B, *Q))`` like
-        :meth:`HomoPoissonTPP.intensity_at`. Only the queried mark's inclusion
-        ``K_mm = q_m^2 * e_m^T (I_d + Phi^T Phi)^{-1} e_m`` is formed, so the
-        ``(B, *Q, V)`` per-mark tensors of :meth:`intensity` are avoided -- but
-        the normaliser still needs ``q`` over all V and a per-query d x d
-        inverse, so peak memory is ``O(B * Q * d^2)``; the caller bounds it by
-        batching the query (e.g. the c-index ``chunk_size``). Invalid positions
-        (no strict-before history) get NaN intensity / -1e4 nearest_t.
+        :meth:`HomoPoissonTPP.intensity_at`. Gathers the queried mark's
+        precomputed marginal inclusion (see :meth:`_ensure_kernel`) -- a plain
+        index, with no ``(B, *Q, V)`` or ``(B, *Q, d, d)`` temporaries. Invalid
+        positions (no strict-before history) get NaN intensity / -1e4 nearest_t.
         """
         assert t.shape[0] == self.timesteps.shape[0]
-        d = self.E.shape[1]
+        self._ensure_kernel()
+        B = self.timesteps.shape[0]
         idx = nearest_input_pos(age=self.timesteps, targets_age=t)
         invalid = idx == -1
         idx = idx.clamp(min=0)
@@ -253,16 +281,9 @@ class DynamicDPPTPP:
         invalid = invalid | (nearest_t == -1e4)
         nearest_t = nearest_t.masked_fill(invalid, -1e4)
 
-        h_p = torch.take_along_dim(self.h, idx.unsqueeze(-1), dim=1)
-        q = self._quality(idx, h_p)  # (B, *Q, V) -- needed for the normaliser
-        M, _ = self._gram_dd(q * q)  # (B, *Q, d, d)
-        eye_d = torch.eye(d, device=M.device, dtype=M.dtype)
-        a_inv = torch.linalg.inv(eye_d + M)
-
         tok = torch.broadcast_to(tokens, t.shape)
-        e_m = self.E[tok]  # (B, *Q, d)
-        q_m = torch.take_along_dim(q, tok.unsqueeze(-1), dim=-1).squeeze(-1)  # (B, *Q)
-        quad = torch.einsum("...i,...ij,...j->...", e_m, a_inv, e_m).clamp(min=0)
-        lam = F.softplus(self.head.total_intensity(h_p)).squeeze(-1)  # (B, *Q)
-        intensity = (lam * q_m * q_m * quad).masked_fill(invalid, torch.nan)
+        b_ar = torch.arange(B, device=idx.device).view(B, *([1] * (t.dim() - 1)))
+        k_m = self._k_pos[b_ar.expand_as(idx), idx, tok]  # (B, *Q) triple gather
+        lam = torch.take_along_dim(self._lam_pos, idx, dim=1)  # (B, *Q)
+        intensity = (lam * k_m).masked_fill(invalid, torch.nan)
         return intensity, nearest_t
