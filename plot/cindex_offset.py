@@ -16,12 +16,16 @@
 # %% [markdown]
 # # C-index vs offset (prediction lead-time)
 #
-# One violin per offset, each the distribution of per-disease c-index across
-# diseases. Files come from the SAME checkpoint scored at different `--offset`
-# values in apps/c-index-m4.py. A larger offset moves the scoring time to
-# `offset` years before each disease's onset, so the model must rank patients on
-# earlier, less-informative history (a genuinely harder task) — each violin
+# One box per offset, each summarizing the per-disease c-index distribution
+# across diseases. Files come from the SAME checkpoint scored at different
+# `--offset` values in apps/c-index-m4.py. A larger offset moves the scoring time
+# to `offset` years before each disease's onset, so the model must rank patients
+# on earlier, less-informative history (a genuinely harder task) — each box
 # should therefore drift downward.
+#
+# With `--write`, the box-plot data (per-sex flat c-index arrays + the kept
+# disease list, one entry per offset) is also dumped to
+# results/<write>/cindex_offset.json, consumed by plot/compare_cindex_offset.py.
 #
 # Files are named explicitly: `ckpt_dir` + a list of `fnames` (parquet stems,
 # no `.parquet`). Each file's offset is read from the run config embedded in its
@@ -30,12 +34,12 @@
 # differ), matching compare_cindex.py.
 #
 # Reading caveats:
-# - Each violin point is ONE disease's c-index, unweighted by event count — a
+# - Each box's points are per-disease c-indices, unweighted by event count — a
 #   distribution over diseases, not a pooled/event-weighted c-index.
 # - Diseases are the intersection across offsets (>= --min events at EVERY
 #   offset): a paired comparison of the same diseases as they get harder. A
 #   disease falling below --min only at a large offset is pruned from every
-#   violin, which can under-state the drift; per-offset eligible counts are
+#   box, which can under-state the drift; per-offset eligible counts are
 #   printed so the attrition is visible.
 # - "either" pools the within-female and within-male c-indices (pair-weighted),
 #   not a cross-sex ranking (scoring restricts controls to the case's sex).
@@ -167,7 +171,7 @@ def per_disease_cindex(df, sex_key):
     return g[["n_events", "c_index"]]
 
 
-def violins_for_sex(sex_key):
+def cindex_for_sex(sex_key):
     """One c_index array per offset over the diseases kept at EVERY offset:
     >= `min` events and a defined c_index in all runs (intersection). Prints the
     per-offset eligible count vs the kept count so cross-offset attrition shows."""
@@ -189,10 +193,12 @@ positions = np.arange(len(offsets)) + 1  # categorical: even spacing
 xticklabels = [f"{o:g}" for o in offsets]
 
 fig, axes = plt.subplots(1, 3, figsize=(18, 6), sharey=True)
+plot_data = {}  # sex_key -> {"cindex": [arr per offset], "keep": [icd, ...]}
 for ax, (sex_key, title) in zip(axes, SEXES):
-    arrays, keep = violins_for_sex(sex_key)
+    arrays, keep = cindex_for_sex(sex_key)
+    plot_data[sex_key] = {"cindex": [a.tolist() for a in arrays], "keep": keep}
     if keep:
-        ax.violinplot(arrays, positions=positions, showmedians=True)
+        ax.boxplot(arrays, positions=positions, showfliers=False)
         medians = [np.median(a) for a in arrays]
         ax.plot(positions, medians, color="C3", marker="o", lw=1, zorder=3)
     else:
@@ -205,4 +211,21 @@ axes[0].set_ylabel("c-index")
 fig.suptitle(f"C-index vs offset — {args.ckpt_dir} (>= {args.min} events)")
 fig.tight_layout(rect=(0, 0, 1, 0.96))
 save_fig(fig, "cindex_offset.png")
+
+# Dump the data needed to recreate the box plots (flat per-disease c-index arrays
+# + the kept disease list per sex), consumed by plot/compare_cindex_offset.py.
+if OUT_DIR is not None:
+    out_path = OUT_DIR / "cindex_offset.json"
+    payload = {
+        "ckpt_dir": args.ckpt_dir,
+        "min": args.min,
+        "filter_after": args.filter_after,
+        "offsets": offsets,
+        "cindex": {s: plot_data[s]["cindex"] for s in plot_data},
+        "keep": {s: plot_data[s]["keep"] for s in plot_data},
+    }
+    with out_path.open("w") as f:
+        json.dump(payload, f)
+    print(f"Saved {out_path}")
+
 plt.show()
