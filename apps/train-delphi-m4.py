@@ -6,7 +6,13 @@ from delphi import distributed
 from delphi.data import MultimodalDataset
 from delphi.data.auto import multimodal_reader_cls
 from delphi.data.transform import BiomarkerTransform, TokenTransform
-from delphi.experiment import BaseTrainer, Logger, TrainBaseConfig, seed_everything
+from delphi.experiment import (
+    BaseTrainer,
+    Logger,
+    TrainBaseConfig,
+    flexi_list,
+    seed_everything,
+)
 from delphi.log import Checkpointer
 from delphi.model.multimodal import DelphiM4, DelphiM4Config
 from delphi.multimodal import compose_panel
@@ -24,11 +30,13 @@ class TrainConfig(TrainBaseConfig):
         default_factory=lambda: DelphiM4Config(block_size=None)
     )
     panel: Any = None
-    biomarkers: None | list[str] = None
+    # a token name, an inline list, or a path to a .yaml list (flexi_list)
+    biomarkers: Any = None
     first_time_only: bool = True
     must_have: bool = False
     z_score_biomarkers: bool = True
-    expansion_packs: None | list[str] = None
+    # a token name, an inline list, or a path to a .yaml list (flexi_list)
+    expansion_packs: Any = None
     must_have_expansion_packs: bool = False
     ignore_expansion_packs: bool = True
     biomarker_dropout: None | float = None
@@ -36,6 +44,10 @@ class TrainConfig(TrainBaseConfig):
     tiebreak: bool = False
 
     def __post_init__(self):
+        if self.biomarkers is not None:
+            self.biomarkers = flexi_list(self.biomarkers)
+        if self.expansion_packs is not None:
+            self.expansion_packs = flexi_list(self.expansion_packs)
         if self.panel:
             self.biomarkers, self.expansion_packs, _ = compose_panel(
                 self.panel, self.biomarkers, self.expansion_packs
