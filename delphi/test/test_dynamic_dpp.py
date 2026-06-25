@@ -9,6 +9,7 @@ mark/time decomposition and same-age cluster masking.
 Run: ``python delphi/test/test_dynamic_dpp.py``  (or via pytest).
 """
 
+import math
 from itertools import chain, combinations
 
 import torch
@@ -147,6 +148,41 @@ def test_decomposition_and_cluster_masking():
     assert torch.isnan(joint[0, 1]) and torch.isnan(marks[0, 1])  # continuation
     assert torch.isfinite(joint[0, 0])  # cluster rep scored once
     assert torch.allclose(joint[0, 0], marks[0, 0] + times[0, 0], atol=1e-10)
+
+
+def test_intensity_is_lambda_times_marginal_inclusion():
+    """intensity_m = lambda* * K_mm, and K_mm == sum over sets containing m."""
+    torch.manual_seed(4)
+    V, d = 5, 6  # token 0 reserved (occurred); real marks 1..V-1
+    q = torch.rand(V, dtype=DT) + 0.5
+    E = torch.randn(V, d, dtype=DT)
+    L = _L_from(_effective_q(q), E)  # token-0 row/col is 0
+    eye = torch.eye(V, dtype=DT)
+    K = eye - torch.linalg.inv(L + eye)  # analytic marginal kernel
+    Z = torch.logdet(L + eye).exp()
+
+    # brute force: P(m in X) = sum_{S ni m} det(L_S) / det(L + I) == K_mm
+    def brute(m):
+        tot = torch.zeros((), dtype=DT)
+        for r in range(1, V + 1):
+            for s in combinations(range(V), r):
+                if m in s:
+                    j = torch.tensor(s)
+                    tot = tot + torch.det(L[j][:, j])
+        return tot / Z
+
+    for m in range(V):
+        assert torch.allclose(K[m, m], brute(m), atol=1e-6), m
+
+    # class output with lambda* pinned to 1 -> intensity == K_mm
+    head = _fixed_head(V, d, q)
+    with torch.no_grad():
+        head.total_intensity.weight.zero_()
+        head.total_intensity.bias.fill_(math.log(math.e - 1.0))  # softplus -> 1
+    tpp = _tpp(head, E, exclude=[])
+    inten, _ = tpp.intensity(torch.tensor([[2.0]], dtype=DT))  # (1, 1, V)
+    assert torch.allclose(inten[0, 0], torch.diagonal(K), atol=1e-5), inten[0, 0]
+    assert inten[0, 0, 0].item() == 0.0  # token 0 reserved/occurred -> 0 intensity
 
 
 if __name__ == "__main__":

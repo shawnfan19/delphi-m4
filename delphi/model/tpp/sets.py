@@ -133,16 +133,26 @@ class DynamicDPPTPP:
         ql = ql.clamp(max=self._LOGIT_CLAMP).masked_fill(masked, float("-inf"))
         return ql.exp()  # (B, L, V); 0 at masked tokens
 
+    def _gram_dd(self, qsq: torch.Tensor):
+        """Low-rank ``Phi^T Phi = sum_v q_v^2 e_v e_v^T`` as a ``(..., d, d)`` matrix.
+
+        ``qsq`` is ``q**2`` of shape ``(..., V)``; returns the ``(..., d, d)`` Gram
+        and the reusable ``(V, d*d)`` table of flattened ``e_v e_v^T`` outer
+        products. Shape-agnostic in the leading dims (clusters or query points).
+        """
+        V, d = self.E.shape
+        outer = (self.E.unsqueeze(2) * self.E.unsqueeze(1)).reshape(V, d * d)
+        M = (qsq.reshape(-1, V) @ outer).reshape(*qsq.shape[:-1], d, d)
+        return M, outer
+
     def _mark(self, x1: torch.Tensor, t1: torch.Tensor, idx, h_p):
         """DPP set log-prob  log det L_S - log det(L + I)  at each position."""
-        B, L = t1.shape
         V, d = self.E.shape
         q = self._quality(idx, h_p)
 
         # normaliser: log det(L + I_V) = log det(I_d + Phi^T Phi), Phi_v = q_v e_v
         qsq = q * q
-        outer = (self.E.unsqueeze(2) * self.E.unsqueeze(1)).reshape(V, d * d)
-        M = (qsq.reshape(B * L, V) @ outer).reshape(B, L, d, d)
+        M, _ = self._gram_dd(qsq)
         eye_d = torch.eye(d, device=M.device, dtype=M.dtype)
         logdet_norm = torch.linalg.slogdet(eye_d + M)[1]  # (B, L)
 
@@ -180,3 +190,43 @@ class DynamicDPPTPP:
     def log_p_times(self, t1: torch.Tensor):
         _, h_p, delta_t, drop = self._predict(t1)
         return self._time(delta_t, h_p).masked_fill(drop, torch.nan)
+
+    def intensity(self, t: torch.Tensor):
+        """Per-mark intensity ``lambda_m(t) = lambda*(t) * P(m in X | t)``.
+
+        For the set-valued process the intensity of mark ``m`` is the rate of
+        *any* set containing ``m``; summing the set distribution over all such
+        sets is the DPP marginal inclusion probability, available in closed form
+        as the diagonal of the marginal kernel ``K = I - (L + I)^{-1}``,
+
+            K_mm = q_m^2 * e_m^T (I_d + Phi^T Phi)^{-1} e_m
+
+        (Woodbury -> only the d x d inverse, no sum over the 2^V sets). Mirrors
+        :meth:`HomoPoissonTPP.intensity`: returns ``(intensity (B, *Q, V),
+        nearest_t (B, *Q))``; marks dropped from the set (excluded / already
+        occurred) get 0 intensity, queries with no strict-before history NaN.
+        """
+        assert t.shape[0] == self.timesteps.shape[0]
+        idx = nearest_input_pos(age=self.timesteps, targets_age=t)
+        invalid = idx == -1
+        idx = idx.clamp(min=0)
+        nearest_t = torch.take_along_dim(self.timesteps, indices=idx, dim=1)
+        invalid = invalid | (nearest_t == -1e4)
+        nearest_t = nearest_t.masked_fill(invalid, -1e4)
+
+        h_p = torch.take_along_dim(self.h, idx.unsqueeze(-1), dim=1)
+        q = self._quality(idx, h_p)  # (B, *Q, V); 0 at excluded / occurred marks
+        qsq = q * q
+
+        # marginal inclusion K_mm = q_m^2 * e_m^T (I_d + Phi^T Phi)^{-1} e_m
+        M, outer = self._gram_dd(qsq)  # (..., d, d), (V, d*d)
+        d = self.E.shape[1]
+        eye_d = torch.eye(d, device=M.device, dtype=M.dtype)
+        a_inv = torch.linalg.inv(eye_d + M)  # (..., d, d)
+        quad = (a_inv.reshape(-1, d * d) @ outer.t()).reshape(qsq.shape)
+        k_diag = (qsq * quad).clamp(min=0)  # K_mm in [0, 1]; clamp guards fp noise
+
+        lam = F.softplus(self.head.total_intensity(h_p)).squeeze(-1)  # (B, *Q)
+        intensity = lam.unsqueeze(-1) * k_diag
+        intensity = intensity.masked_fill(invalid.unsqueeze(-1), torch.nan)
+        return intensity, nearest_t
