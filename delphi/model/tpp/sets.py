@@ -230,3 +230,39 @@ class DynamicDPPTPP:
         intensity = lam.unsqueeze(-1) * k_diag
         intensity = intensity.masked_fill(invalid.unsqueeze(-1), torch.nan)
         return intensity, nearest_t
+
+    def intensity_at(self, t: torch.Tensor, tokens: torch.Tensor, **kwargs):
+        """Per-pair scalar intensity ``lambda_m(t) = lambda*(t) * K_mm(t)``.
+
+        ``t``: (B, *Q) query times; ``tokens``: broadcastable to (B, *Q) mark
+        ids. Returns ``(intensity (B, *Q), nearest_t (B, *Q))`` like
+        :meth:`HomoPoissonTPP.intensity_at`. Only the queried mark's inclusion
+        ``K_mm = q_m^2 * e_m^T (I_d + Phi^T Phi)^{-1} e_m`` is formed, so the
+        ``(B, *Q, V)`` per-mark tensors of :meth:`intensity` are avoided -- but
+        the normaliser still needs ``q`` over all V and a per-query d x d
+        inverse, so peak memory is ``O(B * Q * d^2)``; the caller bounds it by
+        batching the query (e.g. the c-index ``chunk_size``). Invalid positions
+        (no strict-before history) get NaN intensity / -1e4 nearest_t.
+        """
+        assert t.shape[0] == self.timesteps.shape[0]
+        d = self.E.shape[1]
+        idx = nearest_input_pos(age=self.timesteps, targets_age=t)
+        invalid = idx == -1
+        idx = idx.clamp(min=0)
+        nearest_t = torch.take_along_dim(self.timesteps, indices=idx, dim=1)
+        invalid = invalid | (nearest_t == -1e4)
+        nearest_t = nearest_t.masked_fill(invalid, -1e4)
+
+        h_p = torch.take_along_dim(self.h, idx.unsqueeze(-1), dim=1)
+        q = self._quality(idx, h_p)  # (B, *Q, V) -- needed for the normaliser
+        M, _ = self._gram_dd(q * q)  # (B, *Q, d, d)
+        eye_d = torch.eye(d, device=M.device, dtype=M.dtype)
+        a_inv = torch.linalg.inv(eye_d + M)
+
+        tok = torch.broadcast_to(tokens, t.shape)
+        e_m = self.E[tok]  # (B, *Q, d)
+        q_m = torch.take_along_dim(q, tok.unsqueeze(-1), dim=-1).squeeze(-1)  # (B, *Q)
+        quad = torch.einsum("...i,...ij,...j->...", e_m, a_inv, e_m).clamp(min=0)
+        lam = F.softplus(self.head.total_intensity(h_p)).squeeze(-1)  # (B, *Q)
+        intensity = (lam * q_m * q_m * quad).masked_fill(invalid, torch.nan)
+        return intensity, nearest_t

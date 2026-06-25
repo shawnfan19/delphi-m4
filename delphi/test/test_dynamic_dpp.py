@@ -185,6 +185,33 @@ def test_intensity_is_lambda_times_marginal_inclusion():
     assert inten[0, 0, 0].item() == 0.0  # token 0 reserved/occurred -> 0 intensity
 
 
+def test_intensity_at_matches_intensity_gather():
+    """intensity_at(t, m) == intensity(t)[..., m], with no-history queries NaN."""
+    torch.manual_seed(5)
+    V, d = 6, 5
+    q = torch.rand(V, dtype=DT) + 0.5
+    E = torch.randn(V, d, dtype=DT)
+    head = _fixed_head(V, d, q)
+    with torch.no_grad():
+        head.total_intensity.bias.fill_(0.3)  # nonzero lambda*
+    tpp = _tpp(head, E, exclude=[])
+
+    # three valid query points (after the single history event at age 1) plus
+    # one invalid point before it; distinct queried tokens per column
+    t = torch.tensor([[2.0, 3.0, 5.0, 0.5]], dtype=DT)
+    tokens = torch.tensor([[1, 3, 4, 2]])
+
+    full, _ = tpp.intensity(t)  # (1, 4, V)
+    gathered = full.gather(-1, tokens.unsqueeze(-1)).squeeze(-1)  # (1, 4)
+    at, nt = tpp.intensity_at(t, tokens)
+
+    valid = ~torch.isnan(gathered)
+    assert valid.tolist() == [[True, True, True, False]]  # last query has no history
+    assert torch.allclose(at[valid], gathered[valid], atol=1e-6)
+    assert torch.isnan(at[~valid]).all()  # invalid query -> NaN intensity
+    assert (nt[~valid] == -1e4).all()  # invalid query -> -1e4 nearest_t
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
