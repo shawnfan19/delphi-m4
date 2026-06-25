@@ -16,7 +16,10 @@ from delphi.experiment import (
 from delphi.log import Checkpointer
 from delphi.model.multimodal import DelphiM4, DelphiM4Config
 from delphi.multimodal import compose_panel
-
+SET_SEQUENCE_LOSSES = {
+    "dynamic_bernoulli",
+    "interval_dynamic_bernoulli",
+}
 
 @dataclass
 class TrainConfig(TrainBaseConfig):
@@ -44,6 +47,8 @@ class TrainConfig(TrainBaseConfig):
     tiebreak: bool = False
 
     def __post_init__(self):
+        if self.model.loss in SET_SEQUENCE_LOSSES:
+            self.tiebreak = False
         if self.biomarkers is not None:
             self.biomarkers = flexi_list(self.biomarkers)
         if self.expansion_packs is not None:
@@ -94,6 +99,9 @@ def train(cfg: TrainConfig):
     # vocab size + ignore_tokens are resolved up front: the tiebreak transform
     # consumes the final ignore_tokens, so this must run before TokenTransform.
     cfg.model.vocab_size = reader.vocab_size
+    is_set_loss = cfg.model.loss in SET_SEQUENCE_LOSSES
+    if is_set_loss:
+        cfg.tiebreak = False
     if cfg.ignore_expansion_packs:
         cfg.model.ignore_tokens = list(
             set(cfg.model.ignore_tokens).union(reader.expansion_tokens)
@@ -101,7 +109,7 @@ def train(cfg: TrainConfig):
 
     tiebreak_kwargs: dict = {}
     dx_token = None
-    if cfg.tiebreak:
+    if cfg.tiebreak and not is_set_loss:
         # dx anchor takes the next free id; widen the vocab by one for it, and exempt
         # it from self-termination so the model can re-emit it once per cluster.
         dx_token = reader.vocab_size
@@ -138,10 +146,13 @@ def train(cfg: TrainConfig):
         blacklist_tokens = [reader.tokenizer[k] for k in smoking + alcohol]
     else:
         blacklist_tokens = None
+    
     token_transform = TokenTransform(
         block_size=cfg.model.block_size,
         blacklist_tokens=blacklist_tokens,
         seed=cfg.seed,
+        set_mode=cfg.model.loss if is_set_loss else "none",
+        vocab_size=cfg.model.vocab_size if is_set_loss else None,
         **tiebreak_kwargs,
     )
 

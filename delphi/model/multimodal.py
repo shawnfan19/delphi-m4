@@ -21,12 +21,17 @@ from delphi.model.transformer import (
 )
 from delphi.model.utils import (
     incremental_attention_mask,
+    nll_dynamic_bernoulli_set,
+    nll_interval_dynamic_bernoulli_set,
     sample_competing_exponentials,
     self_terminate_single,
 )
 
 tensor_dict = dict[str, torch.Tensor]
-
+SET_SEQUENCE_LOSSES = {
+    "dynamic_bernoulli",
+    "interval_dynamic_bernoulli",
+}
 
 class BiomarkerEmbedConfig(TypedDict, total=False):
     """
@@ -114,22 +119,34 @@ def fuse_embed(
     age: torch.Tensor,
     idx: torch.Tensor,
     biomarker2idx: dict[str, int],
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    token_pad: None | torch.Tensor = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    fuse modality embeddings and base embeddings, sorted by age.
+    Fuse modality embeddings and base token/set embeddings, sorted by age.
 
-    construct the full unsorted tensors first (concatenating modality and base data),
-    then apply the time-sort index to the whole block at once.
+    Supports:
+        idx: (B, L) token ids
+        idx: (B, L, V) multihot sets
 
-    disease token positions get mod_idx=1 only when idx > 0 (non-padding),
-    so that fused_mod_idx > 0 can be used as a padding mask. fused_idx carries
-    the disease token ids (0 at biomarker and padding positions).
+    Returns:
+        fused_emb:       (B, M+L, D)
+        fused_age:       (B, M+L)
+        fused_mod_idx:   (B, M+L), where 1 marks event/set tokens
+        fused_idx:       (B, M+L), token ids for old token models; zero for set models
+        event_fused_pos: (B, L), fused positions corresponding to original event/set rows
+
+    event_fused_pos is needed for set losses: the transformer runs over fused
+    biomarkers + set-events, but the set loss must be computed only at the source
+    set-event positions, aligned back to idx/age/targets.
     """
-    _, _, n_embd = emb.shape
+    B, L_token, n_embd = emb.shape
     device = emb.device
+    L_mod = mod_idx.shape[1]
+
     mod_emb_dense = torch.zeros(
         (*mod_idx.shape, n_embd), dtype=emb.dtype, device=device
     )
+
     for biomarker, m_tensor in mod_emb.items():
         mask = mod_idx == biomarker2idx[biomarker]
         if m_tensor.shape[0] != mask.sum():
@@ -137,24 +154,46 @@ def fuse_embed(
                 f"Shape mismatch for {biomarker}: mask expects {mask.sum()} tokens, "
                 f"got {m_tensor.shape[0]}"
             )
-        # out-of-place (vs mod_emb_dense[mask] = m_tensor) so this composes with an
-        # outer vmap over a batched m_tensor — e.g. integrated_jacobian batching its
-        # interpolation steps. Numerically identical to the in-place scatter.
         mod_emb_dense = torch.index_put(mod_emb_dense, (mask,), m_tensor)
-    mod_emb_dense += mod_age_emb
+
+    mod_emb_dense = mod_emb_dense + mod_age_emb
     if mod_idx_emb is not None:
-        mod_emb_dense += mod_idx_emb
+        mod_emb_dense = mod_emb_dense + mod_idx_emb
 
     fused_emb_unsorted = torch.cat((mod_emb_dense, emb), dim=1)
-    disease_mod_idx = (idx > 0).to(mod_idx.dtype)
+
+    if token_pad is None:
+        if idx.dim() == 2:
+            token_pad = idx > 0
+        elif idx.dim() == 3:
+            # PAD token 0 is not a real set item.
+            token_pad = idx[..., 1:].to(torch.bool).any(dim=-1)
+        else:
+            raise ValueError(f"Unsupported idx shape {tuple(idx.shape)}")
+
+    disease_mod_idx = token_pad.to(mod_idx.dtype)
+
+    if idx.dim() == 2:
+        token_idx_for_fused = idx
+    elif idx.dim() == 3:
+        # For set-valued models fused_idx is not used by the set loss.
+        # Keep a 2D placeholder so old modality bookkeeping remains valid.
+        token_idx_for_fused = torch.zeros(
+            (B, L_token), dtype=torch.long, device=device
+        )
+    else:
+        raise ValueError(f"Unsupported idx shape {tuple(idx.shape)}")
+
     fused_mod_idx_unsorted = torch.cat((mod_idx, disease_mod_idx), dim=1)
     fused_idx_unsorted = torch.cat(
-        (torch.zeros_like(mod_idx, dtype=idx.dtype), idx), dim=1
+        (torch.zeros_like(mod_idx, dtype=token_idx_for_fused.dtype), token_idx_for_fused),
+        dim=1,
     )
     fused_age_unsorted = torch.cat((mod_age, age), dim=1)
 
-    # stable=True ensures biomarkers (mod_emb) precede disease tokens (emb) when ages are equal
+    # stable=True ensures biomarkers precede disease/set tokens when ages are equal.
     sort_indices = torch.argsort(fused_age_unsorted, stable=True, dim=1)
+
     fused_emb = torch.take_along_dim(
         fused_emb_unsorted, sort_indices.unsqueeze(-1), dim=1
     )
@@ -162,7 +201,19 @@ def fuse_embed(
     fused_mod_idx = torch.take_along_dim(fused_mod_idx_unsorted, sort_indices, dim=1)
     fused_idx = torch.take_along_dim(fused_idx_unsorted, sort_indices, dim=1)
 
-    return fused_emb, fused_age, fused_mod_idx, fused_idx
+    # Invert the sort so we can map original token/set positions to fused positions.
+    inverse_sort = torch.empty_like(sort_indices)
+    fused_positions = torch.arange(
+        sort_indices.shape[1], device=device, dtype=sort_indices.dtype
+    ).view(1, -1).expand_as(sort_indices)
+    inverse_sort.scatter_(1, sort_indices, fused_positions)
+
+    event_unsorted_pos = torch.arange(
+        L_mod, L_mod + L_token, device=device, dtype=sort_indices.dtype
+    ).view(1, -1).expand(B, -1)
+    event_fused_pos = torch.gather(inverse_sort, dim=1, index=event_unsorted_pos)
+
+    return fused_emb, fused_age, fused_mod_idx, fused_idx, event_fused_pos
 
 
 class BiomarkerDecoder(nn.Module):
@@ -297,7 +348,17 @@ class DelphiM4Config:
     # self_terminate_except (recurrence). See the DelphiM4.augmentation_tokens
     # property for the call-site exclusion idiom.
     augmentation_tokens: list = field(default_factory=lambda: [1])
-    loss: str = "homo_poisson"
+    loss: str = "homo_poisson"  # homo_poisson, neural_tpp, neural_ode, dynamic_dpp, dynamic_bernoulli, interval_dynamic_bernoulli
+
+    # For set-valued Dynamic Bernoulli modes.
+    # Existing Delphi behavior self-terminates disease tokens by default.
+    # no_event remains repeatable because self_terminate_except defaults to [1].
+    self_terminate: bool = True
+
+    # For interval_dynamic_bernoulli:
+    # True  = train the scalar ground set-event time likelihood too.
+    # False = condition on observed intervals and train only the interval-censored set likelihood.
+    set_use_ground_time: bool = True
     time_unit: float = 365.25
     multitask: bool = False
     ema: None | float = 0.999
@@ -332,6 +393,13 @@ class DelphiM4(torch.nn.Module):
             )
         )
 
+        if config.loss in SET_SEQUENCE_LOSSES and config.multitask:
+            raise NotImplementedError(
+                "Set-valued Dynamic Bernoulli losses support biomarkers as inputs, "
+                "but the auxiliary biomarker multitask reconstruction loss is not "
+                "wired for these modes."
+            )
+
         if config.loss == "neural_tpp":
             self.neural_tpp_head = NeuralIntensity(
                 n_embd=config.n_embd,
@@ -339,20 +407,47 @@ class DelphiM4(torch.nn.Module):
                 time_encoder=AgeEncoding(n_embd=config.n_embd),
                 spectral_norm=config.spectral_norm,
             )
+
         elif config.loss == "homo_poisson":
             self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
             if config.weight_tying:
                 self.transformer.wte.weight = self.lm_head.weight
+
         elif config.loss == "neural_ode":
             self.neural_head = NeuralODEIntensity(
                 n_embd=config.n_embd, vocab_size=config.vocab_size
             )
+
         elif config.loss == "dynamic_dpp":
             self.dpp_head = DPPSetHead(
                 n_embd=config.n_embd, vocab_size=config.vocab_size
             )
+
+        elif config.loss in SET_SEQUENCE_LOSSES:
+            # Item head:
+            #   dynamic_bernoulli:
+            #       logits are Bernoulli logits a_k, rho_k = sigmoid(a_k)
+            #   interval_dynamic_bernoulli:
+            #       logits are latent item log-rates log lambda_k
+            self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+            if config.weight_tying:
+                self.transformer.wte.weight = self.lm_head.weight
+
+            # Scalar ground set-event log-rate log Lambda.
+            #
+            # dynamic_bernoulli always uses ground time.
+            # interval_dynamic_bernoulli uses it only when set_use_ground_time=True.
+            #
+            # Important: do NOT create this head when interval mode conditions on
+            # observed intervals only, otherwise DDP may see unused parameters.
+            if (
+                config.loss == "dynamic_bernoulli"
+                or config.set_use_ground_time
+            ):
+                self.ground_head = nn.Linear(config.n_embd, 1, bias=True)
+
         else:
-            raise ValueError
+            raise ValueError(f"Unsupported loss: {config.loss!r}")
 
         if len(config.biomarkers) > 0:
             self.bio_embed = BiomarkerEmbeddingDict(config)
@@ -411,6 +506,92 @@ class DelphiM4(torch.nn.Module):
         set, e.g. ``targets[~torch.isin(targets, model.augmentation_tokens)]`` —
         kept explicit at the call site rather than hidden behind a property."""
         return torch.tensor(self.config.augmentation_tokens or [])
+    
+    @property
+    def is_set_sequence_loss(self) -> bool:
+        return self.config.loss in SET_SEQUENCE_LOSSES
+
+    def _set_candidate_mask(self, device: torch.device) -> torch.Tensor:
+        """
+        Candidate items for set likelihood.
+
+        PAD token 0 is always excluded.
+        config.ignore_tokens are excluded.
+
+        no_event token 1 is NOT excluded unless you explicitly put 1 in
+        config.ignore_tokens. This matches the desired policy:
+            "nothing happened" is represented by the singleton set {no_event}.
+        """
+        mask = torch.ones(self.config.vocab_size, dtype=torch.bool, device=device)
+        mask[0] = False
+
+        if self.config.ignore_tokens is not None:
+            for k in self.config.ignore_tokens:
+                k_int = int(k)
+                if 0 <= k_int < self.config.vocab_size:
+                    mask[k_int] = False
+
+        return mask
+
+    def _token_embedding_and_pad(
+        self,
+        idx: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Supports both old token input and new set input.
+
+        Old token input:
+            idx: (B, L) long token ids
+
+        New set input:
+            idx: (B, L, V) multi-hot set vectors
+
+        For set input, implements the paper's set embedding:
+            e(S) = mean_{k in S} w_k
+            e(empty) = 0
+
+        Padding policy for set input:
+            A row is real iff it contains at least one non-PAD item.
+            Therefore true all-zero rows are treated as padding.
+            "Nothing happened" should be represented by {no_event}, not empty.
+        """
+        if idx.dim() == 2:
+            tok_emb = self.transformer.wte(idx)
+            pad = idx > 0
+            return tok_emb, pad
+
+        if idx.dim() == 3:
+            if idx.shape[-1] != self.config.vocab_size:
+                raise ValueError(
+                    f"Set input last dimension must equal vocab_size="
+                    f"{self.config.vocab_size}, got {idx.shape[-1]}"
+                )
+
+            weights = idx.to(dtype=self.transformer.wte.weight.dtype)
+
+            # PAD item 0 should never contribute to set embeddings.
+            weights = weights.clone()
+            weights[..., 0] = 0.0
+
+            counts = weights.sum(dim=-1, keepdim=True)
+            tok_emb = torch.matmul(weights, self.transformer.wte.weight)
+            tok_emb = tok_emb / counts.clamp_min(1.0)
+
+            # Empty all-zero set rows are padding.
+            pad = counts.squeeze(-1) > 0
+
+            return tok_emb, pad
+
+        raise ValueError(f"Unsupported idx shape {tuple(idx.shape)}")
+
+    @staticmethod
+    def _masked_mean_or_zero(x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """
+        Mean over mask, returning differentiable zero if mask is empty.
+        """
+        if mask.any():
+            return x[mask].mean()
+        return x.sum() * 0.0
 
     def loss(
         self,
@@ -419,6 +600,96 @@ class DelphiM4(torch.nn.Module):
         targets_age: torch.Tensor,
         reduce: bool = True,
     ):
+        if self.is_set_sequence_loss:
+            idx = outputs["idx"]
+            age = outputs["age"]
+
+            if idx.dim() != 3:
+                raise ValueError(
+                    f"{self.config.loss} expects set-valued idx with shape (B, L, V), "
+                    f"got {tuple(idx.shape)}"
+                )
+            if targets.dim() != 3:
+                raise ValueError(
+                    f"{self.config.loss} expects set-valued targets with shape (B, L, V), "
+                    f"got {tuple(targets.shape)}"
+                )
+            if idx.shape != targets.shape:
+                raise ValueError(
+                    f"idx and targets must have same shape for set losses; "
+                    f"got {tuple(idx.shape)} and {tuple(targets.shape)}"
+                )
+
+            candidate_mask = self._set_candidate_mask(device=idx.device)
+            terminate_except = torch.tensor(
+                self.config.self_terminate_except or [],
+                device=idx.device,
+                dtype=torch.long,
+            )
+
+            if self.config.loss == "dynamic_bernoulli":
+                nll_time, nll_set = nll_dynamic_bernoulli_set(
+                    log_ground_intensity=outputs["ground_log_rate"],
+                    set_logits=outputs["logits"],
+                    targets=targets,
+                    idx=idx,
+                    targets_age=targets_age,
+                    age=age,
+                    time_unit=self.config.time_unit,
+                    candidate_mask=candidate_mask,
+                    terminate=self.config.self_terminate,
+                    terminate_except=terminate_except,
+                )
+
+            elif self.config.loss == "interval_dynamic_bernoulli":
+                nll_time, nll_set = nll_interval_dynamic_bernoulli_set(
+                    log_ground_intensity=(
+                        outputs["ground_log_rate"]
+                        if self.config.set_use_ground_time
+                        else None
+                    ),
+                    set_log_intensity=outputs["logits"],
+                    targets=targets,
+                    idx=idx,
+                    targets_age=targets_age,
+                    age=age,
+                    time_unit=self.config.time_unit,
+                    candidate_mask=candidate_mask,
+                    terminate=self.config.self_terminate,
+                    terminate_except=terminate_except,
+                )
+
+            else:
+                raise ValueError(f"Unsupported set loss {self.config.loss!r}")
+
+            # Valid set target means:
+            #   - source and target times are real
+            #   - interval is nonnegative
+            #   - target set contains at least one candidate item
+            #
+            # Since no_event is not ignored by default, {no_event} is valid.
+            # All-zero target rows are padding/invalid.
+            target_has_candidate = targets[..., candidate_mask].to(torch.bool).any(dim=-1)
+
+            is_valid = (
+                (age > -1e3)
+                & (targets_age > -1e3)
+                & ((targets_age - age) >= 0)
+                & target_has_candidate
+            )
+
+            if reduce:
+                return {
+                    "loss_time": self._masked_mean_or_zero(nll_time, is_valid),
+                    "loss_set": self._masked_mean_or_zero(nll_set, is_valid),
+                }
+
+            return {
+                "loss_time": nll_time.masked_fill(~is_valid, torch.nan),
+                "loss_set": nll_set.masked_fill(~is_valid, torch.nan),
+            }
+
+        # Old token-level TPP losses.
         tpp = tpp_dispatch(self, outputs)
 
         log_p = tpp.log_likelihood(x1=targets, t1=targets_age)
@@ -429,8 +700,10 @@ class DelphiM4(torch.nn.Module):
             for k in self.config.ignore_tokens:
                 is_valid &= targets != k
             nll = nll.masked_fill(~is_valid, torch.nan)
+
         if reduce:
             nll = torch.nanmean(nll)
+
         loss = {"loss_nll": nll}
 
         if self.config.multitask:
@@ -456,6 +729,13 @@ class DelphiM4(torch.nn.Module):
 
     @torch.no_grad()
     def sample_next(self, outputs: dict[str, torch.Tensor], idx: torch.Tensor):
+        if self.is_set_sequence_loss:
+            raise NotImplementedError(
+                "Autoregressive generate()/sample_next() is not yet wired for "
+                "set-valued Dynamic Bernoulli models. Training and likelihood "
+                "evaluation are supported."
+            )
+
         logits = outputs["logits"][:, -1, :]
         logits = self_terminate_single(
             idx=idx,
@@ -484,17 +764,27 @@ class DelphiM4(torch.nn.Module):
         # emb: None | torch.Tensor = None,
     ):
 
-        tok_emb = self.transformer.wte(idx)
+        tok_emb, token_pad = self._token_embedding_and_pad(idx)
+
         age_emb = self.transformer.wae(age.unsqueeze(-1))
         x = self.transformer.token_drop(tok_emb) * (1 - self.config.token_dropout)
         x = x + age_emb
 
+        event_fused_pos = None
+
         if biomarker:
+            if mod_age is None or mod_idx is None:
+                raise ValueError("mod_age and mod_idx are required when biomarker is provided")
+
             mod_emb = self.bio_embed(biomarker)
             mod_age_emb = self.transformer.wae(mod_age.unsqueeze(-1))
-            mod_idx_emb = self.mod_embedding(mod_idx)
+            mod_idx_emb = (
+                self.mod_embedding(mod_idx)
+                if self.config.modality_emb
+                else None
+            )
 
-            x, fused_age, fused_mod_idx, fused_idx = fuse_embed(
+            x, fused_age, fused_mod_idx, fused_idx, event_fused_pos = fuse_embed(
                 emb=x,
                 age=age,
                 mod_idx=mod_idx,
@@ -503,13 +793,15 @@ class DelphiM4(torch.nn.Module):
                 mod_age_emb=mod_age_emb,
                 mod_emb=mod_emb,
                 idx=idx,
+                token_pad=token_pad,
                 biomarker2idx=self.config.biomarker2idx,
             )
             pad = fused_mod_idx > 0
+
         else:
             fused_age = age
             fused_idx = idx
-            pad = (idx > 0).to(idx.dtype)
+            pad = token_pad
 
         if past_kvs is not None:
             assert past_pad is not None
@@ -520,15 +812,38 @@ class DelphiM4(torch.nn.Module):
             attn_mask = causal_attention_mask(pad=pad, timestep=fused_age)
 
         x = self.transformer.drop(x)
+
         att = [] if return_attn else None
         new_kvs = []
+
         for i, block in enumerate(self.transformer.h):
             past_kv = past_kvs[i] if past_kvs is not None else None
-            x, a, new_kv = block(x, attn_mask, past_kv=past_kv, return_attn=return_attn)
+            x, a, new_kv = block(
+                x,
+                attn_mask,
+                past_kv=past_kv,
+                return_attn=return_attn,
+            )
             if return_attn:
                 att.append(a)
             new_kvs.append(new_kv)
+
         x = self.transformer.ln_f(x)
+
+        # For set-valued losses, the transformer may have run over fused
+        # biomarkers + set-events. The loss should be evaluated only at the
+        # original set-event source positions, aligned to idx/age/targets.
+        if self.is_set_sequence_loss:
+            if event_fused_pos is None:
+                source_h = x
+            else:
+                source_h = torch.gather(
+                    x,
+                    dim=1,
+                    index=event_fused_pos.unsqueeze(-1).expand(-1, -1, x.shape[-1]),
+                )
+        else:
+            source_h = x
 
         misc = dict()
         misc["attn_mask"] = attn_mask
@@ -537,16 +852,32 @@ class DelphiM4(torch.nn.Module):
         misc["cur_pad"] = pad
 
         outputs = dict()
-        outputs["age"] = fused_age
-        outputs["idx"] = fused_idx
+
+        if self.is_set_sequence_loss:
+            # Set losses consume source-aligned tensors.
+            outputs["age"] = age
+            outputs["idx"] = idx
+            outputs["h"] = source_h
+
+            # Keep fused versions for debugging/inspection.
+            outputs["fused_age"] = fused_age
+            outputs["fused_h"] = x
+        else:
+            # Old TPP paths consume fused tensors.
+            outputs["age"] = fused_age
+            outputs["idx"] = fused_idx
+            outputs["h"] = x
+
         if biomarker:
             outputs["bio_age"] = mod_age
             outputs["bio_idx"] = mod_idx
             outputs["bio_x"] = biomarker
-        outputs["h"] = x
 
         if hasattr(self, "lm_head"):
-            outputs["logits"] = self.lm_head(x)
+            outputs["logits"] = self.lm_head(outputs["h"])
+
+        if hasattr(self, "ground_head"):
+            outputs["ground_log_rate"] = self.ground_head(outputs["h"]).squeeze(-1)
 
         if targets is not None and targets_age is not None:
             loss = self.loss(outputs, targets=targets, targets_age=targets_age)

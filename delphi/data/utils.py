@@ -6,6 +6,28 @@ import numpy as np
 def collate_batch(
     batch_data: list[np.ndarray], fill_value: int | float = 0, pad_left: bool = True
 ) -> np.ndarray:
+    """
+    Collate variable-length 1D token/time arrays.
+
+    If arrays are 2D with shape (L_i, V), dispatches to collate_set_batch.
+    This keeps existing dataset code working for set-valued modes if it already
+    calls collate_batch for tokens.
+    """
+    if len(batch_data) == 0:
+        raise ValueError("collate_batch received an empty batch")
+
+    if batch_data[0].ndim == 2:
+        return collate_set_batch(
+            batch_data=batch_data,
+            fill_value=fill_value,
+            pad_left=pad_left,
+        )
+
+    if batch_data[0].ndim != 1:
+        raise ValueError(
+            f"collate_batch expects 1D arrays, or 2D set arrays. "
+            f"Got shape {batch_data[0].shape}"
+        )
 
     max_len = max([bd.size for bd in batch_data])
     collated_batch = np.full(
@@ -22,6 +44,109 @@ def collate_batch(
 
     return collated_batch
 
+def collate_set_batch(
+    batch_data: list[np.ndarray],
+    fill_value: int | float = 0.0,
+    pad_left: bool = True,
+) -> np.ndarray:
+    """
+    Collate variable-length sequences of multi-hot sets.
+
+    Each element in batch_data has shape (L_i, V).
+    Returns shape (B, L_max, V).
+    """
+    if len(batch_data) == 0:
+        raise ValueError("collate_set_batch received an empty batch")
+
+    if batch_data[0].ndim != 2:
+        raise ValueError(
+            f"collate_set_batch expects arrays of shape (L, V), "
+            f"got {batch_data[0].shape}"
+        )
+
+    vocab_size = batch_data[0].shape[1]
+    max_len = max(bd.shape[0] for bd in batch_data)
+
+    collated_batch = np.full(
+        shape=(len(batch_data), max_len, vocab_size),
+        fill_value=fill_value,
+        dtype=batch_data[0].dtype,
+    )
+
+    for i, bd in enumerate(batch_data):
+        if bd.ndim != 2:
+            raise ValueError(f"All set arrays must be 2D, got {bd.shape}")
+        if bd.shape[1] != vocab_size:
+            raise ValueError("All set arrays must have the same vocab dimension")
+
+        L = bd.shape[0]
+        if L == 0:
+            continue
+
+        if pad_left:
+            collated_batch[i, -L:, :] = bd
+        else:
+            collated_batch[i, :L, :] = bd
+
+    return collated_batch
+
+
+def group_by_time_to_multihot(
+    x: np.ndarray,
+    t: np.ndarray,
+    vocab_size: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Convert token-level events into set-valued events.
+
+    Input:
+        x: token ids, shape (N,), or already multihot rows (N, V)
+        t: times, shape (N,)
+
+    Output:
+        sets: multi-hot matrix, shape (M, V), one row per unique timestamp
+        times: unique sorted event times, shape (M,)
+
+    This replaces dissolve_clusters for set models:
+        no dx_token,
+        no artificial order,
+        no time perturbation for tied events.
+    """
+    if x.shape[0] != t.shape[0]:
+        raise ValueError(
+            f"x and t must have same leading length; got {x.shape[0]} and {t.shape[0]}"
+        )
+
+    if x.shape[0] == 0:
+        return (
+            np.zeros((0, vocab_size), dtype=np.float32),
+            np.zeros((0,), dtype=np.float32),
+        )
+
+    order = np.argsort(t, kind="stable")
+    x = x[order]
+    t = t[order].astype(np.float32)
+
+    unique_t, inverse = np.unique(t, return_inverse=True)
+
+    sets = np.zeros((unique_t.shape[0], vocab_size), dtype=np.float32)
+
+    if x.ndim == 1:
+        x_ids = x.astype(np.int64)
+        valid = (x_ids >= 0) & (x_ids < vocab_size)
+        if valid.any():
+            sets[inverse[valid], x_ids[valid]] = 1.0
+    elif x.ndim == 2:
+        if x.shape[1] != vocab_size:
+            raise ValueError(
+                f"Already-multihot x must have last dim={vocab_size}, got {x.shape[1]}"
+            )
+        x_bool = (x > 0).astype(np.float32)
+        np.maximum.at(sets, inverse, x_bool)
+    else:
+        raise ValueError(f"Unsupported x shape {x.shape}")
+
+    return sets, unique_t.astype(np.float32)
 
 def collate_batches(
     batch_data: list[np.ndarray], fill_value: int | float = 0, pad_left: bool = True
