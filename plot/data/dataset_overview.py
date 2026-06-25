@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 from delphi.data.auto import detect_dataset, multimodal_reader_cls
 from delphi.env import DELPHI_RESULTS_DIR
-from delphi.eval.cluster import ClusterStatsTracker, CooccurrenceTracker
+from delphi.eval.cluster import ClusterStatsTracker, TiedEventTracker
 from delphi.experiment import CliConfig
 
 mpl.rcParams["figure.dpi"] = 300
@@ -45,7 +45,7 @@ whitelist = np.array(
 )
 
 tracker = ClusterStatsTracker()
-cooccur_tracker = CooccurrenceTracker(vocab_size=reader.vocab_size)
+cooccur_tracker = TiedEventTracker(vocab_size=reader.vocab_size)
 for pid in tqdm(pids):
     tokens, times = reader.token_reader[int(pid)]
     masked = np.where(np.isin(tokens, whitelist), 0, tokens)

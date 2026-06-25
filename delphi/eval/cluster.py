@@ -50,74 +50,125 @@ class ClusterStatsTracker:
         )
 
 
-class CooccurrenceTracker:
+class _SparsePairTracker:
+    """Shared V×V sparse co-occurrence accumulator.
+
+    Subclasses implement ``step`` to add a batch/sequence's contribution; the
+    only thing that differs between them is *what counts as a co-occurrence*.
+    """
+
     def __init__(self, vocab_size):
-        """
-        Initializes the tracker.
-
-        Parameters:
-        - vocab_size: int, the dimension V of the vocabulary (max token id + 1).
-        """
+        # vocab_size: V, the dimension of the vocabulary (max token id + 1).
+        # CSR sparse running sum keeps accumulation cheap on memory.
         self.vocab_size = vocab_size
-
-        # We use a sparse matrix for the running sum to save memory during accumulation.
-        # CSR format is efficient for arithmetic operations.
         self.global_cooccurrence = sparse.csr_matrix(
             (vocab_size, vocab_size), dtype=np.int32
         )
 
-    def step(self, tokens, timesteps):
-        """
-        Updates the co-occurrence counts with a new batch of data.
+    def finalize(self, as_dense=True):
+        """Zero the diagonal (drop self-occurrences) and return the V×V matrix.
 
-        Parameters:
-        - tokens: (N, K) numpy array of integers.
-        - timesteps: (N, K) numpy array of discrete days.
+        ``as_dense`` returns a numpy array; otherwise the sparse matrix.
         """
+        result_matrix = self.global_cooccurrence.copy()  # don't corrupt running state
+        result_matrix.setdiag(0)
+        result_matrix.eliminate_zeros()
+        return result_matrix.toarray() if as_dense else result_matrix
+
+
+class TiedEventTracker(_SparsePairTracker):
+    """Co-occurrence of tokens *tied to the same event* = same ``(participant, day)``.
+
+    Two tokens co-occur only when they share an event key, so a finalized
+    ``[a, b]`` counts the events (participant-days) in which both appear. Tokens
+    for the same participant on different days do **not** co-occur.
+
+    ``step`` takes batched ``tokens``/``timesteps`` arrays, each ``(N, K)``.
+    """
+
+    def step(self, tokens, timesteps):
         flat = _flatten_events(tokens, timesteps)
         if flat is None:
             return  # Skip empty batches
         _, flat_tokens, _, event_keys = flat
 
-        # np.unique maps every (row, time) pair to a unique integer ID (0 to Num_Events-1)
+        # np.unique maps every (row, time) pair to a unique event ID.
         _, event_ids = np.unique(event_keys, axis=0, return_inverse=True)
         num_events = event_ids.max() + 1
-        # 3. Create Incidence Matrix for this Batch (Events x Vocab)
-        # Rows = Events, Cols = Token IDs
-        # Values = 1 (presence).
-        # Note: If a token appears twice in one event, the values sum up.
-        ones = np.ones(len(flat_tokens), dtype=int)
-
+        # Incidence matrix (events × vocab); a token repeated in one event sums up.
+        ones = np.ones(len(flat_tokens), dtype=np.int32)
         X_batch = sparse.csr_matrix(
             (ones, (event_ids, flat_tokens)), shape=(num_events, self.vocab_size)
         )
-        # 4. Compute Batch Co-occurrence via Dot Product
-        # (V x Events) @ (Events x V) -> (V x V)
-        batch_cooccurrence = X_batch.T @ X_batch
-        # 5. Update Global State
-        self.global_cooccurrence += batch_cooccurrence
+        # (V × events) @ (events × V) -> (V × V)
+        self.global_cooccurrence += X_batch.T @ X_batch
+
+
+class CooccurrenceTracker(_SparsePairTracker):
+    """Participant-level (lifetime) token co-occurrence — one participant per ``step``.
+
+    Two tokens co-occur when they both appear *anywhere* in the participant's
+    sequence, regardless of when. Each token counts once (binary presence at its
+    first occurrence), so a finalized ``[i, j]`` counts the participants in whom
+    both appear.
+
+    With ``before=True`` the matrix is *directed*: ``[i, j]`` is incremented only
+    when ``i``'s first occurrence is *strictly earlier* than ``j``'s, so same-day
+    pairs are dropped. With ``before=False`` (default) it is symmetric and
+    same-day pairs count.
+
+    ``step`` takes a single participant's 1-D ``tokens`` (token 0 = padding /
+    masked-out, dropped). ``timesteps`` (1-D, same length) is required when
+    ``before=True`` and ignored otherwise.
+    """
+
+    # Merging a (V×V) matrix into the running sum costs O(nnz) every time, so we
+    # buffer per-participant (src, dst) pairs and merge in bulk; coo_matrix sums
+    # duplicates on conversion, giving the same result far faster.
+    _FLUSH_AT = 5_000_000  # buffered pairs before a merge
+
+    def __init__(self, vocab_size, before=False):
+        super().__init__(vocab_size)
+        self.before = before
+        self._src, self._dst, self._buffered = [], [], 0
+
+    def step(self, tokens, timesteps=None):
+        keep = tokens != 0
+        toks = tokens[keep]
+        if toks.size == 0:
+            return  # Skip empty sequences
+
+        if not self.before:
+            u = np.unique(toks)  # binary presence; repeats collapse
+            src, dst = np.repeat(u, len(u)), np.tile(
+                u, len(u)
+            )  # all pairs; diag dropped in finalize
+        else:
+            if timesteps is None:
+                raise ValueError("before=True requires timesteps")
+            times = timesteps[keep]
+            order = np.argsort(times, kind="stable")  # earliest first
+            u, first = np.unique(toks[order], return_index=True)
+            ut = times[order][first]  # first-occurrence time of each distinct token
+            ii, jj = np.nonzero(ut[:, None] < ut[None, :])  # i strictly before j
+            src, dst = u[ii], u[jj]
+
+        self._src.append(src)
+        self._dst.append(dst)
+        self._buffered += len(src)
+        if self._buffered >= self._FLUSH_AT:
+            self._flush()
+
+    def _flush(self):
+        if not self._src:
+            return
+        src, dst = np.concatenate(self._src), np.concatenate(self._dst)
+        ones = np.ones(len(src), dtype=np.int32)
+        self.global_cooccurrence += sparse.coo_matrix(
+            (ones, (src, dst)), shape=(self.vocab_size, self.vocab_size)
+        ).tocsr()
+        self._src, self._dst, self._buffered = [], [], 0
 
     def finalize(self, as_dense=True):
-        """
-        Finalizes the calculation, removes self-occurrences, and returns the heatmap.
-
-        Parameters:
-        - as_dense: bool. If True, returns a numpy array. If False, returns sparse matrix.
-
-        Returns:
-        - heatmap: (V, V) matrix.
-        """
-        # Work on a copy to avoid corrupting the running state if called multiple times
-        result_matrix = self.global_cooccurrence.copy()
-
-        # The prompt asks for co-occurrence with "any OTHER token".
-        # We set the diagonal to 0 to remove self-occurrences (Token A with Token A).
-        result_matrix.setdiag(0)
-
-        # Eliminate any zeros created by setdiag from the sparse structure
-        result_matrix.eliminate_zeros()
-
-        if as_dense:
-            return result_matrix.toarray()
-        else:
-            return result_matrix
+        self._flush()
+        return super().finalize(as_dense)

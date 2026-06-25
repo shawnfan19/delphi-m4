@@ -7,7 +7,11 @@ from delphi.eval.auc import (
     DiseaseRatesCollator,
     batched_mann_whitney_auc,
 )
-from delphi.eval.cluster import ClusterStatsTracker, CooccurrenceTracker
+from delphi.eval.cluster import (
+    ClusterStatsTracker,
+    CooccurrenceTracker,
+    TiedEventTracker,
+)
 from delphi.eval.survival import (
     KaplanMeierEstimator,
     OnlineSurvivalEstimator,

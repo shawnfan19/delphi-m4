@@ -29,7 +29,7 @@ from delphi.data.auto import multimodal_reader_cls
 from delphi.data.transform import MultimodalPrompt, TokenTransform
 from delphi.data.utils import pack_clusters
 from delphi.env import DELPHI_CKPT_DIR, DELPHI_CKPT_WRITE
-from delphi.eval import ClusterStatsTracker, CooccurrenceTracker
+from delphi.eval import ClusterStatsTracker, TiedEventTracker
 from delphi.experiment import GenerateConfig, eval_iter, load_ckpt
 from delphi.model.transformer import generate
 
@@ -107,9 +107,9 @@ else:
     total = args.subsample
 it = eval_iter(total_size=total, batch_size=args.batch_size)
 pbar = tqdm(it, total=math.ceil(total / args.batch_size), leave=False)
-gt_tracker = CooccurrenceTracker(vocab_size=model.config.vocab_size)
+gt_tracker = TiedEventTracker(vocab_size=model.config.vocab_size)
 gt_stats = ClusterStatsTracker()
-tracker = CooccurrenceTracker(vocab_size=model.config.vocab_size)
+tracker = TiedEventTracker(vocab_size=model.config.vocab_size)
 stats = ClusterStatsTracker()
 
 torch.manual_seed(42)

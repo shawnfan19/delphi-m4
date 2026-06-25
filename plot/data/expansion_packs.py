@@ -31,7 +31,7 @@ args = TaskConfig.from_cli()
 args.print()
 
 dataset_name = os.environ.get("DELPHI_DATASET") or detect_dataset()
-OUT_DIR = AnyPath(DELPHI_RESULTS_DIR) / args.write / dataset_name
+OUT_DIR = AnyPath(DELPHI_RESULTS_DIR) / dataset_name / args.write
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 mm_cls = multimodal_reader_cls()
@@ -69,36 +69,43 @@ for pack_name in pack_names:
         [reader.tokenizer[k] for k in whitelist_keys if k in reader.tokenizer]
     )
 
+    # Co-occurrence both ways: symmetric (lifetime) and directed (pack precedes
+    # disease). One read pass feeds both trackers.
     tracker = CooccurrenceTracker(vocab_size=reader.vocab_size)
+    tracker_before = CooccurrenceTracker(vocab_size=reader.vocab_size, before=True)
     for pid in tqdm(pack_pids, desc=pack_name):
         x, t, *_ = reader[int(pid)]
         masked = np.where(np.isin(x, whitelist), 0, x)
-        tracker.step(masked[None, :], t[None, :])
-    cooccur = tracker.finalize()
+        tracker.step(masked, t)
+        tracker_before.step(masked, t)
 
     pack_ids = np.array(sorted(reader.expansion_tokens))
     base_ids = np.array(list(reader.base_tokenizer.values()))
     disease_ids = np.setdiff1d(base_ids, whitelist)
-    heatmap = cooccur[np.ix_(pack_ids, disease_ids)] / len(pack_pids)
 
-    vmax = np.percentile(heatmap, 99.5)
-    plt.figure()
-    plt.imshow(
-        np.log1p(heatmap),
-        aspect="auto",
-        cmap="inferno",
-        vmin=0,
-        vmax=np.log1p(vmax),
-    )
-    plt.colorbar(label="log1p(events / pack participant)")
-    plt.xlabel("disease token index")
-    plt.ylabel(f"{pack_name} token index")
-    plt.title(
-        f"{dataset_name}/{pack_name} × disease  "
-        f"({len(pack_pids)} pack participants)"
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    panels = [("symmetric", tracker), ("pack → disease", tracker_before)]
+    for ax, (label, trk) in zip(axes, panels):
+        heatmap = trk.finalize()[np.ix_(pack_ids, disease_ids)] / len(pack_pids)
+        vmax = np.percentile(heatmap, 99.5)
+        im = ax.imshow(
+            np.log1p(heatmap),
+            aspect="auto",
+            cmap="inferno",
+            vmin=0,
+            vmax=np.log1p(vmax),
+        )
+        ax.set_xlabel("disease token index")
+        ax.set_ylabel(f"{pack_name} token index")
+        ax.set_title(label)
+        fig.colorbar(
+            im, ax=ax, label="log1p(co-occurring participants / pack participant)"
+        )
+    fig.suptitle(
+        f"{dataset_name}/{pack_name} × disease  ({len(pack_pids)} pack participants)"
     )
     out_path = OUT_DIR / f"{pack_name}_cooccur.png"
     with out_path.open("wb") as f:
-        plt.savefig(f, format="png", bbox_inches="tight")
+        fig.savefig(f, format="png", bbox_inches="tight")
     print(f"Saved {out_path}")
-    plt.close()
+    plt.close(fig)
