@@ -1,4 +1,5 @@
 import torch
+from torch.nn import functional as F
 
 
 def causal_attention_mask(
@@ -179,6 +180,235 @@ def self_terminate(
     mask = one_hot.cumsum(dim=1) > 0
 
     return estimator.masked_fill(mask, fill_val), mask
+
+def _as_multihot(idx: torch.Tensor, vocab_size: int) -> torch.Tensor:
+    """
+    Convert either token ids (B, L) or already-multihot set tensors (B, L, V)
+    into a boolean multihot tensor (B, L, V).
+    """
+    if idx.dim() == 3:
+        if idx.shape[-1] != vocab_size:
+            raise ValueError(
+                f"Expected set input last dim={vocab_size}, got {idx.shape[-1]}"
+            )
+        return idx > 0
+
+    if idx.dim() == 2:
+        idx_l = idx.to(torch.long)
+        out = torch.zeros(
+            (*idx_l.shape, vocab_size),
+            dtype=torch.bool,
+            device=idx_l.device,
+        )
+        valid = (idx_l >= 0) & (idx_l < vocab_size)
+        safe_idx = idx_l.clamp(min=0, max=vocab_size - 1)
+        out.scatter_(2, safe_idx.unsqueeze(-1), True)
+        out = out & valid.unsqueeze(-1)
+        return out
+
+    raise ValueError(f"Unsupported idx shape {tuple(idx.shape)}")
+
+
+def set_history_availability(
+    idx: torch.Tensor,
+    vocab_size: int,
+    terminate_except: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """
+    Availability mask for set-valued losses.
+
+    At source position i we predict the next set after observing idx[:, i].
+    Therefore, with self-termination enabled, items seen up to and including
+    source position i are unavailable.
+
+    terminate_except tokens remain always available, e.g. no_event.
+    """
+    seen_now = _as_multihot(idx, vocab_size=vocab_size)
+    seen_cum = seen_now.cumsum(dim=1) > 0
+
+    if terminate_except is not None and terminate_except.numel() > 0:
+        ex = terminate_except.to(device=idx.device, dtype=torch.long)
+        ex = ex[(ex >= 0) & (ex < vocab_size)]
+        if ex.numel() > 0:
+            seen_cum.index_fill_(-1, ex, False)
+
+    return ~seen_cum
+
+
+def _set_active_mask(
+    *,
+    idx: torch.Tensor,
+    vocab_size: int,
+    candidate_mask: torch.Tensor | None,
+    terminate: bool,
+    terminate_except: torch.Tensor | None,
+) -> torch.Tensor:
+    """
+    Returns boolean active mask of shape (B, L, V).
+
+    candidate_mask excludes PAD and ignored tokens globally.
+    terminate optionally excludes previously seen tokens per sequence.
+    """
+    device = idx.device
+
+    if candidate_mask is None:
+        candidate_mask = torch.ones(vocab_size, dtype=torch.bool, device=device)
+        candidate_mask[0] = False
+    else:
+        candidate_mask = candidate_mask.to(device=device, dtype=torch.bool)
+
+    active = candidate_mask.view(1, 1, vocab_size)
+
+    if terminate:
+        available = set_history_availability(
+            idx=idx,
+            vocab_size=vocab_size,
+            terminate_except=terminate_except,
+        )
+        active = active & available
+
+    return active
+
+
+def nll_dynamic_bernoulli_set(
+    *,
+    log_ground_intensity: torch.Tensor,  # (B, L), log Lambda_i
+    set_logits: torch.Tensor,            # (B, L, V), Bernoulli logits for rho_k
+    targets: torch.Tensor,               # (B, L, V), multihot next set
+    idx: torch.Tensor,                   # (B, L, V), multihot current set
+    targets_age: torch.Tensor,           # (B, L)
+    age: torch.Tensor,                   # (B, L)
+    time_unit: float = 1.0,
+    candidate_mask: torch.Tensor | None = None,
+    terminate: bool = False,
+    terminate_except: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Pure Dynamic Bernoulli set likelihood from Chang/Boyd/Smyth.
+
+    Time NLL:
+        -log Lambda_i + Lambda_i * Delta t_i
+
+    Set NLL:
+        sum_k BCEWithLogits(a_ik, y_ik),
+        where rho_ik = sigmoid(a_ik).
+
+    Important:
+        set_logits are Bernoulli logits, NOT log intensities.
+    """
+    if set_logits.shape != targets.shape:
+        raise ValueError(
+            f"set_logits and targets must have same shape; "
+            f"got {tuple(set_logits.shape)} and {tuple(targets.shape)}"
+        )
+
+    _, _, V = set_logits.shape
+
+    delta_t = (targets_age - age).clamp_min(0.0)
+    delta_t_unit = delta_t / float(time_unit)
+
+    time_nll = (
+        -log_ground_intensity
+        + torch.exp(log_ground_intensity) * delta_t_unit
+    )
+
+    active = _set_active_mask(
+        idx=idx,
+        vocab_size=V,
+        candidate_mask=candidate_mask,
+        terminate=terminate,
+        terminate_except=terminate_except,
+    )
+
+    target_f = targets.to(dtype=set_logits.dtype).clamp(0.0, 1.0)
+
+    bce = F.binary_cross_entropy_with_logits(
+        set_logits,
+        target_f,
+        reduction="none",
+    )
+
+    set_nll = (bce * active.to(dtype=bce.dtype)).sum(dim=-1)
+
+    return time_nll, set_nll
+
+
+def nll_interval_dynamic_bernoulli_set(
+    *,
+    log_ground_intensity: torch.Tensor | None,  # (B, L), optional log Lambda_i
+    set_log_intensity: torch.Tensor,            # (B, L, V), log lambda_ik
+    targets: torch.Tensor,                      # (B, L, V), multihot next observed set
+    idx: torch.Tensor,                          # (B, L, V), multihot current set
+    targets_age: torch.Tensor,                  # (B, L)
+    age: torch.Tensor,                          # (B, L)
+    time_unit: float = 1.0,
+    candidate_mask: torch.Tensor | None = None,
+    terminate: bool = False,
+    terminate_except: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Interval-censored Dynamic Bernoulli likelihood.
+
+    Latent model over interval length Delta t:
+        N_k(Delta t) ~ Poisson(lambda_k * Delta t)
+        y_k = 1[N_k(Delta t) >= 1]
+
+    Therefore:
+        rho_k(Delta t) = 1 - exp(-lambda_k * Delta t)
+
+    Set NLL:
+        - sum_{k in S} log(1 - exp(-lambda_k Delta t))
+        + sum_{k not in S} lambda_k Delta t
+
+    Important:
+        set_log_intensity are log latent item rates.
+    """
+    if set_log_intensity.shape != targets.shape:
+        raise ValueError(
+            f"set_log_intensity and targets must have same shape; "
+            f"got {tuple(set_log_intensity.shape)} and {tuple(targets.shape)}"
+        )
+
+    _, _, V = set_log_intensity.shape
+
+    delta_t = (targets_age - age).clamp_min(0.0)
+    delta_t_unit = delta_t / float(time_unit)
+
+    if log_ground_intensity is None:
+        time_nll = torch.zeros_like(delta_t_unit)
+    else:
+        time_nll = (
+            -log_ground_intensity
+            + torch.exp(log_ground_intensity) * delta_t_unit
+        )
+
+    active = _set_active_mask(
+        idx=idx,
+        vocab_size=V,
+        candidate_mask=candidate_mask,
+        terminate=terminate,
+        terminate_except=terminate_except,
+    )
+
+    target_f = targets.to(dtype=set_log_intensity.dtype).clamp(0.0, 1.0)
+
+    rate_dt = torch.exp(set_log_intensity) * delta_t_unit.unsqueeze(-1)
+
+    eps = (
+        1e-6
+        if set_log_intensity.dtype in (torch.float16, torch.bfloat16)
+        else 1e-8
+    )
+
+    # Stable log(1 - exp(-rate_dt)).
+    log_occ_prob = torch.log((-torch.expm1(-rate_dt)).clamp_min(eps))
+
+    pos_nll = -target_f * log_occ_prob
+    neg_nll = (1.0 - target_f) * rate_dt
+
+    set_nll = ((pos_nll + neg_nll) * active.to(dtype=rate_dt.dtype)).sum(dim=-1)
+
+    return time_nll, set_nll
 
 
 def nll_homogeneous_cluster_poisson(

@@ -14,8 +14,13 @@ from delphi.data.utils import (
     identity_transform,
     perturb_time,
     sort_by_time,
+    group_by_time_to_multihot,
 )
 
+SET_SEQUENCE_MODES = {
+    "dynamic_bernoulli",
+    "interval_dynamic_bernoulli",
+}
 
 class TokenTransform:
 
@@ -35,6 +40,8 @@ class TokenTransform:
         death_token: None | int = None,
         ignore_tokens: list | np.ndarray | None = None,
         epsilon: float = 0.01,
+        set_mode: Literal["none", "dynamic_bernoulli", "interval_dynamic_bernoulli"] = "none",
+        vocab_size: None | int = None,
     ):
         """
         args:
@@ -57,6 +64,32 @@ class TokenTransform:
         self.rng = np.random.default_rng(seed)
         self.seed = seed
         self.deterministic = deterministic
+
+        self.set_mode = "none" if set_mode is None else set_mode
+        if self.set_mode not in ({"none"} | SET_SEQUENCE_MODES):
+            raise ValueError(
+                f"Unknown set_mode={self.set_mode!r}. "
+                f"Expected one of {sorted({'none'} | SET_SEQUENCE_MODES)}"
+            )
+
+        self.return_sets = self.set_mode in SET_SEQUENCE_MODES
+        self.vocab_size = vocab_size
+
+        if self.return_sets:
+            if vocab_size is None:
+                raise ValueError(
+                    "TokenTransform set modes require vocab_size so token ids can "
+                    "be grouped into multi-hot set vectors."
+                )
+            if break_clusters:
+                raise ValueError(
+                    "Set-valued Dynamic Bernoulli modes require break_clusters=False. "
+                    "Tied timestamps are grouped into one multi-hot set event instead."
+                )
+            if dx_token is not None:
+                raise ValueError(
+                    "Set-valued Dynamic Bernoulli modes use no dx_token."
+                )
 
         self.no_event_interval = no_event_interval
         if no_event_interval is not None:
@@ -150,6 +183,22 @@ class TokenTransform:
         x_pid, t_pid = self.append_no_event(x_pid, t_pid, rng=rng)
         x_pid, t_pid = self.perturb_time(x_pid, t_pid, rng=rng)
         t_pid, x_pid = sort_by_time(t_pid, x_pid, stable=self.deterministic)
+
+        if self.return_sets:
+            # Group all tokens with exactly identical timestamps into one set event.
+            # This is the set-valued replacement for dissolve_clusters + dx_token.
+            x_pid, t_pid = group_by_time_to_multihot(
+                x=x_pid,
+                t=t_pid,
+                vocab_size=int(self.vocab_size),
+            )
+
+            # In set modes, block_size counts set-events, not individual tokens.
+            x_pid, t_pid = self.crop_block_size(x_pid, t_pid, rng=rng)
+
+            return x_pid, t_pid
+
+        # Old token-level path.
         x_pid, t_pid = self.crop_block_size(x_pid, t_pid, rng=rng)
         x_pid, t_pid = self.break_clusters(x_pid, t_pid, rng=rng)
 
