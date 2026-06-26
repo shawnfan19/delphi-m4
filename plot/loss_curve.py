@@ -89,6 +89,12 @@ def main():
         help="run paths relative to --ckpt-dir, e.g. wandb/offline-run-<ts>-<id>",
     )
     p.add_argument(
+        "--labels",
+        nargs="+",
+        default=[],
+        help="legend label per --runs, in order (default: the run dir name)",
+    )
+    p.add_argument(
         "--ckpt-dir",
         default=os.environ.get("DELPHI_CKPT_DIR", ""),
         help="root the --runs are relative to (default: $DELPHI_CKPT_DIR)",
@@ -107,6 +113,10 @@ def main():
     if not args.ckpt_dir:
         print("set $DELPHI_CKPT_DIR or pass --ckpt-dir")
         return
+    if args.labels and len(args.labels) != len(args.runs):
+        print(f"--labels ({len(args.labels)}) must match --runs ({len(args.runs)})")
+        return
+    labels = args.labels or [os.path.basename(rp.rstrip("/")) for rp in args.runs]
 
     import matplotlib
 
@@ -115,16 +125,16 @@ def main():
 
     root = AnyPath(args.ckpt_dir)
     runs = []
-    for rp in args.runs:
+    for rp, label in zip(args.runs, labels):
         log = root / rp / "files" / "output.log"
         if not log.exists():
-            print(f"skip {rp}: no output.log at {log}")
+            print(f"skip {label}: no output.log at {log}")
             continue
         train, val = parse_log(log.read_text())
         if not train and not val:
-            print(f"skip {rp}: no loss lines in output.log")
+            print(f"skip {label}: no loss lines in output.log")
             continue
-        runs.append((os.path.basename(rp.rstrip("/")), train, val))
+        runs.append((label, train, val))
     if runs:
         plot(runs, args.out, args.title)
     else:
