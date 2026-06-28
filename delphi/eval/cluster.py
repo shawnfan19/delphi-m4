@@ -1,3 +1,5 @@
+from collections import defaultdict
+
 import numpy as np
 from scipy import sparse
 
@@ -172,3 +174,37 @@ class CooccurrenceTracker(_SparsePairTracker):
     def finalize(self, as_dense=True):
         self._flush()
         return super().finalize(as_dense)
+
+
+class MissingDxTracker:
+    """Per-participant "pack token present but none of its managed diseases".
+
+    Initialized with ``pack_to_dx``: a mapping from a pack-token id (e.g. a drug
+    or surgery token) to the set of disease-token ids it treats. ``step`` takes
+    one participant's 1-D ``tokens`` (``timesteps`` is accepted for signature
+    parity with the co-occurrence trackers but unused); for every mapped pack
+    token the participant carries it increments ``presence``, and when NONE of
+    that token's managed diseases appear anywhere in the sequence it also
+    increments ``gap`` — a Case B / gap-filling event (the diagnosis was never
+    coded, so the pack token is the only signal).
+
+    ``finalize`` returns ``{pack_token_id: (n_present, n_gap)}`` over every key in
+    ``pack_to_dx``. ``n_gap / n_present`` is an UPPER bound on true under-coding
+    (an incomplete dx set inflates it), so it is most trustworthy for tightly
+    mapped (near-1:1) tokens.
+    """
+
+    def __init__(self, pack_to_dx: dict):
+        self.pack_to_dx = {int(p): {int(d) for d in dx} for p, dx in pack_to_dx.items()}
+        self.presence = defaultdict(int)
+        self.gap = defaultdict(int)
+
+    def step(self, tokens, timesteps=None):
+        present = {int(v) for v in np.unique(tokens)}
+        for p in present.intersection(self.pack_to_dx):
+            self.presence[p] += 1
+            if present.isdisjoint(self.pack_to_dx[p]):
+                self.gap[p] += 1
+
+    def finalize(self):
+        return {p: (self.presence[p], self.gap[p]) for p in self.pack_to_dx}

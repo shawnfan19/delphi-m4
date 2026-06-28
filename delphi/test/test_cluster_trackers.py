@@ -12,6 +12,7 @@ import numpy as np
 from delphi.eval.cluster import (
     ClusterStatsTracker,
     CooccurrenceTracker,
+    MissingDxTracker,
     TiedEventTracker,
     _flatten_events,
 )
@@ -84,6 +85,16 @@ def test_cooccurrence_before():
     assert t2.finalize().sum() == 0
 
 
+def test_missing_dx_tracker():
+    # drug token 5 treats diseases {7, 8}; one participant per step.
+    t = MissingDxTracker({5: {7, 8}})
+    t.step(np.array([5, 7]))  # has dx 7 -> not a gap
+    t.step(np.array([5, 1, 2]))  # drug 5, none of {7, 8} -> gap
+    t.step(np.array([5, 8, 9]))  # has dx 8 -> not a gap
+    t.step(np.array([1, 2, 3]))  # no drug 5 -> not counted
+    assert t.finalize()[5] == (3, 1)  # 3 holders of drug 5, 1 with no managed dx
+
+
 if __name__ == "__main__":
     test_flatten_events_skips_all_padding()
     test_flatten_events_drops_padding()
@@ -91,4 +102,5 @@ if __name__ == "__main__":
     test_tied_event_cooccurrence()
     test_cooccurrence_symmetric()
     test_cooccurrence_before()
+    test_missing_dx_tracker()
     print("ok")

@@ -18,7 +18,7 @@ from tqdm import tqdm
 
 from delphi.data.auto import detect_dataset, multimodal_reader_cls
 from delphi.env import DELPHI_RESULTS_DIR
-from delphi.eval.cluster import CooccurrenceTracker
+from delphi.eval.cluster import CooccurrenceTracker, MissingDxTracker
 from delphi.experiment import CliConfig
 from delphi.plot import label_diseases
 
@@ -85,15 +85,29 @@ for pack_name in pack_names:
         [reader.tokenizer[k] for k in whitelist_keys if k in reader.tokenizer]
     )
 
-    # Co-occurrence both ways: symmetric (lifetime) and directed (pack precedes
-    # disease). One read pass feeds both trackers.
+    # Treatment-indication map for this pack (if any): pack-token id -> set of
+    # disease-token ids it manages, fed to the Case B (missing-dx) tracker.
+    ind_path = indication_dir / f"{pack_name}.yaml"
+    indications = yaml.safe_load(ind_path.open()) if ind_path.exists() else None
+    pack_to_dx = {
+        reader.tokenizer[pt]: {
+            reader.tokenizer[d] for d in entry["diseases"] if d in reader.tokenizer
+        }
+        for pt, entry in (indications or {}).items()
+        if pt in reader.tokenizer
+    }
+
+    # One read pass feeds all three trackers: symmetric + directed co-occurrence
+    # (Case A lead-time) and the missing-dx counter (Case B gap-filling).
     tracker = CooccurrenceTracker(vocab_size=reader.vocab_size)
     tracker_before = CooccurrenceTracker(vocab_size=reader.vocab_size, before=True)
+    missing_dx = MissingDxTracker(pack_to_dx)
     for pid in tqdm(pack_pids, desc=pack_name):
         x, t, *_ = reader[int(pid)]
         masked = np.where(np.isin(x, whitelist), 0, x)
         tracker.step(masked, t)
         tracker_before.step(masked, t)
+        missing_dx.step(x)
 
     pack_ids = np.array(sorted(reader.expansion_tokens))
     base_ids = np.array(list(reader.base_tokenizer.values()))
@@ -132,8 +146,7 @@ for pack_name in pack_names:
     # first occurrence precedes d's. Treatment pairs (from the indication file)
     # are highlighted against all co-occurring pairs (gray); if the drug/surgery
     # leads its diagnosis, the colored points sit above the gray cloud.
-    ind_path = indication_dir / f"{pack_name}.yaml"
-    if not ind_path.exists():
+    if not indications:
         continue
     sym = tracker.finalize()[np.ix_(pack_ids, disease_ids)].astype(float)
     bef = tracker_before.finalize()[np.ix_(pack_ids, disease_ids)].astype(float)
@@ -142,8 +155,6 @@ for pack_name in pack_names:
 
     row_of = {int(t): i for i, t in enumerate(pack_ids)}
     col_of = {int(t): j for j, t in enumerate(disease_ids)}
-    with ind_path.open() as f:
-        indications = yaml.safe_load(f)
 
     mapped = np.zeros(sym.shape, dtype=bool)
     rows = []
@@ -225,4 +236,60 @@ for pack_name in pack_names:
             ),
             f,
         )
+    print(f"Saved {out_json}")
+
+    # --- Case B (gap-filling): pack token present but none of its managed dx --
+    # gap_frac = P(a holder of the token has NONE of its managed diseases coded).
+    # High gap (for a tightly-mapped token) => the diagnosis was never recorded,
+    # so the token is the only signal. It is an UPPER bound on true under-coding
+    # (an incomplete dx set inflates it); colored by mapping breadth as a cue.
+    counts = missing_dx.finalize()
+    rows = [
+        (reader.detokenizer[p], n, g / n, len(pack_to_dx[p]))
+        for p, (n, g) in counts.items()
+        if n >= m
+    ]
+    gdf = pd.DataFrame(rows, columns=["pack", "n_holders", "gap_frac", "n_diseases"])
+    print(
+        f"{pack_name}: {len(gdf)} tokens with >= {m} holders; "
+        f"median gap_frac={gdf['gap_frac'].median():.2f}"
+    )
+
+    fig, ax = plt.subplots(figsize=(9, 6))
+    sc = ax.scatter(
+        gdf["n_holders"],
+        gdf["gap_frac"],
+        c=gdf["n_diseases"],
+        cmap="viridis_r",
+        s=28,
+        edgecolors="black",
+        linewidths=0.3,
+    )
+    fig.colorbar(sc, ax=ax, label="# diseases mapped (breadth; 1 = tightest)")
+    ax.set_xscale("log")
+    ax.set_xlabel("participants with the pack token (log)")
+    ax.set_ylabel("Case B gap = P(token present & none of its managed diseases)")
+    ax.set_ylim(-0.02, 1.02)
+    ax.set_title(
+        f"{dataset_name}/{pack_name}: Case B — token present but no managed "
+        f"disease coded\n({len(gdf)} tokens, >= {m} holders; gap is an upper "
+        f"bound on under-coding)"
+    )
+    for _, r in gdf.nlargest(15, "n_holders").iterrows():
+        ax.annotate(
+            r["pack"].split("_", 1)[-1][:16],
+            (r["n_holders"], r["gap_frac"]),
+            fontsize=6,
+            xytext=(3, 3),
+            textcoords="offset points",
+        )
+    out_path = OUT_DIR / f"{pack_name}_gap.png"
+    with out_path.open("wb") as f:
+        fig.savefig(f, format="png", bbox_inches="tight")
+    print(f"Saved {out_path}")
+    plt.close(fig)
+
+    out_json = OUT_DIR / f"{pack_name}_gap.json"
+    with out_json.open("w") as f:
+        json.dump(gdf.to_dict("records"), f)
     print(f"Saved {out_json}")
