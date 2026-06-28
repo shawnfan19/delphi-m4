@@ -232,13 +232,13 @@ def finetune(cfg: FinetuneConfig):
 
     # Train
     backend = distributed.make_backend_from_args(cfg)
-    cfg.wandb_project = cfg.ckpt_dir
+    cfg.logger_project = cfg.ckpt_dir
 
     logger = Logger(
         config=asdict(cfg),
         backend=backend,
         log_backend=cfg.log_backend,
-        wandb_project=cfg.wandb_project,
+        logger_project=cfg.logger_project,
         tensorboard_dir=cfg.tensorboard_dir,
         run_name=cfg.run_name,
         summary={"model_params": n_total},

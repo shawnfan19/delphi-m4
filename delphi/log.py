@@ -198,7 +198,7 @@ class Logger:
         config: dict,
         backend: distributed.backend.DistributedBackend,
         log_backend: str = "wandb",
-        wandb_project: str = "delphi",
+        logger_project: str = "delphi",
         tensorboard_dir: None | str = None,
         run_name: None | str = None,
         summary: None | dict = None,
@@ -221,17 +221,17 @@ class Logger:
 
             if log_backend == "wandb":
                 self.log_backend = WandbBackend(
-                    wandb_project, run_name, config, summary
+                    logger_project, run_name, config, summary
                 )
             elif log_backend == "tensorboard":
                 if tensorboard_dir is None:
                     tensorboard_dir = os.path.join("tb", run_name)
                 self.log_backend = TensorBoardBackend(tensorboard_dir)
             elif log_backend == "trackio":
-                # wandb_project doubles as the project name (the train apps set it
-                # to ckpt_dir); trackio groups runs under it in the local db.
+                # logger_project is the project name (the train apps set it to
+                # ckpt_dir); trackio groups runs under it in the local db.
                 self.log_backend = TrackioBackend(
-                    wandb_project, run_name, config, summary
+                    logger_project, run_name, config, summary
                 )
             # log_backend == "none": no backend, stdout config dump only
 

@@ -217,7 +217,7 @@ class TrainBaseConfig(CliConfig):
     # default from the DELPHI_LOG_BACKEND env (workbench .env sets trackio for AoU;
     # unset -> wandb). A `log_backend=` CLI/file arg still overrides it.
     log_backend: str = DELPHI_LOG_BACKEND
-    wandb_project: str = "delphi"
+    logger_project: str = "delphi"
     tensorboard_dir: None | str = None  # local path; defaults to ./tb/<run_name>
     run_name: None | str = None
     ckpt_interval: None | int = None
