@@ -9,6 +9,7 @@ statsmodels
 patsy
 wandb
 tensorboard
+trackio[gpu]==0.28.0  # offline logging backend; [gpu] extra pulls nvidia-ml-py + psutil for auto GPU/CPU metrics. Pinned: trackio's API churns.
 omegaconf
 pre-commit  # CLI tool — not imported, drives .pre-commit-config.yaml
 plotly

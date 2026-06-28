@@ -32,6 +32,11 @@ def _format_for_display(obj):
     return obj
 
 
+# The logging backends Logger can select, via its `log_backend` arg (fed by the
+# DELPHI_LOG_BACKEND env / `log_backend=` config). "none" disables logging.
+LOG_BACKENDS = ("wandb", "tensorboard", "trackio", "none")
+
+
 class WandbBackend:
     """Sends scalar dicts to Weights & Biases (needs internet)."""
 
@@ -111,12 +116,78 @@ class TensorBoardBackend:
         self.writer.close()
 
 
-class Logger:
-    """Receives metric dicts and sends them to ONE backend (wandb OR
-    tensorboard) + stdout.
+class TrackioBackend:
+    """Logs scalar dicts to a local trackio SQLite db (works offline) and, when
+    nvidia-ml-py / psutil are present, auto-collects GPU + CPU/RAM metrics on a
+    background thread -- the thing TensorBoard can't do for you.
 
-    Exactly one backend at a time -- the shared master-process gating and
-    metric construction live here so the backends stay tiny. TensorBoard needs
+    Stays purely local: no space_id / server_url, so trackio.init() writes to
+    TRACKIO_DIR/<project>.db with no network call and starts no server (the
+    Gradio dashboard runs only via `trackio show`, e.g. on a laptop after
+    pulling the db). flush_to_gcs mirrors that single db file under gs:// so a
+    killed offline job stays recoverable.
+    """
+
+    def __init__(self, project, run_name, config, summary):
+        import trackio
+        from trackio.sqlite_storage import SQLiteStorage
+
+        self.trackio = trackio
+        # Force local-only logging. trackio.init() reads TRACKIO_SPACE_ID /
+        # TRACKIO_SERVER_URL / TRACKIO_BUCKET_ID from the env and flips to remote
+        # mode (HF/RemoteClient network calls that hang behind the VPC-SC
+        # perimeter) if any are set -- and `None or os.environ.get(...)` picks
+        # them up even though we pass no space_id. Drop them so the offline VM
+        # never reaches a remote code path regardless of inherited environment.
+        for var in ("TRACKIO_SPACE_ID", "TRACKIO_SERVER_URL", "TRACKIO_BUCKET_ID"):
+            os.environ.pop(var, None)
+        # embed=False: never embed/launch a dashboard (no-op off a notebook, but
+        # explicit on the headless VM). summary is folded into config -- trackio
+        # has no wandb-style run summary, and these (e.g. model_params) are
+        # constants that belong in the config panel anyway.
+        trackio.init(
+            project=project,
+            name=run_name,
+            config={**config, **(summary or {})},
+            embed=False,
+        )
+        # same `project` string trackio.init used, so trackio's own filename
+        # sanitization makes this path agree with where it actually wrote.
+        self.db_path = SQLiteStorage.get_project_db_path(project)
+
+    def log(self, metrics, step, commit):
+        # trackio.log has no `commit` (a wandb batching concept); each call writes
+        # a row at `step`. Drop a redundant in-dict "step" -- it's already carried
+        # by step=, and trackio reserves the key (it would rename it to "__step"
+        # and warn on every call). Distinct grad/param/output keys keep their own
+        # columns at the same step -- no clobber.
+        metrics = {k: v for k, v in metrics.items() if k != "step"}
+        self.trackio.log(metrics, step=step)
+
+    def flush_to_gcs(self, base_dir):
+        # One SQLite db per project at DELPHI_CKPT_DIR/trackio/<project>.db
+        # (root-level like wandb; trackio groups runs by project/name internally).
+        # Pull it into a laptop's TRACKIO_DIR and `trackio show --project <name>`.
+        # No-op for a local base_dir -- the db persists on disk.
+        if not isinstance(base_dir, CloudPath):
+            return
+        if self.db_path.exists():
+            # force overwrite: re-uploaded each flush (see WandbBackend.flush_to_gcs)
+            (AnyPath(DELPHI_CKPT_DIR) / "trackio" / self.db_path.name).upload_from(
+                str(self.db_path), force_overwrite_to_cloud=True
+            )
+
+    def finish(self):
+        self.trackio.finish()
+
+
+class Logger:
+    """Receives metric dicts and sends them to ONE backend (wandb, tensorboard,
+    or trackio) + stdout.
+
+    Exactly one backend, chosen by `log_backend` -- the shared master-process
+    gating and metric construction live here so the backends stay tiny.
+    TensorBoard needs
     an explicit global_step, so we track the latest "step" seen (logged before
     the commit=False grad/param/output stats in BaseTrainer.train, so it is
     current when those fire); wandb gets the step implicitly via step_metric.
@@ -126,47 +197,56 @@ class Logger:
         self,
         config: dict,
         backend: distributed.backend.DistributedBackend,
-        wandb_log: bool = True,
+        log_backend: str = "wandb",
         wandb_project: str = "delphi",
-        tensorboard_log: bool = False,
         tensorboard_dir: None | str = None,
         run_name: None | str = None,
         summary: None | dict = None,
     ):
-        if wandb_log and tensorboard_log:
+        if log_backend not in LOG_BACKENDS:
             raise ValueError(
-                "enable only one logging backend (wandb_log or tensorboard_log)"
+                f"log_backend must be one of {list(LOG_BACKENDS)}, got {log_backend!r}"
             )
         if run_name is None:
             run_name = datetime.now().strftime("%Y-%m-%d-%H%M%S")
         self.run_name = run_name
         self.backend = backend
         self._step = 0
-        self._impl = None  # set on the master process only
+        # the active backend instance (or None for "none" / non-master)
+        self.log_backend = None
 
         if backend.is_master_process():
             print("=== config ===")
             pprint(_format_for_display(config), indent=2, width=60)
 
-            if wandb_log:
-                self._impl = WandbBackend(wandb_project, run_name, config, summary)
-            elif tensorboard_log:
+            if log_backend == "wandb":
+                self.log_backend = WandbBackend(
+                    wandb_project, run_name, config, summary
+                )
+            elif log_backend == "tensorboard":
                 if tensorboard_dir is None:
                     tensorboard_dir = os.path.join("tb", run_name)
-                self._impl = TensorBoardBackend(tensorboard_dir)
+                self.log_backend = TensorBoardBackend(tensorboard_dir)
+            elif log_backend == "trackio":
+                # wandb_project doubles as the project name (the train apps set it
+                # to ckpt_dir); trackio groups runs under it in the local db.
+                self.log_backend = TrackioBackend(
+                    wandb_project, run_name, config, summary
+                )
+            # log_backend == "none": no backend, stdout config dump only
 
     def _emit(self, metrics: dict, commit: bool = True):
-        if self._impl is None:  # non-master, or no backend enabled
+        if self.log_backend is None:  # non-master, or no backend enabled
             return
         if "step" in metrics:
             self._step = metrics["step"]
-        self._impl.log(metrics, step=self._step, commit=commit)
+        self.log_backend.log(metrics, step=self._step, commit=commit)
 
     def log(self, metrics: dict):
         self._emit(metrics, commit=True)
 
     def log_grad_norm(self, model: torch.nn.Module):
-        if self._impl is None:
+        if self.log_backend is None:
             return
         for name, param in model.named_parameters():
             if param.grad is not None:
@@ -175,7 +255,7 @@ class Logger:
                 )
 
     def log_param_stats(self, model: torch.nn.Module):
-        if self._impl is None:
+        if self.log_backend is None:
             return
         for name, param in model.named_parameters():
             tensor = param.detach().float()
@@ -190,7 +270,7 @@ class Logger:
             )
 
     def log_output(self, output: dict[str, torch.Tensor]):
-        if self._impl is None:
+        if self.log_backend is None:
             return
         for name, tensor in output.items():
             if isinstance(tensor, dict):
@@ -213,12 +293,12 @@ class Logger:
         mid-run (called at the checkpoint cadence). The backend picks its own
         subdir (tb/ or wandb/). No-op on non-master / when no backend is active.
         """
-        if self._impl is not None:
-            self._impl.flush_to_gcs(base_dir)
+        if self.log_backend is not None:
+            self.log_backend.flush_to_gcs(base_dir)
 
     def finish(self):
-        if self._impl is not None:
-            self._impl.finish()
+        if self.log_backend is not None:
+            self.log_backend.finish()
 
     def print(self, msg: str):
         if self.backend.is_master_process():

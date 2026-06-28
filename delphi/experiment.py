@@ -20,8 +20,8 @@ from omegaconf import OmegaConf
 from typing_extensions import Self
 
 from delphi import distributed
-from delphi.env import DELPHI_CKPT_DIR
-from delphi.log import Checkpointer, Logger, _format_for_display
+from delphi.env import DELPHI_CKPT_DIR, DELPHI_LOG_BACKEND
+from delphi.log import LOG_BACKENDS, Checkpointer, Logger, _format_for_display
 from delphi.model.multimodal import DelphiM4, DelphiM4Config
 from delphi.multimodal import parse_panel
 from delphi.optim import (
@@ -214,13 +214,23 @@ class TrainBaseConfig(CliConfig):
     decay_iters: float | int = 0.1  # how many steps to decay for (wsd only)
     min_lr_frac: float = 0.1
 
-    wandb_log: bool = True
+    # default from the DELPHI_LOG_BACKEND env (workbench .env sets trackio for AoU;
+    # unset -> wandb). A `log_backend=` CLI/file arg still overrides it.
+    log_backend: str = DELPHI_LOG_BACKEND
     wandb_project: str = "delphi"
-    tensorboard_log: bool = False
     tensorboard_dir: None | str = None  # local path; defaults to ./tb/<run_name>
     run_name: None | str = None
     ckpt_interval: None | int = None
     log_interval: int = 250
+
+    def __post_init__(self):
+        # fail fast at config load (before the reader/model build) on a bad value
+        # from any source -- the env var, a config file, or the CLI.
+        if self.log_backend not in LOG_BACKENDS:
+            raise ValueError(
+                f"log_backend must be one of {list(LOG_BACKENDS)} (set via "
+                f"DELPHI_LOG_BACKEND or log_backend=), got {self.log_backend!r}"
+            )
 
 
 class BaseTrainer:

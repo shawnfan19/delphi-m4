@@ -237,9 +237,8 @@ def finetune(cfg: FinetuneConfig):
     logger = Logger(
         config=asdict(cfg),
         backend=backend,
-        wandb_log=cfg.wandb_log,
+        log_backend=cfg.log_backend,
         wandb_project=cfg.wandb_project,
-        tensorboard_log=cfg.tensorboard_log,
         tensorboard_dir=cfg.tensorboard_dir,
         run_name=cfg.run_name,
         summary={"model_params": n_total},

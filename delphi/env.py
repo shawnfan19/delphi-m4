@@ -32,6 +32,9 @@ def load_env_file() -> None:
 
 load_env_file()
 DELPHI_DATASET = os.environ.get("DELPHI_DATASET", "")
+# default logging backend (Logger / TrainBaseConfig.log_backend); validated there.
+# Set in the workbench .env so AoU runs default to trackio; unset -> wandb.
+DELPHI_LOG_BACKEND = os.environ.get("DELPHI_LOG_BACKEND", "wandb")
 
 
 dx_id = os.getenv("DX_PROJECT_CONTEXT_ID")

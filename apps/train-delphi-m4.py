@@ -44,6 +44,7 @@ class TrainConfig(TrainBaseConfig):
     tiebreak: bool = False
 
     def __post_init__(self):
+        super().__post_init__()  # validate log_backend
         if self.biomarkers is not None:
             self.biomarkers = flexi_list(self.biomarkers)
         if self.expansion_packs is not None:
@@ -202,9 +203,8 @@ def train(cfg: TrainConfig):
     logger = Logger(
         config=asdict(cfg),
         backend=backend,
-        wandb_log=cfg.wandb_log,
+        log_backend=cfg.log_backend,
         wandb_project=cfg.wandb_project,
-        tensorboard_log=cfg.tensorboard_log,
         tensorboard_dir=cfg.tensorboard_dir,
         run_name=cfg.run_name,
         summary={"model_params": n_params},
