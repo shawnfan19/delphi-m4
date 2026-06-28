@@ -1,0 +1,1442 @@
+# Treatment indications for the UKB `prescriptions` expansion pack (ATC-4 tokens).
+# token -> diseases (ICD-3 disease tokens it treats) / icd3 codes / rationale.
+# Unambiguous, possibly multi-disease; built by LLM map + adversarial prune.
+A01AA_caries_prophylactic_agents:
+  diseases:
+  - k02_(dental_caries)
+  icd3:
+  - K02
+  rationale: Topical fluoride for dental caries prophylaxis
+A02BA_h2_receptor_antagonists:
+  diseases:
+  - k21_(gastro-oesophageal_reflux_disease)
+  - k25_(gastric_ulcer)
+  - k26_(duodenal_ulcer)
+  icd3:
+  - K21
+  - K25
+  - K26
+  rationale: Acid suppression for reflux and peptic ulcer disease
+A02BB_prostaglandins:
+  diseases:
+  - k25_(gastric_ulcer)
+  - k26_(duodenal_ulcer)
+  icd3:
+  - K25
+  - K26
+  rationale: Misoprostol for gastric/duodenal ulcer prevention
+A05AA_bile_acids_and_derivatives:
+  diseases:
+  - k74_(fibrosis_and_cirrhosis_of_liver)
+  - k80_(cholelithiasis)
+  icd3:
+  - K74
+  - K80
+  rationale: Ursodeoxycholic acid for gallstones and primary biliary cholangitis
+A06AH_peripheral_opioid_receptor_antagonists:
+  diseases:
+  - k59_(other_functional_intestinal_disorders)
+  icd3:
+  - K59
+  rationale: Specific for opioid-induced constipation (functional intestinal disorder).
+A07EA_corticosteroids_acting_locally:
+  diseases:
+  - k50_(crohn's_disease_[regional_enteritis])
+  - k51_(ulcerative_colitis)
+  icd3:
+  - K50
+  - K51
+  rationale: Local corticosteroids (budesonide/beclomethasone) established for Crohn
+    disease and ulcerative colitis.
+A07EC_aminosalicylic_acid_and_similar_agents:
+  diseases:
+  - k50_(crohn's_disease_[regional_enteritis])
+  - k51_(ulcerative_colitis)
+  icd3:
+  - K50
+  - K51
+  rationale: 5-ASA first-line for ulcerative colitis, also used in Crohn disease.
+A08AA_centrally_acting_antiobesity_products:
+  diseases:
+  - e66_(obesity)
+  icd3:
+  - E66
+  rationale: Specifically indicated for obesity.
+A08AB_peripherally_acting_antiobesity_products:
+  diseases:
+  - e66_(obesity)
+  icd3:
+  - E66
+  rationale: Orlistat specifically indicated for obesity.
+A08AX_other_antiobesity_drugs:
+  diseases:
+  - e66_(obesity)
+  icd3:
+  - E66
+  rationale: Other antiobesity drugs specifically treat obesity.
+A09AA_enzyme_preparations:
+  diseases:
+  - k86_(other_diseases_of_pancreas)
+  icd3:
+  - K86
+  rationale: Pancreatic enzyme replacement for exocrine insufficiency/chronic pancreatitis.
+A10AB_insulins_and_analogues_for_injection_fast_acting:
+  diseases:
+  - e10_(insulin-dependent_diabetes_mellitus)
+  - e11_(non-insulin-dependent_diabetes_mellitus)
+  icd3:
+  - E10
+  - E11
+  rationale: Insulins treat type 1 and type 2 diabetes.
+A10AC_insulins_and_analogues_for_injection_intermediate_acting:
+  diseases:
+  - e10_(insulin-dependent_diabetes_mellitus)
+  - e11_(non-insulin-dependent_diabetes_mellitus)
+  icd3:
+  - E10
+  - E11
+  rationale: Insulins treat type 1 and type 2 diabetes.
+A10AE_insulins_and_analogues_for_injection_long_acting:
+  diseases:
+  - e10_(insulin-dependent_diabetes_mellitus)
+  - e11_(non-insulin-dependent_diabetes_mellitus)
+  icd3:
+  - E10
+  - E11
+  rationale: Insulins treat type 1 and type 2 diabetes.
+A10BA_biguanides:
+  diseases:
+  - e11_(non-insulin-dependent_diabetes_mellitus)
+  icd3:
+  - E11
+  rationale: Metformin is first-line for type 2 diabetes.
+A10BB_sulfonylureas:
+  diseases:
+  - e11_(non-insulin-dependent_diabetes_mellitus)
+  icd3:
+  - E11
+  rationale: Oral hypoglycemics specific to type 2 diabetes.
+A10BD_combinations_of_oral_blood_glucose_lowering_drugs:
+  diseases:
+  - e11_(non-insulin-dependent_diabetes_mellitus)
+  icd3:
+  - E11
+  rationale: Oral combination antidiabetics specific to type 2 diabetes.
+A10BF_alpha_glucosidase_inhibitors:
+  diseases:
+  - e11_(non-insulin-dependent_diabetes_mellitus)
+  icd3:
+  - E11
+  rationale: Acarbose treats type 2 diabetes.
+A10BH_dipeptidyl_peptidase_4_dpp_4_inhibitors:
+  diseases:
+  - e11_(non-insulin-dependent_diabetes_mellitus)
+  icd3:
+  - E11
+  rationale: DPP-4 inhibitors treat type 2 diabetes.
+A10BJ_glucagon_like_peptide_1_glp_1_analogues:
+  diseases:
+  - e11_(non-insulin-dependent_diabetes_mellitus)
+  - e66_(obesity)
+  icd3:
+  - E11
+  - E66
+  rationale: GLP-1 analogues treat type 2 diabetes and obesity; dropped heart failure
+    (not an established GLP-1 indication, that is SGLT2).
+A10BX_other_blood_glucose_lowering_drugs_excl_insulins:
+  diseases:
+  - e11_(non-insulin-dependent_diabetes_mellitus)
+  - i50_(heart_failure)
+  icd3:
+  - E11
+  - I50
+  rationale: Class is dominated by SGLT2 inhibitors, established for type 2 diabetes
+    and heart failure.
+B01AA_vitamin_k_antagonists:
+  diseases:
+  - i26_(pulmonary_embolism)
+  - i48_(atrial_fibrillation_and_flutter)
+  - i80_(phlebitis_and_thrombophlebitis)
+  icd3:
+  - I26
+  - I48
+  - I80
+  rationale: 'Warfarin: AF, pulmonary embolism, venous thrombosis anticoagulation'
+B01AB_heparin_group:
+  diseases:
+  - i26_(pulmonary_embolism)
+  - i80_(phlebitis_and_thrombophlebitis)
+  icd3:
+  - I26
+  - I80
+  rationale: Heparins treat/prevent pulmonary embolism and venous thrombosis
+B01AC_platelet_aggregation_inhibitors_excl_heparin:
+  diseases:
+  - i20_(angina_pectoris)
+  - i21_(acute_myocardial_infarction)
+  - i25_(chronic_ischaemic_heart_disease)
+  - i63_(cerebral_infarction)
+  icd3:
+  - I20
+  - I21
+  - I25
+  - I63
+  rationale: Antiplatelets for coronary syndromes, MI, IHD, ischemic stroke
+B01AD_enzymes:
+  diseases:
+  - i21_(acute_myocardial_infarction)
+  - i26_(pulmonary_embolism)
+  - i63_(cerebral_infarction)
+  icd3:
+  - I21
+  - I26
+  - I63
+  rationale: Thrombolytics for acute MI, pulmonary embolism, ischemic stroke
+B01AE_direct_thrombin_inhibitors:
+  diseases:
+  - i26_(pulmonary_embolism)
+  - i48_(atrial_fibrillation_and_flutter)
+  - i80_(phlebitis_and_thrombophlebitis)
+  icd3:
+  - I26
+  - I48
+  - I80
+  rationale: 'Dabigatran: AF, pulmonary embolism, venous thrombosis'
+B01AF_direct_factor_xa_inhibitors:
+  diseases:
+  - i26_(pulmonary_embolism)
+  - i48_(atrial_fibrillation_and_flutter)
+  - i80_(phlebitis_and_thrombophlebitis)
+  icd3:
+  - I26
+  - I48
+  - I80
+  rationale: 'DOACs: AF, pulmonary embolism, venous thrombosis'
+B03AA_iron_bivalent_oral_preparations:
+  diseases:
+  - d50_(iron_deficiency_anaemia)
+  icd3:
+  - D50
+  rationale: Oral iron treats iron-deficiency anemia
+B03AB_iron_trivalent_oral_preparations:
+  diseases:
+  - d50_(iron_deficiency_anaemia)
+  icd3:
+  - D50
+  rationale: Oral iron treats iron-deficiency anemia
+B03AC_iron_parenteral_preparations:
+  diseases:
+  - d50_(iron_deficiency_anaemia)
+  icd3:
+  - D50
+  rationale: Parenteral iron treats iron-deficiency anemia
+B03BA_vitamin_b12_cyanocobalamin_and_analogues:
+  diseases:
+  - d51_(vitamin_b12_deficiency_anaemia)
+  icd3:
+  - D51
+  rationale: B12 treats vitamin B12 deficiency anemia
+B03BB_folic_acid_and_derivatives:
+  diseases:
+  - d52_(folate_deficiency_anaemia)
+  icd3:
+  - D52
+  rationale: Folate treats folate-deficiency anemia
+B03XA_other_antianemic_preparations:
+  diseases:
+  - d63_(anaemia_in_chronic_diseases_classified_elsewhere)
+  icd3:
+  - D63
+  rationale: Erythropoietins treat anemia of chronic/renal disease
+B06AC_drugs_used_in_hereditary_angioedema:
+  diseases:
+  - d84_(other_immunodeficiencies)
+  icd3:
+  - D84
+  rationale: C1-inhibitor/specific agents for hereditary angioedema
+C01AA_digitalis_glycosides:
+  diseases:
+  - i48_(atrial_fibrillation_and_flutter)
+  - i50_(heart_failure)
+  icd3:
+  - I48
+  - I50
+  rationale: Digoxin for heart failure and atrial fibrillation rate control
+C01BA_antiarrhythmics_class_ia:
+  diseases:
+  - i47_(paroxysmal_tachycardia)
+  - i48_(atrial_fibrillation_and_flutter)
+  - i49_(other_cardiac_arrhythmias)
+  icd3:
+  - I47
+  - I48
+  - I49
+  rationale: Class Ia agents treat cardiac arrhythmias
+C01BB_antiarrhythmics_class_ib:
+  diseases:
+  - i47_(paroxysmal_tachycardia)
+  - i49_(other_cardiac_arrhythmias)
+  icd3:
+  - I47
+  - I49
+  rationale: Lidocaine-type for ventricular arrhythmias
+C01BC_antiarrhythmics_class_ic:
+  diseases:
+  - i47_(paroxysmal_tachycardia)
+  - i48_(atrial_fibrillation_and_flutter)
+  - i49_(other_cardiac_arrhythmias)
+  icd3:
+  - I47
+  - I48
+  - I49
+  rationale: Flecainide/propafenone for arrhythmias
+C01BD_antiarrhythmics_class_iii:
+  diseases:
+  - i47_(paroxysmal_tachycardia)
+  - i48_(atrial_fibrillation_and_flutter)
+  - i49_(other_cardiac_arrhythmias)
+  icd3:
+  - I47
+  - I48
+  - I49
+  rationale: Amiodarone/sotalol for arrhythmias
+C01DA_organic_nitrates:
+  diseases:
+  - i20_(angina_pectoris)
+  - i50_(heart_failure)
+  icd3:
+  - I20
+  - I50
+  rationale: Nitrates for angina and heart failure
+C01DX_other_vasodilators_used_in_cardiac_diseases:
+  diseases:
+  - i20_(angina_pectoris)
+  icd3:
+  - I20
+  rationale: Cardiac vasodilators mainly for angina
+C02AB_methyldopa:
+  diseases:
+  - i10_(essential_(primary)_hypertension)
+  - o10_(pre-existing_hypertension_complicating_pregnancy,_childbirth_and_the_puerperium)
+  icd3:
+  - I10
+  - O10
+  rationale: Central agent for hypertension including pregnancy
+C02AC_imidazoline_receptor_agonists:
+  diseases:
+  - i10_(essential_(primary)_hypertension)
+  icd3:
+  - I10
+  rationale: Clonidine/moxonidine central antihypertensives
+C02CC_guanidine_derivatives:
+  diseases:
+  - i10_(essential_(primary)_hypertension)
+  icd3:
+  - I10
+  rationale: Guanethidine-type antihypertensives
+C02DB_hydrazinophthalazine_derivatives:
+  diseases:
+  - i10_(essential_(primary)_hypertension)
+  - i50_(heart_failure)
+  icd3:
+  - I10
+  - I50
+  rationale: Hydralazine for hypertension and heart failure
+C03AA_thiazides_plain:
+  diseases:
+  - i10_(essential_(primary)_hypertension)
+  icd3:
+  - I10
+  rationale: Thiazide diuretics first-line for hypertension
+C03AB_thiazides_and_potassium_in_combination:
+  diseases:
+  - i10_(essential_(primary)_hypertension)
+  icd3:
+  - I10
+  rationale: Thiazide combination for hypertension
+C03BA_sulfonamides_plain:
+  diseases:
+  - i10_(essential_(primary)_hypertension)
+  icd3:
+  - I10
+  rationale: Sulfonamide diuretics (e.g. indapamide) treat hypertension
+C03CA_sulfonamides_plain:
+  diseases:
+  - i10_(essential_(primary)_hypertension)
+  - i50_(heart_failure)
+  icd3:
+  - I10
+  - I50
+  rationale: Loop diuretics (furosemide) for hypertension and heart failure edema
+C03DA_aldosterone_antagonists:
+  diseases:
+  - e26_(hyperaldosteronism)
+  - i10_(essential_(primary)_hypertension)
+  - i50_(heart_failure)
+  icd3:
+  - E26
+  - I10
+  - I50
+  rationale: Spironolactone for heart failure, hyperaldosteronism, resistant hypertension
+C03XA_vasopressin_antagonists:
+  diseases:
+  - e22_(hyperfunction_of_pituitary_gland)
+  - e87_(other_disorders_of_fluid,_electrolyte_and_acid-base_balance)
+  icd3:
+  - E22
+  - E87
+  rationale: Tolvaptan for SIADH and hyponatremia
+C04AC_nicotinic_acid_and_derivatives:
+  diseases:
+  - e78_(disorders_of_lipoprotein_metabolism_and_other_lipidaemias)
+  icd3:
+  - E78
+  rationale: Nicotinic acid lowers lipids/dyslipidemia
+C05AX_other_agents_for_treatment_of_hemorrhoids_and_anal_fissures_for_topical_use:
+  diseases:
+  - i84_(haemorrhoids)
+  - k60_(fissure_and_fistula_of_anal_and_rectal_regions)
+  icd3:
+  - I84
+  - K60
+  rationale: Topical agents specifically for hemorrhoids and anal fissures
+C05BA_heparins_or_heparinoids_for_topical_use:
+  diseases:
+  - i80_(phlebitis_and_thrombophlebitis)
+  icd3:
+  - I80
+  rationale: Topical heparinoids for superficial thrombophlebitis
+C05BB_sclerosing_agents_for_local_injection:
+  diseases:
+  - i83_(varicose_veins_of_lower_extremities)
+  - i84_(haemorrhoids)
+  icd3:
+  - I83
+  - I84
+  rationale: Sclerotherapy for varicose veins and hemorrhoids
+C07AA_beta_blocking_agents_non_selective:
+  diseases:
+  - i10_(essential_(primary)_hypertension)
+  - i20_(angina_pectoris)
+  - i47_(paroxysmal_tachycardia)
+  - i48_(atrial_fibrillation_and_flutter)
+  - i50_(heart_failure)
+  icd3:
+  - I10
+  - I20
+  - I47
+  - I48
+  - I50
+  rationale: Beta-blockers for hypertension, angina, arrhythmias, heart failure
+C07AB_beta_blocking_agents_selective:
+  diseases:
+  - i10_(essential_(primary)_hypertension)
+  - i20_(angina_pectoris)
+  - i47_(paroxysmal_tachycardia)
+  - i48_(atrial_fibrillation_and_flutter)
+  - i50_(heart_failure)
+  icd3:
+  - I10
+  - I20
+  - I47
+  - I48
+  - I50
+  rationale: Selective beta-blockers for hypertension, angina, arrhythmias, heart
+    failure
+C08CA_dihydropyridine_derivatives:
+  diseases:
+  - i10_(essential_(primary)_hypertension)
+  - i20_(angina_pectoris)
+  icd3:
+  - I10
+  - I20
+  rationale: Dihydropyridine CCBs for hypertension and angina
+C09AA_ace_inhibitors_plain:
+  diseases:
+  - i10_(essential_(primary)_hypertension)
+  - i50_(heart_failure)
+  icd3:
+  - I10
+  - I50
+  rationale: ACE inhibitors for hypertension and heart failure
+C09BB_ace_inhibitors_and_calcium_channel_blockers:
+  diseases:
+  - i10_(essential_(primary)_hypertension)
+  - i20_(angina_pectoris)
+  icd3:
+  - I10
+  - I20
+  rationale: ACEi+CCB combination for hypertension and angina
+C09CA_angiotensin_ii_receptor_blockers_arbs_plain:
+  diseases:
+  - i10_(essential_(primary)_hypertension)
+  - i50_(heart_failure)
+  icd3:
+  - I10
+  - I50
+  rationale: ARBs first-line for hypertension and heart failure
+C09DX_angiotensin_ii_receptor_blockers_arbs_other_combinations:
+  diseases:
+  - i10_(essential_(primary)_hypertension)
+  icd3:
+  - I10
+  rationale: ARB combination products used for hypertension
+C09XA_renin_inhibitors:
+  diseases:
+  - i10_(essential_(primary)_hypertension)
+  icd3:
+  - I10
+  rationale: Aliskiren is an antihypertensive
+C10AA_hmg_coa_reductase_inhibitors:
+  diseases:
+  - e78_(disorders_of_lipoprotein_metabolism_and_other_lipidaemias)
+  - i25_(chronic_ischaemic_heart_disease)
+  icd3:
+  - E78
+  - I25
+  rationale: Statins treat hyperlipidemia and secondary CVD prevention in chronic
+    ischemic heart disease
+C10AB_fibrates:
+  diseases:
+  - e78_(disorders_of_lipoprotein_metabolism_and_other_lipidaemias)
+  icd3:
+  - E78
+  rationale: Fibrates treat hypertriglyceridemia/dyslipidemia
+C10AC_bile_acid_sequestrants:
+  diseases:
+  - e78_(disorders_of_lipoprotein_metabolism_and_other_lipidaemias)
+  icd3:
+  - E78
+  rationale: Bile acid sequestrants lower cholesterol
+C10AD_nicotinic_acid_and_derivatives:
+  diseases:
+  - e78_(disorders_of_lipoprotein_metabolism_and_other_lipidaemias)
+  icd3:
+  - E78
+  rationale: Niacin used for dyslipidemia
+C10AX_other_lipid_modifying_agents:
+  diseases:
+  - e78_(disorders_of_lipoprotein_metabolism_and_other_lipidaemias)
+  icd3:
+  - E78
+  rationale: Other lipid-modifying agents (ezetimibe, PCSK9 inhibitors) treat dyslipidemia
+D01AC_imidazole_and_triazole_derivatives:
+  diseases:
+  - b35_(dermatophytosis)
+  - b37_(candidiasis)
+  icd3:
+  - B35
+  - B37
+  rationale: Topical azoles treat dermatophytosis and candidiasis
+D01AE_other_antifungals_for_topical_use:
+  diseases:
+  - b35_(dermatophytosis)
+  icd3:
+  - B35
+  rationale: Topical antifungals treat dermatophyte skin infections
+D01BA_antifungals_for_systemic_use:
+  diseases:
+  - b35_(dermatophytosis)
+  - b37_(candidiasis)
+  icd3:
+  - B35
+  - B37
+  rationale: Systemic antifungals treat dermatophytosis and candidiasis
+D05AC_antracen_derivatives:
+  diseases:
+  - l40_(psoriasis)
+  icd3:
+  - L40
+  rationale: Dithranol/anthralin is specific psoriasis treatment
+D05AX_other_antipsoriatics_for_topical_use:
+  diseases:
+  - l40_(psoriasis)
+  icd3:
+  - L40
+  rationale: Topical antipsoriatics treat psoriasis
+D10AD_retinoids_for_topical_use_in_acne:
+  diseases:
+  - l70_(acne)
+  icd3:
+  - L70
+  rationale: Topical retinoids specifically established for acne.
+D10AE_peroxides:
+  diseases:
+  - l70_(acne)
+  icd3:
+  - L70
+  rationale: Benzoyl peroxide specifically for acne treatment.
+D10AF_antiinfectives_for_treatment_of_acne:
+  diseases:
+  - l70_(acne)
+  icd3:
+  - L70
+  rationale: Topical antiinfectives specifically for acne.
+D10AX_other_anti_acne_preparations_for_topical_use:
+  diseases:
+  - l70_(acne)
+  icd3:
+  - L70
+  rationale: Topical anti-acne agents specifically treat acne (L70).
+D10BA_retinoids_for_treatment_of_acne:
+  diseases:
+  - l70_(acne)
+  icd3:
+  - L70
+  rationale: Oral retinoids (isotretinoin) are established acne treatment.
+D11AH_agents_for_dermatitis_excluding_corticosteroids:
+  diseases:
+  - l20_(atopic_dermatitis)
+  icd3:
+  - L20
+  rationale: Topical calcineurin inhibitors treat atopic dermatitis (L20).
+G01AF_imidazole_derivatives:
+  diseases:
+  - b37_(candidiasis)
+  icd3:
+  - B37
+  rationale: Vaginal imidazoles treat candidiasis (B37) specifically.
+G02CB_prolactine_inhibitors:
+  diseases:
+  - e22_(hyperfunction_of_pituitary_gland)
+  icd3:
+  - E22
+  rationale: Dopamine agonists treat hyperprolactinemia/prolactinoma (E22).
+G03BA_3_oxoandrosten_4_derivatives:
+  diseases:
+  - e29_(testicular_dysfunction)
+  icd3:
+  - E29
+  rationale: Testosterone derivatives treat male hypogonadism (E29).
+G03CA_natural_and_semisynthetic_estrogens_plain:
+  diseases:
+  - n95_(menopausal_and_other_perimenopausal_disorders)
+  icd3:
+  - N95
+  rationale: Estrogens treat menopausal/postmenopausal disorders (N95) as HRT.
+G03GA_gonadotropins:
+  diseases:
+  - n97_(female_infertility)
+  icd3:
+  - N97
+  rationale: Gonadotropins treat anovulatory female infertility
+G03GB_ovulation_stimulants_synthetic:
+  diseases:
+  - n97_(female_infertility)
+  icd3:
+  - N97
+  rationale: Clomiphene induces ovulation for anovulatory infertility
+G03HA_antiandrogens_plain:
+  diseases:
+  - l68_(hypertrichosis)
+  - l70_(acne)
+  icd3:
+  - L68
+  - L70
+  rationale: Antiandrogens (cyproterone) treat acne and hirsutism/hypertrichosis
+G03XC_selective_estrogen_receptor_modulators:
+  diseases:
+  - c50_malignant_neoplasm_of_breast
+  - m81_(osteoporosis_without_pathological_fracture)
+  icd3:
+  - C50
+  - M81
+  rationale: SERMs treat osteoporosis (raloxifene) and breast cancer (tamoxifen)
+G04BD_drugs_for_urinary_frequency_and_incontinence:
+  diseases:
+  - n39_(other_disorders_of_urinary_system)
+  icd3:
+  - N39
+  rationale: Antimuscarinics treat urge urinary incontinence/overactive bladder
+G04BE_drugs_used_in_erectile_dysfunction:
+  diseases:
+  - n48_(other_disorders_of_penis)
+  icd3:
+  - N48
+  rationale: PDE5 inhibitors treat erectile dysfunction
+G04CA_alpha_adrenoreceptor_antagonists:
+  diseases:
+  - n40_(hyperplasia_of_prostate)
+  icd3:
+  - N40
+  rationale: Alpha-blockers treat benign prostatic hyperplasia
+G04CB_testosterone_5_alpha_reductase_inhibitors:
+  diseases:
+  - n40_(hyperplasia_of_prostate)
+  icd3:
+  - N40
+  rationale: Finasteride/dutasteride treat benign prostatic hyperplasia
+H01AB_thyrotropin:
+  diseases:
+  - c73_malignant_neoplasm_of_thyroid_gland
+  icd3:
+  - C73
+  rationale: Recombinant TSH used in thyroid cancer management
+H01BA_vasopressin_and_analogues:
+  diseases:
+  - e23_(hypofunction_and_other_disorders_of_pituitary_gland)
+  icd3:
+  - E23
+  rationale: Desmopressin/vasopressin treat central diabetes insipidus (pituitary
+    hypofunction)
+H01CB_somatostatin_and_analogues:
+  diseases:
+  - e22_(hyperfunction_of_pituitary_gland)
+  icd3:
+  - E22
+  rationale: Octreotide treats acromegaly (pituitary hyperfunction)
+H02AA_mineralocorticoids:
+  diseases:
+  - e27_(other_disorders_of_adrenal_gland)
+  icd3:
+  - E27
+  rationale: Fludrocortisone replaces mineralocorticoid in adrenal insufficiency
+H02CA_anticorticosteroids:
+  diseases:
+  - e24_(cushing's_syndrome)
+  icd3:
+  - E24
+  rationale: Cortisol-synthesis inhibitors treat Cushing's syndrome
+H03AA_thyroid_hormones:
+  diseases:
+  - e03_(other_hypothyroidism)
+  icd3:
+  - E03
+  rationale: Levothyroxine first-line for hypothyroidism.
+H04AA_glycogenolytic_hormones:
+  diseases:
+  - e16_(other_disorders_of_pancreatic_internal_secretion)
+  icd3:
+  - E16
+  rationale: Glucagon for severe hypoglycemia (disorders of pancreatic internal secretion).
+H05AA_parathyroid_hormones_and_analogues:
+  diseases:
+  - e20_(hypoparathyroidism)
+  - m81_(osteoporosis_without_pathological_fracture)
+  icd3:
+  - E20
+  - M81
+  rationale: Teriparatide for osteoporosis; PTH analogues for hypoparathyroidism.
+H05BX_other_anti_parathyroid_agents:
+  diseases:
+  - e21_(hyperparathyroidism_and_other_disorders_of_parathyroid_gland)
+  icd3:
+  - E21
+  rationale: Cinacalcet for hyperparathyroidism.
+J01XE_nitrofuran_derivatives:
+  diseases:
+  - n30_(cystitis)
+  - n39_(other_disorders_of_urinary_system)
+  icd3:
+  - N30
+  - N39
+  rationale: 'Nitrofurantoin: uncomplicated UTI (cystitis N30; UTI site unspecified
+    N39).'
+J02AC_triazole_and_tetrazole_derivatives:
+  diseases:
+  - b37_(candidiasis)
+  icd3:
+  - B37
+  rationale: 'Azole antifungals: candidiasis and related mycoses.'
+J04BA_drugs_for_treatment_of_lepra:
+  diseases:
+  - a30_(leprosy_[hansen's_disease])
+  icd3:
+  - A30
+  rationale: Antileprotics specifically treat leprosy.
+J05AB_nucleosides_and_nucleotides_excl_reverse_transcriptase_inhibitors:
+  diseases:
+  - b00_(herpesviral_[herpes_simplex]_infections)
+  - b02_(zoster_[herpes_zoster])
+  - b25_(cytomegaloviral_disease)
+  icd3:
+  - B00
+  - B02
+  - B25
+  rationale: 'Aciclovir/ganciclovir: herpes zoster (B02), herpes simplex (B00), CMV
+    (B25).'
+J05AE_protease_inhibitors:
+  diseases:
+  - b20_(human_immunodeficiency_virus_[hiv]_disease_resulting_in_infectious_and_parasitic_diseases)
+  icd3:
+  - B20
+  rationale: 'HIV protease inhibitors: HIV antiretroviral therapy (symptomatic B20,
+    asymptomatic Z21).'
+J05AF_nucleoside_and_nucleotide_reverse_transcriptase_inhibitors:
+  diseases:
+  - b18_(chronic_viral_hepatitis)
+  - b20_(human_immunodeficiency_virus_[hiv]_disease_resulting_in_infectious_and_parasitic_diseases)
+  icd3:
+  - B18
+  - B20
+  rationale: 'NRTIs: HIV; tenofovir/entecavir for chronic hepatitis B (B18).'
+J05AG_non_nucleoside_reverse_transcriptase_inhibitors:
+  diseases:
+  - b20_(human_immunodeficiency_virus_[hiv]_disease_resulting_in_infectious_and_parasitic_diseases)
+  icd3:
+  - B20
+  rationale: 'NNRTIs: HIV antiretroviral therapy.'
+J05AH_neuraminidase_inhibitors:
+  diseases:
+  - j10_(influenza_due_to_identified_influenza_virus)
+  - j11_(influenza,_virus_not_identified)
+  icd3:
+  - J10
+  - J11
+  rationale: 'Oseltamivir/zanamivir: influenza (identified J10, unidentified J11).'
+J05AJ_integrase_inhibitors:
+  diseases:
+  - b20_(human_immunodeficiency_virus_[hiv]_disease_resulting_in_infectious_and_parasitic_diseases)
+  icd3:
+  - B20
+  rationale: 'Integrase inhibitors: HIV antiretroviral therapy.'
+J05AP_antivirals_for_treatment_of_hcv_infections:
+  diseases:
+  - b17_(other_acute_viral_hepatitis)
+  - b18_(chronic_viral_hepatitis)
+  icd3:
+  - B17
+  - B18
+  rationale: 'DAAs: chronic hepatitis C (B18) and acute hepatitis C (B17).'
+J06BA_immunoglobulins_normal_human:
+  diseases:
+  - d80_(immunodeficiency_with_predominantly_antibody_defects)
+  - d81_(combined_immunodeficiencies)
+  - d83_(common_variable_immunodeficiency)
+  icd3:
+  - D80
+  - D81
+  - D83
+  rationale: 'Normal human Ig replacement: humoral (D80), combined (D81), CVID (D83)
+    immunodeficiencies.'
+J07AE_cholera_vaccines:
+  diseases:
+  - a00_(cholera)
+  icd3:
+  - A00
+  rationale: Cholera vaccine specifically prevents cholera.
+L01EA_bcr_abl_tyrosine_kinase_inhibitors:
+  diseases:
+  - c92_myeloid_leukaemia
+  icd3:
+  - C92
+  rationale: BCR-ABL TKIs (imatinib) specific for chronic myeloid leukemia.
+L01EB_epidermal_growth_factor_receptor_egfr_tyrosine_kinase_inhibitors:
+  diseases:
+  - c34_malignant_neoplasm_of_bronchus_and_lung
+  icd3:
+  - C34
+  rationale: EGFR-TKIs targeted therapy for EGFR-mutant lung cancer.
+L01EC_b_raf_serine_threonine_kinase_braf_inhibitors:
+  diseases:
+  - c43_malignant_melanoma_of_skin
+  icd3:
+  - C43
+  rationale: BRAF inhibitors target BRAF-mutant melanoma.
+L01ED_anaplastic_lymphoma_kinase_alk_inhibitors:
+  diseases:
+  - c34_malignant_neoplasm_of_bronchus_and_lung
+  icd3:
+  - C34
+  rationale: ALK inhibitors treat ALK-rearranged NSCLC.
+L01EG_mammalian_target_of_rapamycin_mtor_kinase_inhibitors:
+  diseases:
+  - c25_malignant_neoplasm_of_pancreas
+  - c50_malignant_neoplasm_of_breast
+  - c64_malignant_neoplasm_of_kidney,_except_renal_pelvis
+  icd3:
+  - C25
+  - C50
+  - C64
+  rationale: mTOR inhibitors for renal, HR+ breast, pancreatic neuroendocrine cancers.
+L01EJ_janus_associated_kinase_jak_inhibitors:
+  diseases:
+  - d45_polycythaemia_vera
+  - k51_(ulcerative_colitis)
+  - l40_(psoriasis)
+  - m06_(other_rheumatoid_arthritis)
+  icd3:
+  - D45
+  - K51
+  - L40
+  - M06
+  rationale: JAK inhibitors for polycythemia vera/myelofibrosis, RA, ulcerative colitis,
+    psoriasis; removed C92 (no established CML indication).
+L01EK_vascular_endothelial_growth_factor_receptor_vegfr_tyrosine_kinase_inhibitors:
+  diseases:
+  - c22_malignant_neoplasm_of_liver_and_intrahepatic_bile_ducts
+  - c64_malignant_neoplasm_of_kidney,_except_renal_pelvis
+  - c73_malignant_neoplasm_of_thyroid_gland
+  icd3:
+  - C22
+  - C64
+  - C73
+  rationale: VEGFR TKIs for renal, thyroid, hepatocellular carcinoma.
+L01EL_bruton_s_tyrosine_kinase_btk_inhibitors:
+  diseases:
+  - c83_diffuse_non-hodgkin's_lymphoma
+  - c88_malignant_immunoproliferative_diseases
+  - c91_lymphoid_leukaemia
+  icd3:
+  - C83
+  - C88
+  - C91
+  rationale: BTK inhibitors for CLL, mantle-cell lymphoma, Waldenstrom macroglobulinemia.
+L01EM_phosphatidylinositol_3_kinase_pi3k_inhibitors:
+  diseases:
+  - c50_malignant_neoplasm_of_breast
+  - c82_follicular_[nodular]_non-hodgkin's_lymphoma
+  - c91_lymphoid_leukaemia
+  icd3:
+  - C50
+  - C82
+  - C91
+  rationale: PI3K inhibitors for CLL, HR+ breast cancer, follicular lymphoma.
+L01FA_cd20_clusters_of_differentiation_20_inhibitors:
+  diseases:
+  - c82_follicular_[nodular]_non-hodgkin's_lymphoma
+  - c83_diffuse_non-hodgkin's_lymphoma
+  - c91_lymphoid_leukaemia
+  - m06_(other_rheumatoid_arthritis)
+  icd3:
+  - C82
+  - C83
+  - C91
+  - M06
+  rationale: Anti-CD20 (rituximab) for B-cell lymphomas, CLL, rheumatoid arthritis.
+L01FD_her2_human_epidermal_growth_factor_receptor_2_inhibitors:
+  diseases:
+  - c16_malignant_neoplasm_of_stomach
+  - c50_malignant_neoplasm_of_breast
+  icd3:
+  - C16
+  - C50
+  rationale: HER2 inhibitors for HER2-positive breast and gastric cancer.
+L01FF_pd_1_pd_l1_programmed_cell_death_protein_1_death_ligand_1_inhibitors:
+  diseases:
+  - c34_malignant_neoplasm_of_bronchus_and_lung
+  - c43_malignant_melanoma_of_skin
+  - c64_malignant_neoplasm_of_kidney,_except_renal_pelvis
+  icd3:
+  - C34
+  - C43
+  - C64
+  rationale: PD-1/PD-L1 inhibitors for melanoma, lung, renal cancers.
+L01XG_proteasome_inhibitors:
+  diseases:
+  - c90_multiple_myeloma_and_malignant_plasma_cell_neoplasms
+  icd3:
+  - C90
+  rationale: Proteasome inhibitors are core multiple myeloma therapy.
+L02AE_gonadotropin_releasing_hormone_analogues:
+  diseases:
+  - c50_malignant_neoplasm_of_breast
+  - c61_malignant_neoplasm_of_prostate
+  - n80_(endometriosis)
+  icd3:
+  - C50
+  - C61
+  - N80
+  rationale: GnRH analogues for prostate, breast cancer, endometriosis.
+L02BA_anti_estrogens:
+  diseases:
+  - c50_malignant_neoplasm_of_breast
+  icd3:
+  - C50
+  rationale: Antiestrogens (tamoxifen) standard for HR+ breast cancer.
+L02BB_anti_androgens:
+  diseases:
+  - c61_malignant_neoplasm_of_prostate
+  icd3:
+  - C61
+  rationale: Antiandrogens are established prostate cancer treatment.
+L02BG_aromatase_inhibitors:
+  diseases:
+  - c50_malignant_neoplasm_of_breast
+  icd3:
+  - C50
+  rationale: Aromatase inhibitors standard for postmenopausal breast cancer.
+L04AB_tumor_necrosis_factor_alpha_tnf_alpha_inhibitors:
+  diseases:
+  - k50_(crohn's_disease_[regional_enteritis])
+  - k51_(ulcerative_colitis)
+  - l40_(psoriasis)
+  - m05_(seropositive_rheumatoid_arthritis)
+  - m06_(other_rheumatoid_arthritis)
+  - m45_(ankylosing_spondylitis)
+  icd3:
+  - K50
+  - K51
+  - L40
+  - M05
+  - M06
+  - M45
+  rationale: TNF inhibitors first-line for RA (M05/M06), psoriasis (L40), Crohn (K50),
+    ulcerative colitis (K51), ankylosing spondylitis (M45)
+L04AC_interleukin_inhibitors:
+  diseases:
+  - k50_(crohn's_disease_[regional_enteritis])
+  - l40_(psoriasis)
+  - m05_(seropositive_rheumatoid_arthritis)
+  - m06_(other_rheumatoid_arthritis)
+  icd3:
+  - K50
+  - L40
+  - M05
+  - M06
+  rationale: IL inhibitors established for psoriasis (L40), RA (M05/M06, e.g. IL-6),
+    Crohn (K50, e.g. ustekinumab)
+L04AE_sphingosine_1_phosphate_s1p_receptor_modulators:
+  diseases:
+  - g35_(multiple_sclerosis)
+  icd3:
+  - G35
+  rationale: Fingolimod/siponimod/ozanimod specific for multiple sclerosis
+L04AK_dihydroorotate_dehydrogenase_dhodh_inhibitors:
+  diseases:
+  - m05_(seropositive_rheumatoid_arthritis)
+  - m06_(other_rheumatoid_arthritis)
+  icd3:
+  - M05
+  - M06
+  rationale: Leflunomide DMARD for rheumatoid arthritis
+M01CB_gold_preparations:
+  diseases:
+  - m05_(seropositive_rheumatoid_arthritis)
+  - m06_(other_rheumatoid_arthritis)
+  icd3:
+  - M05
+  - M06
+  rationale: Gold salts are a classic specific DMARD for rheumatoid arthritis
+M04AA_preparations_inhibiting_uric_acid_production:
+  diseases:
+  - m10_(gout)
+  icd3:
+  - M10
+  rationale: Xanthine oxidase inhibitors (allopurinol) are established gout therapy
+M04AB_preparations_increasing_uric_acid_excretion:
+  diseases:
+  - m10_(gout)
+  icd3:
+  - M10
+  rationale: Uricosurics treat gout specifically
+M04AC_preparations_with_no_effect_on_uric_acid_metabolism:
+  diseases:
+  - m10_(gout)
+  icd3:
+  - M10
+  rationale: Colchicine specifically treats acute gout flares
+M05BA_bisphosphonates:
+  diseases:
+  - m80_(osteoporosis_with_pathological_fracture)
+  - m81_(osteoporosis_without_pathological_fracture)
+  icd3:
+  - M80
+  - M81
+  rationale: Bisphosphonates are first-line for osteoporosis with/without pathological
+    fracture
+M05BX_other_drugs_affecting_bone_structure_and_mineralization:
+  diseases:
+  - m81_(osteoporosis_without_pathological_fracture)
+  icd3:
+  - M81
+  rationale: Denosumab/teriparatide/romosozumab established osteoporosis treatments
+N02CA_ergot_alkaloids:
+  diseases:
+  - g43_(migraine)
+  icd3:
+  - G43
+  rationale: Ergotamine/dihydroergotamine are specific acute migraine therapy.
+N02CC_selective_serotonin_5ht1_agonists:
+  diseases:
+  - g43_(migraine)
+  icd3:
+  - G43
+  rationale: Triptans are specific acute migraine abortive agents.
+N02CX_other_antimigraine_preparations:
+  diseases:
+  - g43_(migraine)
+  icd3:
+  - G43
+  rationale: Antimigraine class, specific to migraine.
+N03AA_barbiturates_and_derivatives:
+  diseases:
+  - g40_(epilepsy)
+  icd3:
+  - G40
+  rationale: Barbiturate antiepileptics specific for epilepsy.
+N03AB_hydantoin_derivatives:
+  diseases:
+  - g40_(epilepsy)
+  icd3:
+  - G40
+  rationale: Phenytoin-class antiepileptic specific for epilepsy.
+N03AE_benzodiazepine_derivatives:
+  diseases:
+  - g40_(epilepsy)
+  icd3:
+  - G40
+  rationale: Clonazepam/clobazam antiepileptic ATC subgroup for epilepsy.
+N03AF_carboxamide_derivatives:
+  diseases:
+  - g40_(epilepsy)
+  icd3:
+  - G40
+  rationale: Carbamazepine-class antiepileptics for epilepsy.
+N03AG_fatty_acid_derivatives:
+  diseases:
+  - g40_(epilepsy)
+  icd3:
+  - G40
+  rationale: Valproate antiepileptic for epilepsy.
+N03AX_other_antiepileptics:
+  diseases:
+  - g40_(epilepsy)
+  icd3:
+  - G40
+  rationale: Other antiepileptics specific for epilepsy.
+N04AA_tertiary_amines:
+  diseases:
+  - g20_(parkinson's_disease)
+  icd3:
+  - G20
+  rationale: Anticholinergic antiparkinson agents for Parkinson disease.
+N04AC_ethers_of_tropine_or_tropine_derivatives:
+  diseases:
+  - g20_(parkinson's_disease)
+  icd3:
+  - G20
+  rationale: Antiparkinson anticholinergics for Parkinson disease.
+N04BB_adamantane_derivatives:
+  diseases:
+  - g20_(parkinson's_disease)
+  icd3:
+  - G20
+  rationale: Amantadine for Parkinson disease.
+N04BC_dopamine_agonists:
+  diseases:
+  - g20_(parkinson's_disease)
+  icd3:
+  - G20
+  rationale: Dopamine agonists for Parkinson disease.
+N04BD_monoamine_oxidase_b_inhibitors:
+  diseases:
+  - g20_(parkinson's_disease)
+  icd3:
+  - G20
+  rationale: MAO-B inhibitors specific for Parkinson disease.
+N04BX_other_dopaminergic_agents:
+  diseases:
+  - g20_(parkinson's_disease)
+  icd3:
+  - G20
+  rationale: Other dopaminergic antiparkinson agents.
+N05AA_phenothiazines_with_aliphatic_side_chain:
+  diseases:
+  - f20_(schizophrenia)
+  icd3:
+  - F20
+  rationale: Typical antipsychotics for schizophrenia/psychosis.
+N05AB_phenothiazines_with_piperazine_structure:
+  diseases:
+  - f20_(schizophrenia)
+  icd3:
+  - F20
+  rationale: Typical antipsychotics for schizophrenia/psychosis.
+N05AD_butyrophenone_derivatives:
+  diseases:
+  - f20_(schizophrenia)
+  icd3:
+  - F20
+  rationale: Haloperidol-class antipsychotics for schizophrenia/psychosis.
+N05AF_thioxanthene_derivatives:
+  diseases:
+  - f20_(schizophrenia)
+  icd3:
+  - F20
+  rationale: Thioxanthene antipsychotics for schizophrenia/psychosis.
+N05AH_diazepines_oxazepines_thiazepines_and_oxepines:
+  diseases:
+  - f20_(schizophrenia)
+  icd3:
+  - F20
+  rationale: Antipsychotics (clozapine/olanzapine/quetiapine) for schizophrenia
+N05AL_benzamides:
+  diseases:
+  - f20_(schizophrenia)
+  icd3:
+  - F20
+  rationale: Sulpiride/amisulpride antipsychotics for schizophrenia
+N05AN_lithium:
+  diseases:
+  - f31_(bipolar_affective_disorder)
+  icd3:
+  - F31
+  rationale: Lithium is specific maintenance treatment for bipolar disorder
+N05AX_other_antipsychotics:
+  diseases:
+  - f20_(schizophrenia)
+  icd3:
+  - F20
+  rationale: Antipsychotics for schizophrenia/psychosis
+N06BA_centrally_acting_sympathomimetics:
+  diseases:
+  - f90_(hyperkinetic_disorders)
+  icd3:
+  - F90
+  rationale: Methylphenidate/amphetamines specific for ADHD
+N06DA_anticholinesterases:
+  diseases:
+  - g30_(alzheimer's_disease)
+  icd3:
+  - G30
+  rationale: Donepezil/rivastigmine specific for Alzheimer dementia
+N06DX_other_anti_dementia_drugs:
+  diseases:
+  - g30_(alzheimer's_disease)
+  icd3:
+  - G30
+  rationale: Memantine for Alzheimer dementia
+N07AA_anticholinesterases:
+  diseases:
+  - g30_(alzheimer's_disease)
+  icd3:
+  - G30
+  rationale: Cholinesterase inhibitors (donepezil, rivastigmine, galantamine) are
+    established treatment for Alzheimer dementia.
+N07BA_drugs_used_in_nicotine_dependence:
+  diseases:
+  - f17_(mental_and_behavioural_disorders_due_to_use_of_tobacco)
+  icd3:
+  - F17
+  rationale: Specifically treat nicotine/tobacco dependence.
+N07BB_drugs_used_in_alcohol_dependence:
+  diseases:
+  - f10_(mental_and_behavioural_disorders_due_to_use_of_alcohol)
+  icd3:
+  - F10
+  rationale: Disulfiram/acamprosate/naltrexone specifically treat alcohol dependence.
+N07BC_drugs_used_in_opioid_dependence:
+  diseases:
+  - f11_(mental_and_behavioural_disorders_due_to_use_of_opioids)
+  icd3:
+  - F11
+  rationale: Methadone/buprenorphine specifically treat opioid dependence.
+N07CA_antivertigo_preparations:
+  diseases:
+  - h81_(disorders_of_vestibular_function)
+  icd3:
+  - H81
+  rationale: Betahistine treats vertigo/Meniere disease (H81 disorders of vestibular
+    function).
+P01AC_dichloroacetamide_derivatives:
+  diseases:
+  - a06_(amoebiasis)
+  icd3:
+  - A06
+  rationale: Diloxanide is a luminal amoebicide treating intestinal amoebiasis.
+P01BA_aminoquinolines:
+  diseases:
+  - b50_(plasmodium_falciparum_malaria)
+  - b51_(plasmodium_vivax_malaria)
+  - b52_(plasmodium_malariae_malaria)
+  - b53_(other_parasitologically_confirmed_malaria)
+  icd3:
+  - B50
+  - B51
+  - B52
+  - B53
+  rationale: Chloroquine/hydroxychloroquine treat malaria across plasmodium species.
+P01BB_biguanides:
+  diseases:
+  - b50_(plasmodium_falciparum_malaria)
+  - b51_(plasmodium_vivax_malaria)
+  - b52_(plasmodium_malariae_malaria)
+  - b53_(other_parasitologically_confirmed_malaria)
+  icd3:
+  - B50
+  - B51
+  - B52
+  - B53
+  rationale: Proguanil is an antimalarial (P. falciparum and others).
+P01BD_diaminopyrimidines:
+  diseases:
+  - b50_(plasmodium_falciparum_malaria)
+  - b51_(plasmodium_vivax_malaria)
+  - b52_(plasmodium_malariae_malaria)
+  - b53_(other_parasitologically_confirmed_malaria)
+  icd3:
+  - B50
+  - B51
+  - B52
+  - B53
+  rationale: Pyrimethamine treats malaria.
+P02BA_quinoline_derivatives_and_related_substances:
+  diseases:
+  - b65_(schistosomiasis_[bilharziasis])
+  icd3:
+  - B65
+  rationale: Praziquantel/oxamniquine treat schistosomiasis.
+P02CA_benzimidazole_derivatives:
+  diseases:
+  - b76_(hookworm_diseases)
+  - b77_(ascariasis)
+  - b79_(trichuriasis)
+  - b80_(enterobiasis)
+  icd3:
+  - B76
+  - B77
+  - B79
+  - B80
+  rationale: Albendazole/mebendazole treat hookworm, ascariasis, trichuriasis and
+    enterobiasis.
+P02CE_imidazothiazole_derivatives:
+  diseases:
+  - b76_(hookworm_diseases)
+  - b77_(ascariasis)
+  icd3:
+  - B76
+  - B77
+  rationale: Levamisole treats hookworm and ascariasis.
+P02CF_avermectines:
+  diseases:
+  - b73_(onchocerciasis)
+  - b74_(filariasis)
+  icd3:
+  - B73
+  - B74
+  rationale: Ivermectin treats onchocerciasis and filariasis.
+P03AC_pyrethrines_incl_synthetic_compounds:
+  diseases:
+  - b85_(pediculosis_and_phthiriasis)
+  - b86_(scabies)
+  icd3:
+  - B85
+  - B86
+  rationale: Topical pyrethrins treat pediculosis and scabies.
+R01AC_antiallergic_agents_excl_corticosteroids:
+  diseases:
+  - j30_(vasomotor_and_allergic_rhinitis)
+  icd3:
+  - J30
+  rationale: Nasal antiallergics (cromoglicate/azelastine) treat allergic rhinitis.
+R01AD_corticosteroids:
+  diseases:
+  - j30_(vasomotor_and_allergic_rhinitis)
+  - j33_(nasal_polyp)
+  icd3:
+  - J30
+  - J33
+  rationale: Intranasal corticosteroids treat allergic rhinitis and nasal polyps.
+R03AC_selective_beta_2_adrenoreceptor_agonists:
+  diseases:
+  - j44_(other_chronic_obstructive_pulmonary_disease)
+  - j45_(asthma)
+  icd3:
+  - J44
+  - J45
+  rationale: Inhaled beta-2 agonists; established for asthma and COPD.
+R03AK_adrenergics_in_combination_with_corticosteroids_or_other_drugs_excl_anticholinergics:
+  diseases:
+  - j44_(other_chronic_obstructive_pulmonary_disease)
+  - j45_(asthma)
+  icd3:
+  - J44
+  - J45
+  rationale: Inhaled ICS/LABA combos for asthma and COPD.
+R03AL_adrenergics_in_combination_with_anticholinergics_incl_triple_combinations_with_corticosteroids:
+  diseases:
+  - j44_(other_chronic_obstructive_pulmonary_disease)
+  - j45_(asthma)
+  icd3:
+  - J44
+  - J45
+  rationale: Inhaled LABA/LAMA(+ICS) combos for COPD and asthma.
+R03BA_glucocorticoids:
+  diseases:
+  - j44_(other_chronic_obstructive_pulmonary_disease)
+  - j45_(asthma)
+  icd3:
+  - J44
+  - J45
+  rationale: Inhaled corticosteroids; established for asthma and COPD.
+R03BB_anticholinergics:
+  diseases:
+  - j44_(other_chronic_obstructive_pulmonary_disease)
+  - j45_(asthma)
+  icd3:
+  - J44
+  - J45
+  rationale: Inhaled antimuscarinics for COPD and asthma.
+R03BC_antiallergic_agents_excl_corticosteroids:
+  diseases:
+  - j45_(asthma)
+  icd3:
+  - J45
+  rationale: Inhaled cromones; established for asthma.
+R03CA_alpha_and_beta_adrenoreceptor_agonists:
+  diseases:
+  - j45_(asthma)
+  icd3:
+  - J45
+  rationale: Systemic adrenergics for asthma/bronchospasm.
+R03CB_non_selective_beta_adrenoreceptor_agonists:
+  diseases:
+  - j45_(asthma)
+  icd3:
+  - J45
+  rationale: Systemic non-selective beta agonists for asthma.
+R03CC_selective_beta_2_adrenoreceptor_agonists:
+  diseases:
+  - j44_(other_chronic_obstructive_pulmonary_disease)
+  - j45_(asthma)
+  icd3:
+  - J44
+  - J45
+  rationale: Systemic beta-2 agonists for asthma and COPD.
+R03DA_xanthines:
+  diseases:
+  - j44_(other_chronic_obstructive_pulmonary_disease)
+  - j45_(asthma)
+  icd3:
+  - J44
+  - J45
+  rationale: Theophylline; established for asthma and COPD.
+R03DC_leukotriene_receptor_antagonists:
+  diseases:
+  - j45_(asthma)
+  icd3:
+  - J45
+  rationale: Montelukast; established for asthma.
+R03DX_other_systemic_drugs_for_obstructive_airway_diseases:
+  diseases:
+  - j44_(other_chronic_obstructive_pulmonary_disease)
+  - j45_(asthma)
+  icd3:
+  - J44
+  - J45
+  rationale: Systemic obstructive-airway drugs for asthma and COPD.
+S01EA_sympathomimetics_in_glaucoma_therapy:
+  diseases:
+  - h40_(glaucoma)
+  icd3:
+  - H40
+  rationale: Sympathomimetics specifically indicated for glaucoma/ocular hypertension.
+S01EB_parasympathomimetics:
+  diseases:
+  - h40_(glaucoma)
+  icd3:
+  - H40
+  rationale: Miotic parasympathomimetics for glaucoma.
+S01EC_carbonic_anhydrase_inhibitors:
+  diseases:
+  - h40_(glaucoma)
+  icd3:
+  - H40
+  rationale: Topical carbonic anhydrase inhibitors specific to glaucoma.
+S01ED_beta_blocking_agents:
+  diseases:
+  - h40_(glaucoma)
+  icd3:
+  - H40
+  rationale: Topical beta-blockers first-line for glaucoma.
