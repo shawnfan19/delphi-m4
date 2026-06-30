@@ -797,6 +797,11 @@ def match_unique(query, choices, *, key=None, label="value"):
     choices = list(choices)
     to_text = key or (lambda c: c)
     q = query.lower()
+    # an exact (case-insensitive) match wins, even when the query is also a
+    # substring of other candidates (e.g. "death" vs "foetal_death_...").
+    exact = [c for c in choices if str(to_text(c)).lower() == q]
+    if len(exact) == 1:
+        return exact[0]
     matches = [c for c in choices if q in str(to_text(c)).lower()]
     if len(matches) != 1:
         raise SystemExit(
